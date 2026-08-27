@@ -1,0 +1,13 @@
+.git
+.venv
+**/__pycache__
+*.pyc
+.env
+ledgeros_dev.db
+*.db
+.coverage
+.pytest_cache
+.ruff_cache
+docs
+tests
+web

@@ -22,6 +22,10 @@ docs/         ADR 决策记录 + 设计文档 + 计划
 tests/        内核规则测试（不变量 100% 分支覆盖）
 ```
 
+## 快速开始（Docker）
+
+见 [deploy/quickstart.md](deploy/quickstart.md)：`docker compose up -d --build` → WorkBuddy 添加 `http://localhost:8000/mcp`。
+
 ## 开发
 
 ```bash

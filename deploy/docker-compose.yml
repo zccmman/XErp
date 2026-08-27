@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledgeros
+      POSTGRES_PASSWORD: ledgeros
+      POSTGRES_DB: ledgeros
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgeros -d ledgeros"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  init:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      LEDGEROS_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
+    # 一次性：迁移(0001-0003, PG 触发器生效) + 演示账套 + 144 科目 + 双身份
+    command: ["python", "scripts/init_demo.py"]
+    restart: "no"
+
+  mcp:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    environment:
+      LEDGEROS_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
+    ports:
+      - "8000:8000"
+    command: ["python", "deploy/run_http.py"]
+
+volumes:
+  pgdata:
