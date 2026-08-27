@@ -166,3 +166,25 @@ class VoucherLine(Base):
     aux_dims: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
 
     voucher: Mapped[Voucher] = relationship(back_populates="lines")
+
+
+class Balance(Base):
+    """余额投影（ADR-002）：可随时由事件流全量重建，不是事实源。
+
+    维度：账套 + 期间 + 科目 + 辅助维度规范键（canonical_json，无辅助维度为空串）。
+    """
+
+    __tablename__ = "balances"
+    __table_args__ = (
+        UniqueConstraint(
+            "ledger_set_id", "period_id", "account_id", "dims_key", name="uq_balance_dim"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ledger_set_id: Mapped[str] = mapped_column(String(32), index=True)
+    period_id: Mapped[str] = mapped_column(String(32), index=True)
+    account_id: Mapped[str] = mapped_column(String(32), index=True)
+    dims_key: Mapped[str] = mapped_column(String(500), default="")
+    debit_total: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
+    credit_total: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
