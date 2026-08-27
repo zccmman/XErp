@@ -148,6 +148,44 @@ def build_server(db_url: str | None = None) -> FastMCP:
             )
 
     @mcp.tool()
+    def get_workspace() -> dict:
+        """发现工作区：账套列表（含 id）、操作者身份（制单人/审批人及其主体 id）、各账套 OPEN 期间。
+
+        会话开始时先调用本工具，取得 ledger_set_id 与 actor_id 后再进行记账。
+        """
+        from kernel.db.models import LedgerSet, Subject
+
+        with repo.session() as s:
+            ledgers = [
+                {
+                    "ledger_set_id": ls.id,
+                    "name": ls.name,
+                    "accounting_standard": ls.accounting_standard,
+                    "status": ls.status,
+                    "open_periods": [
+                        {"year": p.year, "month": p.month}
+                        for p in s.scalars(
+                            select(Period).where(
+                                Period.ledger_set_id == ls.id,
+                                Period.status == "OPEN",
+                            )
+                        ).all()
+                    ],
+                }
+                for ls in s.scalars(select(LedgerSet)).all()
+            ]
+            subjects = [
+                {
+                    "subject_id": sub.id,
+                    "type": sub.type,
+                    "display_name": sub.display_name,
+                    "autonomy_level": sub.autonomy_level,
+                }
+                for sub in s.scalars(select(Subject)).all()
+            ]
+            return _ok(ledgers=ledgers, subjects=subjects)
+
+    @mcp.tool()
     def get_voucher(voucher_id: str) -> dict:
         """按 id 取凭证全量（状态机当前态 + 分录明细）。"""
         with repo.session() as s:

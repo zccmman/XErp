@@ -19,3 +19,5 @@ venv/
 Thumbs.db
 .DS_Store
 .coverage
+ledgeros_dev.db
+deploy/demo_state.json

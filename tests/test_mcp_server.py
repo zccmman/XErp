@@ -94,6 +94,18 @@ def _mk_voucher(env, server, key=None):
 # ---- 只读工具 ----
 
 
+def test_get_workspace_bootstrap(env, server):
+    r = _call(server, "get_workspace")
+    assert r["ok"] is True
+    assert any(ls["name"] == "演示账套" for ls in r["ledgers"])
+    assert all(
+        ls["open_periods"] == [{"year": 2026, "month": 8}] for ls in r["ledgers"]
+    )
+    names = {x["display_name"] for x in r["subjects"]}
+    assert {"丞辰", "审批人"} <= names
+
+
+
 def test_list_accounts(env, server):
     r = _call(server, "list_accounts", ledger_set_id=env["ids"]["ledger_set_id"])
     assert r["ok"] is True and len(r["accounts"]) >= 144
