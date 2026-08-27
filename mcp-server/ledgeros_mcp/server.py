@@ -22,9 +22,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+# 本文件位于 <repo>/mcp-server/ledgeros_mcp/server.py：向上三层才是仓库根
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_MCP_DIR = os.path.dirname(_THIS_DIR)
+_REPO_ROOT = os.path.dirname(_MCP_DIR)
+for _p in (_REPO_ROOT, _MCP_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from kernel.db.models import (  # noqa: E402
     Account,
