@@ -420,6 +420,44 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except PostingError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    @mcp.tool()
+    def feishu_send_approval(voucher_id: str, receive_id: str, receive_id_type: str = "open_id") -> dict:
+        """把待审凭证推送为飞书审批卡片（PUSHED 状态凭证）。
+
+        receive_id_type: open_id | chat_id 等；接收人由 scripts/feishu_ws.py 绑定流程获得。
+        卡片上的批准/驳回按钮经长连接回调写回状态机。
+        """
+        try:
+            with repo.session() as s:
+                from ledgeros_mcp.feishu import FeishuError, build_approval_card, send_card
+
+                v = s.get(Voucher, voucher_id)
+                if v is None:
+                    return _err("VOUCHER_NOT_FOUND", f"凭证 {voucher_id} 不存在")
+                if v.status != "PUSHED":
+                    return _err("INVALID_TRANSITION", f"仅待审（PUSHED）凭证可推送审批卡片，当前 {v.status}")
+                line_ids = [ln.account_id for ln in v.lines]
+                cmap = {a.id: a for a in s.scalars(select(Account).where(Account.id.in_(line_ids)))}
+                card = build_approval_card(
+                    voucher_no=v.voucher_no,
+                    status=v.status,
+                    summary=v.summary or "",
+                    lines=[
+                        {
+                            "account_code": cmap[ln.account_id].code,
+                            "account_name": cmap[ln.account_id].name,
+                            "debit": f"{ln.debit:.2f}",
+                            "credit": f"{ln.credit:.2f}",
+                        }
+                        for ln in v.lines
+                    ],
+                    voucher_id=v.id,
+                )
+                send_card(receive_id_type=receive_id_type, receive_id=receive_id, card=card)
+                return _ok(voucher=_brief(v), sent_to=receive_id)
+        except FeishuError as e:
+            return _err("FEISHU_ERROR", str(e))
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()
