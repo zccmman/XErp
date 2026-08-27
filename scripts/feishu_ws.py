@@ -111,7 +111,11 @@ def handle_text(open_id: str, text: str, message_id: str | None) -> None:
                     return
                 transition(s, voucher_id=v.id, actor=actor, target="APPROVED")
                 s.commit()
-                _reply(open_id, message_id, f"✅ 已批准 {m.group(2)}（审批人身份已入审计链），可执行过账")
+                _reply(
+                    open_id,
+                    message_id,
+                    f"✅ 已批准 {m.group(2)}（审批人身份已入审计链），可执行过账",
+                )
             return
 
         m = _RE_REJECT.match(text)
@@ -141,7 +145,11 @@ def handle_text(open_id: str, text: str, message_id: str | None) -> None:
                     actor=actor,
                 )
                 s.commit()
-                _reply(open_id, message_id, f"↩️ 已驳回 {voucher_no} 并退回草稿。意见：{reason}（已入审计链）")
+                _reply(
+                    open_id,
+                    message_id,
+                    f"↩️ 已驳回 {voucher_no} 并退回草稿。意见：{reason}（已入审计链）",
+                )
             return
 
         if text in ("帮助", "help"):
