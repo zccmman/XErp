@@ -23,6 +23,13 @@ LedgerOS 内核需要承载：确定性记账引擎（强一致性约束）、�
 3. **PostgreSQL ≥16** 单库承载：Ontology 表 + `events` 事件账本 + 余额物化投影（JSONB 承载辅助核算维度）。
 4. 性能策略：P0-P1 单机单库不做优化；出现瓶颈先加投影缓存，而非换语言。
 
+## 补充条款（2026-08-27，P0-03）
+
+**测试数据库回退**：模型维度字段使用 `sa.JSON().with_variant(postgresql.JSONB, "postgresql")` 双方言；
+单测默认 SQLite 内存库（零基础设施），金额在 SQLite 下为近似值、断言用数值等价。
+PG 专属保障（JSONB 精确性、append-only 触发器、并发成链）由 `@postgres` 标记测试承载，
+在 `TEST_DATABASE_URL` 指向 PG16 时运行（CI/本地 Docker）。P0-04 触发器测试必须在 PG 上通过。
+
 ## 后果
 
 - 正面：4 周 PoC 可达；MCP 工具层与内核同语言零序列化损耗。
