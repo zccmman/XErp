@@ -156,11 +156,16 @@ def handle_text(open_id: str, text: str, message_id: str | None) -> None:
             _reply(
                 open_id,
                 message_id,
-                "LedgerOS 审批指令：\n绑定 → 关联飞书账号\n同意 凭证号 → 批准\n驳回 凭证号 意见 → 驳回",
+                "LedgerOS 审批指令：\n绑定 → 关联飞书账号\n"
+                "同意 凭证号 → 批准\n驳回 凭证号 意见 → 驳回",
             )
             return
 
-        _reply(open_id, message_id, "未识别指令。可用：绑定 / 同意 凭证号 / 驳回 凭证号 意见 / 帮助")
+        _reply(
+            open_id,
+            message_id,
+            "未识别指令。可用：绑定 / 同意 凭证号 / 驳回 凭证号 意见 / 帮助",
+        )
     except PostingError as e:
         _reply(open_id, message_id, f"❌ {e.message_zh}")
     except Exception as e:  # noqa: BLE001
