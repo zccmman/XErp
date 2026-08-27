@@ -356,6 +356,27 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except PostingError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    @mcp.tool()
+    def cancel_post_voucher(voucher_id: str, actor_id: str) -> dict:
+        """撤销记账：POSTED → DRAFT（补偿事务）。
+
+        仅未结账期间可撤；原 POSTED 事件不修改，追加 voucher.cancelled 事件；
+        余额投影同步回冲。Agent 主体须 L3 自治等级，人不受限。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.state import cancel_post_voucher
+
+                v = cancel_post_voucher(
+                    s,
+                    voucher_id=voucher_id,
+                    actor={"type": "user", "id": actor_id},
+                )
+                s.flush()
+                return _ok(voucher=_brief(v))
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- 助手 ----------
 
     def _brief(v: Voucher) -> dict:

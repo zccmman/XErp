@@ -48,7 +48,7 @@ ledgeros/
 | ID | 任务 | 产出物 | DoD | 依赖 | 估时 |
 |---|---|---|---|---|---|
 | P0-06 | ✅ 科目模板（实际 0.5d；144 科目，8 测试全绿） | 小企业会计准则科目表 CSV（资产/负债/权益/成本/损益，140+ 科目）+ 导入工具 | 模板导入后科目数≥140、编码层级正确 | P0-05 | 1d |
-| P0-07 | MCP Server | fastmcp 暴露：`create_voucher` / `push_voucher` / `approve_voucher` / `post_voucher` / `get_voucher` / `query_balances` / `list_accounts` | MCP inspector 全工具手测通过；错误返回结构化中文信息 | P0-05 | 1.5d |
+| P0-07 | ✅ MCP Server（实际 0.5d；fastmcp 内存客户端 8 测试替代 inspector 手测） | fastmcp 暴露：`create_voucher` / `push_voucher` / `approve_voucher` / `post_voucher` / `get_voucher` / `query_balances` / `list_accounts` | MCP inspector 全工具手测通过；错误返回结构化中文信息 | P0-05 | 1.5d |
 | P0-08 | HITL 状态机服务 | Draft→Push→Review→Commit 事件驱动实现 + 补偿事务（取消记账，仅未结账）+ 操作者身份写入事件 | 非法跃迁（如 Draft→Commit）被拒；每步状态查询正确 | P0-07 | 1.5d |
 | P0-09 | Agent 客户端联调 | WorkBuddy/Claude 接入配置 + SKILL.md v0 | 真机演示：「报销招待费 800 元现金」→生成凭证→批准→过账→余额查询正确 | P0-08 | 1d |
 
