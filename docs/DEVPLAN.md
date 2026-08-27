@@ -37,7 +37,7 @@ ledgeros/
 
 | ID | 任务 | 产出物 | DoD（验收标准） | 依赖 | 估时 |
 |---|---|---|---|---|---|
-| P0-01 | 仓库初始化 | monorepo 骨架 + ruff/pytest/GitHub Actions CI + README | CI 在空测试上跑通；目录结构与本计划一致 | - | 0.5d |
+| P0-01 | ✅ 仓库初始化（a96fcb1+067bf77，实际 0.4d） | monorepo 骨架 + ruff/pytest/GitHub Actions CI + README | CI 在空测试上跑通；目录结构与本计划一致 | - | 0.5d |
 | P0-02 | 五份 ADR 决策记录 | ADR-001 内核选型(Python/PG) · 002 事件账本与 hash 链格式 · 003 MCP 工具命名规范 · 004 HITL 状态机 · 005 权限模型 | 每份含背景/决策/后果；评审通过 | P0-01 | 1d |
 | P0-03 | Ontology Schema v0 | alembic 迁移：`accounts` / `vouchers` / `voucher_lines` / `periods` / `parties` / `ledger_sets`(账套) | 种子脚本建演示账套成功；字段含辅助核算维度(JSONB) | P0-02 | 1d |
 | P0-04 | Event Ledger | `events` 表 append-only（禁止 UPDATE/DELETE 触发器）+ sha256 prev_hash 链 + 事件类型枚举 | 写入→篡改一条→`verify_chain()` 报警的测试通过 | P0-03 | 1d |
