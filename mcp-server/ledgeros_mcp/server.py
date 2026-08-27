@@ -1,0 +1,389 @@
+"""LedgerOS MCP Server — 七工具（ADR-003 契约）。
+
+启动: python mcp-server/server.py        （stdio transport）
+库引用: build_server(db_url) -> FastMCP  （测试 / 嵌入 WorkBuddy 用）
+
+要点：
+- 每次工具调用独立 Session（成功 commit / 异常 rollback）
+- 金额入参出参一律 decimal-string；错误统一 {ok:false, error:{code,message_zh,details}}
+- 写操作强制 actor 身份（ADR-005 审计前置）；禁止自审（ADR-004）
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from contextlib import contextmanager
+from datetime import date
+from decimal import Decimal, InvalidOperation
+
+from fastmcp import FastMCP
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from kernel.db.models import (  # noqa: E402
+    Account,
+    Balance,
+    Period,
+    Voucher,
+    VoucherLine,
+)
+from kernel.posting import (  # noqa: E402
+    PostingError,
+    PostingLine,
+)
+from kernel.posting import (  # noqa: E402
+    post_voucher as _post_voucher,
+)
+from kernel.posting import (  # noqa: E402
+    validate_voucher as _validate_voucher,
+)
+from kernel.state import transition  # noqa: E402
+
+
+def _ok(**data):
+    return {"ok": True, **data}
+
+
+def _err(code: str, message_zh: str, details: dict | None = None):
+    return {
+        "ok": False,
+        "error": {"code": code, "message_zh": message_zh, "details": details or {}},
+    }
+
+
+def _amount(value, field: str) -> Decimal:
+    try:
+        d = Decimal(str(value if value not in (None, "") else "0"))
+    except InvalidOperation:
+        raise PostingError(
+            "AMOUNT_INVALID", f"{field} 不是合法金额: {value!r}"
+        ) from None
+    if -d != abs(d) and d < 0:  # 显式负数由内核规则统一拒绝，这里仅容错
+        pass
+    return d.quantize(Decimal("0.01"))
+
+
+def _fmt(d: Decimal | None) -> str:
+    return f"{(d or Decimal('0')):.2f}"
+
+
+class _Repo:
+    """按 URL 的 Session 工厂 + 惰性建表（首次连接自动 create_all）。"""
+
+    def __init__(self, url: str):
+        from kernel.db.base import Base
+
+        self.engine = create_engine(url)
+        Base.metadata.create_all(self.engine)
+
+    @contextmanager
+    def session(self):
+        s = Session(self.engine)
+        try:
+            yield s
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+
+def build_server(db_url: str | None = None) -> FastMCP:
+    url = db_url or os.environ.get(
+        "LEDGEROS_DB", f"sqlite:///{os.path.join(_REPO_ROOT, 'ledgeros_dev.db')}"
+    )
+    repo = _Repo(url)
+
+    def guarded(voucher_id: str, actor_id: str, target: str) -> dict:
+        try:
+            with repo.session() as s:
+                v = transition(
+                    s,
+                    voucher_id=voucher_id,
+                    actor={"type": "user", "id": actor_id},
+                    target=target,
+                )
+                s.flush()
+                return _ok(voucher=_brief(v))
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    mcp = FastMCP(
+        "LedgerOS",
+        instructions=(
+            "LedgerOS 智能体 ERP 内核。记账顺序：create_voucher → push_voucher → "
+            "approve_voucher（须非制单人审批）→ post_voucher。金额一律字符串十进制。"
+        ),
+    )
+
+    # ---------- 只读 ----------
+
+    @mcp.tool()
+    def list_accounts(ledger_set_id: str, keyword: str = "") -> dict:
+        """列出账套科目（编码/名称/方向/类别/是否叶子/辅助维度定义）。keyword 过滤编码或名称。"""
+        with repo.session() as s:
+            q = select(Account).where(Account.ledger_set_id == ledger_set_id)
+            rows = s.scalars(q.order_by(Account.code)).all()
+            if keyword:
+                rows = [a for a in rows if keyword in a.code or keyword in a.name]
+            return _ok(
+                accounts=[
+                    {
+                        "code": a.code,
+                        "name": a.name,
+                        "direction": a.direction,
+                        "category": a.category,
+                        "is_leaf": a.is_leaf,
+                        "aux_dim_defs": a.aux_dim_defs or [],
+                    }
+                    for a in rows
+                ]
+            )
+
+    @mcp.tool()
+    def get_voucher(voucher_id: str) -> dict:
+        """按 id 取凭证全量（状态机当前态 + 分录明细）。"""
+        with repo.session() as s:
+            v = s.get(Voucher, voucher_id)
+            if v is None:
+                return _err("VOUCHER_NOT_FOUND", f"凭证 {voucher_id} 不存在")
+            line_ids = [ln.account_id for ln in v.lines]
+            codes = {
+                a.id: a
+                for a in s.scalars(select(Account).where(Account.id.in_(line_ids)))
+            }
+            lines = [
+                {
+                    "line_no": ln.line_no,
+                    "account_code": codes[ln.account_id].code,
+                    "account_name": codes[ln.account_id].name,
+                    "debit": _fmt(ln.debit),
+                    "credit": _fmt(ln.credit),
+                    "aux_dims": ln.aux_dims or {},
+                }
+                for ln in v.lines
+            ]
+            return _ok(
+                voucher={
+                    "id": v.id,
+                    "voucher_no": v.voucher_no,
+                    "voucher_date": v.voucher_date.isoformat(),
+                    "status": v.status,
+                    "summary": v.summary or "",
+                    "lines": lines,
+                }
+            )
+
+    @mcp.tool()
+    def query_balances(
+        ledger_set_id: str, period_year: int, period_month: int, account_prefix: str = ""
+    ) -> dict:
+        """查期间发生额投影（过账后可见）。account_prefix 过滤科目编码前缀。"""
+        with repo.session() as s:
+            per = s.scalars(
+                select(Period).where(
+                    Period.ledger_set_id == ledger_set_id,
+                    Period.year == period_year,
+                    Period.month == period_month,
+                )
+            ).first()
+            if per is None:
+                return _err(
+                    "PERIOD_NOT_FOUND", f"{period_year}-{period_month:02d} 期间不存在"
+                )
+            balances = []
+            for b in s.scalars(select(Balance).where(Balance.period_id == per.id)):
+                acc = s.get(Account, b.account_id)
+                code = acc.code if acc else "?"
+                if account_prefix and not code.startswith(account_prefix):
+                    continue
+                balances.append(
+                    {
+                        "account_code": code,
+                        "account_name": acc.name if acc else "?",
+                        "dims_key": b.dims_key,
+                        "debit_total": _fmt(b.debit_total),
+                        "credit_total": _fmt(b.credit_total),
+                    }
+                )
+            balances.sort(key=lambda r: r["account_code"])
+            return _ok(period={"year": period_year, "month": period_month}, balances=balances)
+
+    # ---------- 写入链路 ----------
+
+    @mcp.tool()
+    def create_voucher(
+        ledger_set_id: str,
+        voucher_date: str,
+        actor_id: str,
+        summary: str = "",
+        idempotency_key: str | None = None,
+        lines: list[dict] | None = None,
+    ) -> dict:
+        """创建草稿凭证并即时硬校验。
+
+        lines 形如 [{"account_code":"6602","debit":"800","credit":""}]，金额字符串。
+        不平衡/金额非法/科目不存在将直接拒绝（VOUCHER_UNBALANCED 等）。
+        """
+        actor = {"type": "user", "id": actor_id}
+        try:
+            with repo.session() as s:
+                try:
+                    d = date.fromisoformat(voucher_date)
+                except ValueError:
+                    return _err("DATE_INVALID", f"日期格式应为 YYYY-MM-DD: {voucher_date!r}")
+
+                period = s.scalars(
+                    select(Period).where(
+                        Period.ledger_set_id == ledger_set_id,
+                        Period.year == d.year,
+                        Period.month == d.month,
+                    )
+                ).first()
+                accounts = {
+                    a.code: a
+                    for a in s.scalars(
+                        select(Account).where(Account.ledger_set_id == ledger_set_id)
+                    ).all()
+                }
+
+                posting_lines: list[PostingLine] = []
+                orm_lines: list[VoucherLine] = []
+                for i, ln in enumerate(lines or [], start=1):
+                    code = (ln.get("account_code") or "").strip()
+                    acc = accounts.get(code)
+                    if acc is None:
+                        return _err("ACCOUNT_NOT_FOUND", f"第 {i} 行科目不存在: {code!r}")
+                    dr = _amount(ln.get("debit"), f"第{i}行借方")
+                    cr = _amount(ln.get("credit"), f"第{i}行贷方")
+                    dims = ln.get("aux_dims") or {}
+                    posting_lines.append(PostingLine(acc.id, dr, cr, dims))
+                    orm_lines.append(
+                        VoucherLine(
+                            line_no=i,
+                            account_id=acc.id,
+                            debit=dr,
+                            credit=cr,
+                            aux_dims=dims or None,
+                        )
+                    )
+
+                _validate_voucher(
+                    lines=posting_lines,
+                    accounts_by_id={a.id: a for a in accounts.values()},
+                    period_status=period.status if period else "MISSING",
+                    period_year=d.year,
+                    period_month=d.month,
+                    voucher_date=d,
+                )
+                if period is None:
+                    return _err(
+                        "PERIOD_NOT_FOUND", f"{d.year}-{d.month:02d} 期间不存在，请先初始化"
+                    )
+
+                seq = (
+                    len(
+                        s.scalars(
+                            select(Voucher.id).where(
+                                Voucher.ledger_set_id == ledger_set_id
+                            )
+                        ).all()
+                    )
+                    + 1
+                )
+                v = Voucher(
+                    ledger_set_id=ledger_set_id,
+                    period_id=period.id,
+                    voucher_no=f"记-{seq:04d}",
+                    voucher_date=d,
+                    status="DRAFT",
+                    summary=summary,
+                    created_by=actor_id,
+                    idempotency_key=idempotency_key,
+                    lines=orm_lines,
+                )
+                s.add(v)
+                try:
+                    s.flush()
+                except IntegrityError:
+                    s.rollback()
+                    prior = s.scalars(
+                        select(Voucher).where(Voucher.idempotency_key == idempotency_key)
+                    ).first()
+                    return _ok(voucher=_brief(prior), replayed=True)
+
+                from kernel.ledger import append_event
+
+                append_event(
+                    s,
+                    ledger_set_id=v.ledger_set_id,
+                    event_type="voucher.created",
+                    aggregate_id=v.id,
+                    payload=_snapshot(s, v),
+                    actor=actor,
+                )
+                s.flush()
+                return _ok(voucher=_brief(v))
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def push_voucher(voucher_id: str, actor_id: str) -> dict:
+        """提交待审：DRAFT → PUSHED。"""
+        return guarded(voucher_id, actor_id, "PUSHED")
+
+    @mcp.tool()
+    def approve_voucher(voucher_id: str, actor_id: str) -> dict:
+        """审批通过：PUSHED → APPROVED。制单人与审批人不能相同（NO_SELF_APPROVAL）。"""
+        return guarded(voucher_id, actor_id, "APPROVED")
+
+    @mcp.tool()
+    def post_voucher(voucher_id: str, actor_id: str) -> dict:
+        """记账：APPROVED → POSTED。写 voucher.posted 事件并累计余额投影。"""
+        try:
+            with repo.session() as s:
+                _post_voucher(s, voucher_id=voucher_id, actor={"type": "user", "id": actor_id})
+                s.flush()
+                v = s.get(Voucher, voucher_id)
+                return _ok(voucher=_brief(v))
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    # ---------- 助手 ----------
+
+    def _brief(v: Voucher) -> dict:
+        return {"id": v.id, "voucher_no": v.voucher_no, "status": v.status}
+
+    def _snapshot(s: Session, v: Voucher) -> dict:
+        ids = [ln.account_id for ln in v.lines]
+        cmap = {
+            a.id: a.code
+            for a in s.scalars(select(Account).where(Account.id.in_(ids)))
+        }
+        return {
+            "voucher_no": v.voucher_no,
+            "voucher_date": v.voucher_date.isoformat(),
+            "summary": v.summary or "",
+            "lines": [
+                {
+                    "account_code": cmap.get(ln.account_id, "?"),
+                    "debit": _fmt(ln.debit),
+                    "credit": _fmt(ln.credit),
+                    "aux_dims": ln.aux_dims or {},
+                }
+                for ln in v.lines
+            ],
+        }
+
+    return mcp
+
+
+if __name__ == "__main__":
+    build_server().run()  # stdio transport；WorkBuddy/Claude 以此接入

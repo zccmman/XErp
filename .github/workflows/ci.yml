@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dev deps
-        run: pip install ruff pytest
+        run: pip install ruff pytest pytest-cov sqlalchemy alembic fastmcp
       - name: Lint
         run: ruff check .
       - name: Test
