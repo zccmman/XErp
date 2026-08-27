@@ -1,8 +1,8 @@
 """Ontology Schema v0 — 依 ADR-001/002/004/005。
 
-表：subjects / ledger_sets / accounts / periods / parties / vouchers / voucher_lines
+表：events / subjects / ledger_sets / accounts / periods / parties / vouchers / voucher_lines
 契约：金额 Numeric(18,2)（SQLite 测试回退为近似值，PG 为精确 Decimal）；
-     维度类字段 JSONVariant（PG=JSONB）；无 updated_at——历史由事件账本承载（ADR-002）。
+     维度类字段 JSONVariant（PG=JSONB）；业务表无 updated_at——历史由事件账本承载（ADR-002）。
 """
 
 import decimal
@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from kernel.db.base import Base, JSONVariant
@@ -31,6 +32,31 @@ def new_id() -> str:
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class Event(Base):
+    """事件账本（ADR-002）：唯一事实源，append-only，账套内 sha256 成链。
+
+    hash = sha256(prev_hash + canonical_json(ledger_set_id, event_type,
+                                          aggregate_id, payload, actor, occurred_at))
+    首条事件 prev_hash = GENESIS（64 个 0）。本表禁止 UPDATE/DELETE（触发器强制）。
+    """
+
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(
+        Integer().with_variant(postgresql.BIGINT(), "postgresql"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    ledger_set_id: Mapped[str] = mapped_column(String(32), index=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    aggregate_id: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSONVariant)
+    actor: Mapped[dict] = mapped_column(JSONVariant)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    prev_hash: Mapped[str] = mapped_column(String(64))
+    hash: Mapped[str] = mapped_column(String(64))
 
 
 class Subject(Base):
