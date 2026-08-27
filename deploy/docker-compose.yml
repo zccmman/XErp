@@ -5,6 +5,21 @@ services:
       POSTGRES_USER: ledgeros
       POSTGRES_PASSWORD: ledgeros
       POSTGRES_DB: ledgeros
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    environment:
+      LEDGEROS_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
+    ports:
+      - "8001:8001"
+    command: ["python", "-m", "kernel.webapp"]
+
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
