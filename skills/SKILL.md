@@ -27,6 +27,22 @@ description: >
 - 区分两个身份主体：**制单人**（通常是发起对话的用户）与 **审批人**
 - 确认目标月份在 `open_periods` 中（否则提示期间不存在/已结账）
 
+## 建账向导（用户想用新账套/新公司记账时）
+
+两步工具调用即可从零到可记账（对话中先确认再执行）：
+
+1. **确认账套名与所有者** → `init_ledger_set(name, owner_name)`
+   - 自动：导入小企业会计准则 144 科目 + 创建当月 OPEN 期间 + 注册所有者身份
+   - 同名账套已存在会返回 replayed=true，此时直接改用返回的既有 id
+2. **收集期初余额** → 逐项向用户确认（科目候选 + 金额），
+   借方余额科目填 debit，贷方余额科目（如实收资本/借款）填 credit
+   → `import_opening_balances(ledger_set_id, actor_id, lines)`
+   - 试算不平衡会被硬拒（TRIAL_BALANCE_UNBALANCED）：把差额信息报给用户，
+   引导其补一行「差额放入科目」直到平衡
+3. 完成后调 `query_balances` 向用户复述期初表，然后即可按「核心流程」日常记账
+
+跨月记账前先 `ensure_period(ledger_set_id, year, month)`。
+
 ## 核心流程：记一笔费用（示例：「报销招待费 800 元现金」）
 
 1. **选科目**：调 `list_accounts`（可带 keyword）。业务招待费=`6602`（管理费用），

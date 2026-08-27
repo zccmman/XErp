@@ -34,6 +34,7 @@ from kernel.db.models import (  # noqa: E402
     Account,
     Balance,
     Period,
+    Subject,
     Voucher,
     VoucherLine,
 )
@@ -419,7 +420,127 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except PostingError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    # ---------- Drill 建账向导（P0-10） ----------
+
+    @mcp.tool()
+    def init_ledger_set(
+        name: str, owner_name: str, accounting_standard: str = "small_business"
+    ) -> dict:
+        """【建账向导 第 1 步】创建新账套：导入准则科目模板 + 建当月 OPEN 期间 + 注册所有者身份。
+
+        幂等：同名列账套已存在则直接返回（replayed=true）。
+        返回 ledger_set_id / owner_subject_id，后续调用都用它们。
+        """
+        from kernel.coa import import_chart_of_accounts, load_template_rows
+        from kernel.db.models import LedgerSet
+
+        with repo.session() as s:
+            existing = s.scalars(
+                select(LedgerSet).where(LedgerSet.name == name)
+            ).first()
+            if existing is not None:
+                owner = s.scalars(
+                    select(Subject).where(Subject.display_name == owner_name)
+                ).first()
+                return _ok(
+                    ledger_set_id=existing.id,
+                    owner_subject_id=owner.id if owner else "",
+                    accounts_created=0,
+                    replayed=True,
+                    open_period=_open_period_brief(s, existing.id),
+                )
+            ls = LedgerSet(name=name, accounting_standard=accounting_standard)
+            s.add(ls)
+            s.flush()
+            stats = import_chart_of_accounts(s, ls.id, load_template_rows())
+            today = date.today()
+            period = s.scalars(
+                select(Period).where(
+                    Period.ledger_set_id == ls.id,
+                    Period.year == today.year,
+                    Period.month == today.month,
+                )
+            ).first()
+            if period is None:
+                period = Period(
+                    ledger_set_id=ls.id,
+                    year=today.year,
+                    month=today.month,
+                    status="OPEN",
+                )
+                s.add(period)
+            owner = Subject(type="user", display_name=owner_name, autonomy_level=3)
+            s.add(owner)
+            s.flush()
+            s.commit()
+            return _ok(
+                ledger_set_id=ls.id,
+                owner_subject_id=owner.id,
+                accounts_created=stats["created"],
+                open_period={"year": period.year, "month": period.month},
+            )
+
+    @mcp.tool()
+    def ensure_period(ledger_set_id: str, year: int, month: int) -> dict:
+        """确保某期间存在且为 OPEN（跨月记账前置）。已存在则原样返回。"""
+        with repo.session() as s:
+            period = s.scalars(
+                select(Period).where(
+                    Period.ledger_set_id == ledger_set_id,
+                    Period.year == year,
+                    Period.month == month,
+                )
+            ).first()
+            if period is None:
+                period = Period(ledger_set_id=ledger_set_id, year=year, month=month, status="OPEN")
+                s.add(period)
+                s.commit()
+            return _ok(period={"year": period.year, "month": period.month, "status": period.status})
+
+    @mcp.tool()
+    def import_opening_balances(
+        ledger_set_id: str,
+        actor_id: str,
+        lines: list[dict],
+        period_year: int | None = None,
+        period_month: int | None = None,
+    ) -> dict:
+        """【建账向导 第 2 步】导入期初余额（试算平衡自动校验）。
+
+        lines: [{"account_code":"1002","debit":"200000","credit":""}, …]；
+        借贷合计必须相等，否则整体拒绝（TRIAL_BALANCE_UNBALANCED）。
+        成功生成「期初-NNNN」凭证（直接 POSTED）并更新余额投影。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.opening import import_opening_balances as _import
+
+                v = _import(
+                    s,
+                    ledger_set_id=ledger_set_id,
+                    actor={"type": "user", "id": actor_id},
+                    lines=lines,
+                    period_year=period_year,
+                    period_month=period_month,
+                )
+                s.flush()
+                return _ok(voucher=_brief(v))
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- 助手 ----------
+
+    def _open_period_brief(s: Session, ledger_set_id: str) -> dict:
+        period = s.scalars(
+            select(Period).where(
+                Period.ledger_set_id == ledger_set_id, Period.status == "OPEN"
+            )
+        ).first()
+        return (
+            {"year": period.year, "month": period.month}
+            if period
+            else {}
+        )
 
     def _brief(v: Voucher) -> dict:
         return {"id": v.id, "voucher_no": v.voucher_no, "status": v.status}
