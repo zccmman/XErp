@@ -30,9 +30,8 @@ def test_card_structure():
         voucher_id="v-123",
     )
     assert card["header"]["title"]["content"].startswith("LedgerOS 审批请求 · 记-0001")
-    actions = card["elements"][-1]["actions"]
-    assert [a["value"]["action"] for a in actions] == ["approve", "reject"]
-    assert all(a["value"]["voucher_id"] == "v-123" for a in actions)
+    guide = card["elements"][-1]["text"]["content"]
+    assert "回复" in guide and "同意 记-0001" in guide and "驳回 记-0001" in guide
     body = card["elements"][3]["text"]["content"]
     assert "660204" in body and "800.00" in body and "1001" in body
 

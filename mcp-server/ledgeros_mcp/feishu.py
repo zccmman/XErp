@@ -98,21 +98,12 @@ def build_approval_card(*, voucher_no: str, status: str, summary: str,
             {"tag": "div", "text": {"tag": "lark_md", "content": entries}},
             {"tag": "hr"},
             {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "批准"},
-                        "type": "primary",
-                        "value": {"action": "approve", "voucher_id": voucher_id},
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "驳回"},
-                        "type": "danger",
-                        "value": {"action": "reject", "voucher_id": voucher_id},
-                    },
-                ],
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "**审批方式** 回复本条消息所在会话：`同意 "
+                    + voucher_no + "` 或 `驳回 " + voucher_no + " 意见`",
+                },
             },
         ],
     }
