@@ -15,7 +15,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from kernel.db.base import Base
-from kernel.db.models import Event
 from kernel.ledger import append_event
 
 REPO = Path(__file__).resolve().parents[1]

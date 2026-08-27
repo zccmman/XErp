@@ -62,8 +62,8 @@ def cmd_export(session, args) -> int:
 
 
 def cmd_verify(session, args) -> int:
-    from kernel.ledger import verify_chain
     from kernel.db.models import Event
+    from kernel.ledger import verify_chain
 
     count = len(
         session.scalars(
