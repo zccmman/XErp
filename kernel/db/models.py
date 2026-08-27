@@ -101,6 +101,11 @@ class Account(Base):
     aux_dim_defs: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    parent: Mapped["Account | None"] = relationship(
+        remote_side="Account.id", back_populates="children"
+    )
+    children: Mapped[list["Account"]] = relationship(back_populates="parent")
+
 
 class Period(Base):
     """会计期间：OPEN | CLOSING | CLOSED（ADR-004 cancel_post 窗口依据）。"""
