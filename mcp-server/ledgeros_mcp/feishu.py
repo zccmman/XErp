@@ -47,12 +47,16 @@ def get_tenant_access_token(force: bool = False) -> str:
         raise FeishuError("缺少飞书凭据：请在仓库根 .env 配置 FEISHU_APP_ID / FEISHU_APP_SECRET")
     body = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode()
     req = urllib.request.Request(
-        _TOKEN_URL, data=body, headers={"Content-Type": "application/json"}
+        _TOKEN_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read())
     if data.get("code") != 0:
-        raise FeishuError(f"获取 tenant_access_token 失败: {data.get('msg')} (code={data.get('code')})")
+        raise FeishuError(
+            f"获取 tenant_access_token 失败: {data.get('msg')} (code={data.get('code')})"
+        )
     _cache["token"] = data["tenant_access_token"]
     _cache["expire_at"] = time.time() + int(data.get("expire", 7200)) - 300
     return _cache["token"]
@@ -76,11 +80,20 @@ def build_approval_card(*, voucher_no: str, status: str, summary: str,
             {
                 "tag": "div",
                 "fields": [
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**凭证号**\n{voucher_no}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**状态**\n{status}"}},
+                    {
+                        "is_short": True,
+                        "text": {"tag": "lark_md", "content": f"**凭证号**\n{voucher_no}"},
+                    },
+                    {
+                        "is_short": True,
+                        "text": {"tag": "lark_md", "content": f"**状态**\n{status}"},
+                    },
                 ],
             },
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**摘要** {summary or '（无）'}"}},
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**摘要** {summary or '（无）'}"},
+            },
             {"tag": "hr"},
             {"tag": "div", "text": {"tag": "lark_md", "content": entries}},
             {"tag": "hr"},
@@ -112,13 +125,9 @@ def send_card(*, receive_id_type: str, receive_id: str, card: dict) -> dict:
         {"receive_id": receive_id, "msg_type": "interactive",
          "content": json.dumps(card, ensure_ascii=False)}
     ).encode()
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     req = urllib.request.Request(
-        f"{_MSG_URL}?receive_id_type={receive_id_type}",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-        },
+        f"{_MSG_URL}?receive_id_type={receive_id_type}", data=body, headers=headers
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read())

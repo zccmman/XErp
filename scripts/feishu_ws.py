@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "mcp-server"))
 
 import lark_oapi as lark  # noqa: E402
+from lark_oapi.api.im.v1 import P2ImMessageReceiveV1  # noqa: E402
 from ledgeros_mcp.feishu import get_tenant_access_token, load_env  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
@@ -129,7 +130,11 @@ def _on_message(data: P2ImMessageReceiveV1) -> None:
         text = (json.loads(msg.content).get("text") or "").strip()
         if text == "绑定":
             _save_env_key("FEISHU_RECEIVE_OPEN_ID", open_id)
-            _reply(open_id, msg.message_id, "已绑定当前飞书账号为审批接收人 ✅（open_id 已写入 .env）")
+            _reply(
+                open_id,
+                msg.message_id,
+                "已绑定当前飞书账号为审批接收人 ✅（open_id 已写入 .env）",
+            )
         else:
             _reply(open_id, msg.message_id, "我是 LedgerOS 审批机器人，发送「绑定」完成关联。")
     except Exception as e:  # noqa: BLE001

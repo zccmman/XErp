@@ -421,7 +421,11 @@ def build_server(db_url: str | None = None) -> FastMCP:
             return _err(e.code, e.message_zh, e.details)
 
     @mcp.tool()
-    def feishu_send_approval(voucher_id: str, receive_id: str, receive_id_type: str = "open_id") -> dict:
+    def feishu_send_approval(
+        voucher_id: str,
+        receive_id: str,
+        receive_id_type: str = "open_id",
+    ) -> dict:
         """把待审凭证推送为飞书审批卡片（PUSHED 状态凭证）。
 
         receive_id_type: open_id | chat_id 等；接收人由 scripts/feishu_ws.py 绑定流程获得。
@@ -435,7 +439,10 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 if v is None:
                     return _err("VOUCHER_NOT_FOUND", f"凭证 {voucher_id} 不存在")
                 if v.status != "PUSHED":
-                    return _err("INVALID_TRANSITION", f"仅待审（PUSHED）凭证可推送审批卡片，当前 {v.status}")
+                    return _err(
+                        "INVALID_TRANSITION",
+                        f"仅待审（PUSHED）凭证可推送审批卡片，当前 {v.status}",
+                    )
                 line_ids = [ln.account_id for ln in v.lines]
                 cmap = {a.id: a for a in s.scalars(select(Account).where(Account.id.in_(line_ids)))}
                 card = build_approval_card(

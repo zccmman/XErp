@@ -14,8 +14,18 @@ def test_card_structure():
         status="PUSHED",
         summary="报销招待费",
         lines=[
-            {"account_code": "660204", "account_name": "业务招待费", "debit": "800.00", "credit": "0.00"},
-            {"account_code": "1001", "account_name": "库存现金", "debit": "0.00", "credit": "800.00"},
+            {
+                "account_code": "660204",
+                "account_name": "业务招待费",
+                "debit": "800.00",
+                "credit": "0.00",
+            },
+            {
+                "account_code": "1001",
+                "account_name": "库存现金",
+                "debit": "0.00",
+                "credit": "800.00",
+            },
         ],
         voucher_id="v-123",
     )
