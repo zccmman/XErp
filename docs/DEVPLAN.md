@@ -40,7 +40,7 @@ ledgeros/
 | P0-01 | ✅ 仓库初始化（a96fcb1+067bf77，实际 0.4d） | monorepo 骨架 + ruff/pytest/GitHub Actions CI + README | CI 在空测试上跑通；目录结构与本计划一致 | - | 0.5d |
 | P0-02 | ✅ 五份 ADR 决策记录（实际 0.4d） | ADR-001 内核选型(Python/PG) · 002 事件账本与 hash 链格式 · 003 MCP 工具命名规范 · 004 HITL 状态机 · 005 权限模型 | 每份含背景/决策/后果；评审通过 | P0-01 | 1d |
 | P0-03 | ✅ Ontology Schema v0（SQLite TDD 绿；PG 验证待 Docker/TEST_DATABASE_URL） | alembic 迁移：`accounts` / `vouchers` / `voucher_lines` / `periods` / `parties` / `ledger_sets`(账套) | 种子脚本建演示账套成功；字段含辅助核算维度(JSONB) | P0-02 | 1d |
-| P0-04 | Event Ledger | `events` 表 append-only（禁止 UPDATE/DELETE 触发器）+ sha256 prev_hash 链 + 事件类型枚举 | 写入→篡改一条→`verify_chain()` 报警的测试通过 | P0-03 | 1d |
+| P0-04 | ✅ Event Ledger（实际 0.5d；12 tests 全绿，PG 触发器迁移 0002 就绪待 PG 验证） | `events` 表 append-only（禁止 UPDATE/DELETE 触发器）+ sha256 prev_hash 链 + 事件类型枚举 | 写入→篡改一条→`verify_chain()` 报警的测试通过 | P0-03 | 1d |
 | P0-05 | 记账内核纯函数 | `validate_voucher`（借贷平衡/科目存在/期间开放/方向合法/金额>0）+ `post_voucher`（写事件+余额投影） | 核心规则单测 100% 分支覆盖；借贷不平衡被硬拒的用例通过 | P0-04 | 1.5d |
 
 ### 第 2 周：纵切面（无 UI）— Gate G2「WorkBuddy 里记账成功」

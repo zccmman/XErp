@@ -25,7 +25,7 @@
 
 2. **append-only 强制**：数据库触发器拒绝任何 UPDATE/DELETE（含表属主），P0-04 实现并有测试证明「篡改一条→verify_chain 失败」。
 3. **余额是投影不是事实**：`balances` 物化表可随时由事件流全量重建；报表（P1-01）同样建在投影上。
-4. **canonical_json 规范**：键排序（sort_keys）、无空白、UTF-8、金额 `str(Decimal)`——这是跨语言可验证的前提，在 `kernel/ledger/hash.py` 唯一实现。
+4. **canonical_json 规范**：键排序（sort_keys）、无空白、UTF-8、金额 `str(Decimal)`、`occurred_at` 统一转 UTC 后去 tzinfo 取 isoformat（SQLite 往返会剥 tzinfo、PG 返回 aware——naive-UTC 是唯一跨库确定表示，P0-04 实测确立）——在 `kernel/ledger/canonical.py` 唯一实现。
 
 ## 后果
 

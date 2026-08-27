@@ -40,7 +40,7 @@ def session():
 def _seed_three(session):
     for i in (1, 2, 3):
         append_event(session, **_evt(i))
-    session.flush()
+    session.commit()  # 跨连接用例（篡改/删除）必须真正落盘
 
 
 def test_append_links_and_verifies(session):
