@@ -82,8 +82,12 @@ def cmd_verify(session, args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="kernel.audit", description="LedgerOS 审计回放 CLI")
-    parser.add_argument("--db", default=None, help="SQLAlchemy URL；缺省读 LEDGEROS_DB / 仓库演示库")
+    parser = argparse.ArgumentParser(
+        prog="kernel.audit", description="LedgerOS 审计回放 CLI"
+    )
+    parser.add_argument(
+        "--db", default=None, help="SQLAlchemy URL；缺省读 LEDGEROS_DB / 仓库演示库"
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_exp = sub.add_parser("export", help="按账套导出事件流 JSONL")
