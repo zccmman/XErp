@@ -14,10 +14,17 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Balance, Event, Period, Voucher, VoucherLine
-from kernel.posting import PostingError, PostingLine, post_voucher, validate_voucher
+from kernel.posting import (
+    PostingError,
+    PostingLine,
+    post_voucher,
+    validate_voucher,
+)
 from kernel.seed import seed_demo_ledger
+from kernel.state import transition
 
 ACTOR = {"type": "user", "id": "u1", "display_name": "丞辰"}
 ZERO = Decimal("0.00")
@@ -223,7 +230,7 @@ def test_post_happy_path_posts_event_and_balances(session, ids):
     evt = post_voucher(session, voucher_id=v.id, actor=ACTOR)
 
     assert evt.event_type == "voucher.posted"
-    assert evt.aggregate_id == "记-0001"
+    assert evt.aggregate_id == v.id
     assert evt.actor == ACTOR
     assert evt.payload["voucher_no"] == "记-0001"
     assert len(evt.payload["lines"]) == 3
@@ -287,3 +294,40 @@ def test_post_period_not_open_blocked(session, ids):
         post_voucher(session, voucher_id=v.id, actor=ACTOR)
     assert ei.value.code == "PERIOD_NOT_OPEN"
     assert v.status != "POSTED"
+
+
+def test_posted_event_aggregate_matches_voucher():
+    """回归：voucher.posted 的 aggregate_id 必须是凭证 id（可按凭证回放轨迹）。"""
+    from kernel.db.models import Event
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = Session(engine)
+    ids = seed_demo_ledger(s)
+    import_chart_of_accounts(s, ids["ledger_set_id"], load_template_rows())
+    s.commit()
+    v = Voucher(
+        ledger_set_id=ids["ledger_set_id"], period_id=ids["period_id"],
+        voucher_no="记-9001", voucher_date=date(2026, 8, 28), status="DRAFT",
+        summary="agg 回归", created_by=ids["subject_id"],
+    )
+    v.lines = [
+        VoucherLine(line_no=1, account_id=ids["expense_account_id"],
+                    debit=Decimal("5.00"), credit=Decimal("0.00")),
+        VoucherLine(line_no=2, account_id=ids["cash_account_id"],
+                    debit=Decimal("0.00"), credit=Decimal("5.00")),
+    ]
+    s.add(v); s.flush()
+    transition(s, voucher_id=v.id, actor={"type": "agent", "id": "a"}, target="PUSHED")
+    from kernel.db.models import Subject
+
+    reviewer = Subject(type="user", display_name="回归审批人", autonomy_level=3)
+    s.add(reviewer); s.flush()
+    transition(s, voucher_id=v.id, actor={"type": "user", "id": reviewer.id}, target="APPROVED")
+    post_voucher(s, voucher_id=v.id, actor={"type": "user", "id": ids["subject_id"]})
+    s.commit()
+    posted = s.scalars(
+        select(Event).where(Event.event_type == "voucher.posted")
+    ).all()
+    assert [e.aggregate_id for e in posted] == [v.id]
+    s.close()

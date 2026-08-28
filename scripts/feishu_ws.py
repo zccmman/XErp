@@ -185,6 +185,16 @@ def _on_message(data: P2ImMessageReceiveV1) -> None:
         print(f"[feishu_ws] message 异常: {e}")
 
 
+def _on_bot_added(data) -> None:
+    """机器人被拉进群：记录群 id 并打招呼（群内审批入口）。"""
+    try:
+        chat_id = data.event.chat_id
+        _save_env_key("FEISHU_LAST_CHAT_ID", chat_id)
+        _reply(chat_id, None, "LedgerOS 已入群 ✅ 回复「帮助」查看审批指令")
+    except Exception as e:  # noqa: BLE001
+        print(f"[feishu_ws] bot_added 异常: {e}")
+
+
 def main() -> None:
     env = load_env()
     app_id = env.get("FEISHU_APP_ID")
@@ -198,6 +208,7 @@ def main() -> None:
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(_on_message)
+        .register_p2_im_chat_member_bot_added_v1(_on_bot_added)
         .build()
     )
     client = lark.ws.Client(

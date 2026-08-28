@@ -1,0 +1,2 @@
+[feishu_ws] 长连接已启动（回复式审批）：绑定 / 同意 凭证号 / 驳回 凭证号 意见
+[Lark] [2026-08-28 14:51:47,196] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7678971563916757967&access_key=396849ae56922bf459dc4494afae56f8&service_id=33554678&ticket=88037bf2-8512-4e94-8730-2367db4751a1 [conn_id=7678971563916757967]

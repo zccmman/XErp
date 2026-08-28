@@ -173,7 +173,7 @@ def post_voucher(session: Session, *, voucher_id: str, actor: dict) -> Event:
         session,
         ledger_set_id=voucher.ledger_set_id,
         event_type="voucher.posted",
-        aggregate_id=voucher.voucher_no,
+        aggregate_id=voucher.id,
         payload=payload,
         actor=actor,
     )
