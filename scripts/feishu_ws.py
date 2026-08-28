@@ -24,9 +24,9 @@ sys.path.insert(0, str(REPO / "mcp-server"))
 
 import lark_oapi as lark  # noqa: E402
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1  # noqa: E402
-from ledgeros_mcp.feishu import get_tenant_access_token, load_env  # noqa: E402
 from sqlalchemy import create_engine, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
+from xerp_mcp.feishu import get_tenant_access_token, load_env  # noqa: E402
 
 from kernel.db.base import Base  # noqa: E402
 from kernel.db.models import Voucher  # noqa: E402
@@ -45,7 +45,7 @@ def repo_session() -> Session:
     if _engine is None:
         import os
 
-        url = os.environ.get("LEDGEROS_DB") or f"sqlite:///{REPO / 'ledgeros_dev.db'}"
+        url = os.environ.get("XERP_DB") or f"sqlite:///{REPO / 'ledgeros_dev.db'}"
         _engine = create_engine(url)
         Base.metadata.create_all(_engine)
     return Session(_engine)
@@ -156,7 +156,7 @@ def handle_text(open_id: str, text: str, message_id: str | None) -> None:
             _reply(
                 open_id,
                 message_id,
-                "LedgerOS 审批指令：\n绑定 → 关联飞书账号\n"
+                "XErp 审批指令：\n绑定 → 关联飞书账号\n"
                 "同意 凭证号 → 批准\n驳回 凭证号 意见 → 驳回",
             )
             return
@@ -190,7 +190,7 @@ def _on_bot_added(data) -> None:
     try:
         chat_id = data.event.chat_id
         _save_env_key("FEISHU_LAST_CHAT_ID", chat_id)
-        _reply(chat_id, None, "LedgerOS 已入群 ✅ 回复「帮助」查看审批指令")
+        _reply(chat_id, None, "XErp 已入群 ✅ 回复「帮助」查看审批指令")
     except Exception as e:  # noqa: BLE001
         print(f"[feishu_ws] bot_added 异常: {e}")
 

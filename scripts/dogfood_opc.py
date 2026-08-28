@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "mcp-server"))
 
 from fastmcp import Client  # noqa: E402
-from ledgeros_mcp.server import build_server  # noqa: E402
+from xerp_mcp.server import build_server  # noqa: E402
 
 DB = f"sqlite:///{REPO / 'ledgeros_dev.db'}"
 

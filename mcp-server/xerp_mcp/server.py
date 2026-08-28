@@ -1,4 +1,4 @@
-"""LedgerOS MCP Server — 七工具（ADR-003 契约）。
+"""XErp MCP Server — 七工具（ADR-003 契约）。
 
 启动: python mcp-server/server.py        （stdio transport）
 库引用: build_server(db_url) -> FastMCP  （测试 / 嵌入 WorkBuddy 用）
@@ -22,7 +22,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-# 本文件位于 <repo>/mcp-server/ledgeros_mcp/server.py：向上三层才是仓库根
+# 本文件位于 <repo>/mcp-server/xerp_mcp/server.py：向上三层才是仓库根
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _MCP_DIR = os.path.dirname(_THIS_DIR)
 _REPO_ROOT = os.path.dirname(_MCP_DIR)
@@ -102,7 +102,7 @@ class _Repo:
 
 def build_server(db_url: str | None = None) -> FastMCP:
     url = db_url or os.environ.get(
-        "LEDGEROS_DB", f"sqlite:///{os.path.join(_REPO_ROOT, 'ledgeros_dev.db')}"
+        "XERP_DB", f"sqlite:///{os.path.join(_REPO_ROOT, 'ledgeros_dev.db')}"
     )
     repo = _Repo(url)
 
@@ -121,9 +121,9 @@ def build_server(db_url: str | None = None) -> FastMCP:
             return _err(e.code, e.message_zh, e.details)
 
     mcp = FastMCP(
-        "LedgerOS",
+        "XErp",
         instructions=(
-            "LedgerOS 智能体 ERP 内核。记账顺序：create_voucher → push_voucher → "
+            "XErp 智能体 ERP 内核。记账顺序：create_voucher → push_voucher → "
             "approve_voucher（须非制单人审批）→ post_voucher。金额一律字符串十进制。"
         ),
     )
@@ -433,7 +433,7 @@ def build_server(db_url: str | None = None) -> FastMCP:
         """
         try:
             with repo.session() as s:
-                from ledgeros_mcp.feishu import FeishuError, build_approval_card, send_card
+                from xerp_mcp.feishu import FeishuError, build_approval_card, send_card
 
                 v = s.get(Voucher, voucher_id)
                 if v is None:

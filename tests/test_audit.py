@@ -41,7 +41,7 @@ def db_url(tmp_path):
 
 
 def _run(db_url, *args):
-    env = {**os.environ, "LEDGEROS_DB": db_url}
+    env = {**os.environ, "XERP_DB": db_url}
     return subprocess.run(
         [sys.executable, "-m", "kernel.audit", *args],
         cwd=str(REPO),
@@ -90,7 +90,7 @@ def test_stdio_handshake_smoke():
     d = tempfile.mkdtemp()
     env = {
         **os.environ,
-        "LEDGEROS_DB": f"sqlite:///{d}/smoke.db",
+        "XERP_DB": f"sqlite:///{d}/smoke.db",
         "PYTHONIOENCODING": "utf-8",
     }
     init_req = json.dumps(
@@ -108,7 +108,7 @@ def test_stdio_handshake_smoke():
     r = subprocess.run(
         [
             sys.executable,
-            str(REPO / "mcp-server" / "ledgeros_mcp" / "server.py"),
+            str(REPO / "mcp-server" / "xerp_mcp" / "server.py"),
         ],
         input=init_req + "\n",
         capture_output=True,
@@ -117,6 +117,6 @@ def test_stdio_handshake_smoke():
         cwd=str(REPO),
         env=env,
     )
-    assert '"LedgerOS"' in r.stdout, (
+    assert '"XErp"' in r.stdout, (
         f"握手失败\nstdout={r.stdout[:400]}\nstderr={r.stderr[:800]}"
     )

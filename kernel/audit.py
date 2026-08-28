@@ -5,7 +5,7 @@
     python -m kernel.audit verify --ledger-set LS
 
 退出码协议：0=链完整；2=链异常；1=参数/环境错误。
-数据库来源：--db 或 LEDGEROS_DB 环境变量，默认仓库根 ledgeros_dev.db。
+数据库来源：--db 或 XERP_DB 环境变量，默认仓库根 ledgeros_dev.db。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _db_url(args) -> str:
-    return args.db or os.environ.get("LEDGEROS_DB") or f"sqlite:///{_REPO_ROOT / 'ledgeros_dev.db'}"
+    return args.db or os.environ.get("XERP_DB") or f"sqlite:///{_REPO_ROOT / 'ledgeros_dev.db'}"
 
 
 def cmd_export(session, args) -> int:
@@ -83,10 +83,10 @@ def cmd_verify(session, args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="kernel.audit", description="LedgerOS 审计回放 CLI"
+        prog="kernel.audit", description="XErp 审计回放 CLI"
     )
     parser.add_argument(
-        "--db", default=None, help="SQLAlchemy URL；缺省读 LEDGEROS_DB / 仓库演示库"
+        "--db", default=None, help="SQLAlchemy URL；缺省读 XERP_DB / 仓库演示库"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

@@ -1,4 +1,4 @@
-# LedgerOS 快速开始（Docker Compose · 目标：30 分钟内完成首张凭证）
+# XErp 快速开始（Docker Compose · 目标：30 分钟内完成首张凭证）
 
 ## 前置
 
@@ -48,4 +48,4 @@ docker compose exec db psql -U ledgeros -d ledgeros -c "select count(*) from eve
 |---|---|
 | `init` 退出非 0 | `docker compose logs init` 看迁移报错；常见为 db 未就绪（healthcheck 已缓解） |
 | WorkBuddy 连不上 8000 | 确认 `docker compose ps` 中 mcp 为 Up；端口被占用时改 compose 端口映射 |
-| 想换 PG 密码 | 同时改 db.environment 与两个服务的 LEDGEROS_DB |
+| 想换 PG 密码 | 同时改 db.environment 与两个服务的 XERP_DB |

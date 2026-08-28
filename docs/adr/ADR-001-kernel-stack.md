@@ -6,7 +6,7 @@
 
 ## 背景
 
-LedgerOS 内核需要承载：确定性记账引擎（强一致性约束）、事件账本（append-only）、MCP 能力层（Python SDK 最成熟）、单人+AI 结对的开发节奏（P0 目标 4 周出 PoC）。
+XErp 内核需要承载：确定性记账引擎（强一致性约束）、事件账本（append-only）、MCP 能力层（Python SDK 最成熟）、单人+AI 结对的开发节奏（P0 目标 4 周出 PoC）。
 
 ## 候选方案
 

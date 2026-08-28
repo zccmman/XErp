@@ -1,4 +1,4 @@
-# LedgerOS 开发计划（可落地版）
+# XErp 开发计划（可落地版）
 
 > 依据：`DESIGN.md` v0.1 · 2026-08-27
 > 原则：每个任务有唯一 ID、明确产出物、可验证的 DoD（完成的定义）、依赖关系与估时；AI 结对开发，任务粒度 = 一次可独立提交的 PR。
@@ -67,7 +67,7 @@ ledgeros/
 | P0-13 | ✅ Web 最小界面（实际 0.4d；4 页面 HTML 兜底，60 passed） | 凭证卡片列表 + 余额表（P0 用服务端渲染 HTML 兜底，P1 换 A2UI 正式渲染器） | 浏览器可见凭证与余额，与 MCP 查询结果一致 | P0-09 | 2d |
 | P0-14 | ✅ 审计回放 CLI（实际 0.4d；export JSONL+verify 退出码协议+stdio 冒烟入 CI，64 passed） | CLI：按账套导出事件流 JSONL + `verify_chain` 校验报告 | 导出→校验通过；手工篡改 DB 后校验失败 | P0-04 | 1d |
 | P0-15 | ✅ 真实 dogfood（实际 0.5d；OPC 一人公司建套+期初+10 笔业务全链路，独立重算对账零差异，41 事件链完整） | OPC 真实账套建套 + 录入 10 笔真实业务（收入/费用/往来） | 余额与手工 Excel 台账一致 | P0-12 | 1d |
-| P0-16 | v0.1 发布 | tag v0.1.0 + Release Notes + demo 视频(≤3min) + 公众号首篇构建日志 | G4 验收会通过 | 全部 | 0.5d |
+| P0-16 | ✅ v0.1 发布（代号 XErp；Release Notes + tag v0.1.0 + 推送私有仓） | tag v0.1.0 + Release Notes + demo 视频(≤3min) + 公众号首篇构建日志 | G4 验收会通过 | 全部 | 0.5d |
 
 **P0 合计 ≈ 18 人日**。缓冲 2 人日（20%），优先吸收飞书联调与 LLM 科目映射问题。
 
@@ -131,7 +131,7 @@ G1──────G2──────G3──────G4──────
 | D1 | LLM 供应 | DeepSeek API（本地 DSH 备用） | P0-07 联调依赖 |
 | D2 | 飞书自建应用 | 用 BDC 超管身份新建测试应用（勿动生产） | P0-11 |
 | D3 | 仓库托管 | GitHub 私有仓起步，G4 后转公开 | P0-01 |
-| D4 | 项目代号 | LedgerOS（备选 OpenLedger/TallyOS） | 全部命名 |
+| D4 | 项目代号 | XErp（备选 OpenLedger/TallyOS） | 全部命名 |
 
 ---
 

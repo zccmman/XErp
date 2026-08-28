@@ -39,7 +39,7 @@ def env():
 def clean_server(env):
     """指向独立空库的 server（模拟全新部署）。"""
     d = tempfile.mkdtemp()
-    from ledgeros_mcp.server import build_server
+    from xerp_mcp.server import build_server
 
     return build_server(f"sqlite:///{d}/fresh.db")
 

@@ -43,7 +43,7 @@ def env():
 
 @pytest.fixture()
 def server(env):
-    from ledgeros_mcp.server import build_server
+    from xerp_mcp.server import build_server
 
     return build_server(env["url"])
 

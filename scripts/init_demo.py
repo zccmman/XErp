@@ -2,7 +2,7 @@
 
 用法（managed venv）:
     python scripts/init_demo.py            # 默认 sqlite:///<repo>/ledgeros_dev.db
-    LEDGEROS_DB=sqlite:///... python scripts/init_demo.py
+    XERP_DB=sqlite:///... python scripts/init_demo.py
 产出: deploy/demo_state.json（供人工核对；运行时以 get_workspace 工具为准）
 """
 
@@ -26,7 +26,11 @@ from kernel.seed import seed_demo_ledger  # noqa: E402
 
 
 def main() -> None:
-    url = os.environ.get("LEDGEROS_DB", f"sqlite:///{REPO / 'ledgeros_dev.db'}")
+    url = (
+        os.environ.get("XERP_DB")
+        or os.environ.get("LEDGEROS_DB")
+        or f"sqlite:///{REPO / 'ledgeros_dev.db'}"
+    )
     engine = create_engine(url)
     Base.metadata.create_all(engine)
     with Session(engine) as s:

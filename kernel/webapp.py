@@ -1,6 +1,6 @@
-"""LedgerOS Web 最小界面（P0-13，HTML 服务端渲染兜底；正式 A2UI 在 P1）。
+"""XErp Web 最小界面（P0-13，HTML 服务端渲染兜底；正式 A2UI 在 P1）。
 
-运行: python -m kernel.webapp   （默认 http://127.0.0.1:8001，LEDGEROS_DB 可覆盖）
+运行: python -m kernel.webapp   （默认 http://127.0.0.1:8001，XERP_DB 可覆盖）
 页面: / 工作区 · /ledger/{id} 凭证+余额 · /voucher/{id} 凭证详情 · /init 建账向导
 """
 
@@ -41,8 +41,8 @@ button{padding:6px 18px;background:#185fa5;color:#fff;border:0;border-radius:6px
 def _page(title: str, body: str) -> HTMLResponse:
     return HTMLResponse(
         f"<!doctype html><html lang=zh><head><meta charset=utf-8>"
-        f"<title>{html.escape(title)} · LedgerOS</title>{_CSS}</head>"
-        f"<body><h1>LedgerOS <span class=badge>v0.1-dev</span></h1>{body}</body></html>"
+        f"<title>{html.escape(title)} · XErp</title>{_CSS}</head>"
+        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{body}</body></html>"
     )
 
 
@@ -51,13 +51,13 @@ def _fmt(d) -> str:
 
 
 def build_app(db_url: str | None = None) -> FastAPI:
-    url = db_url or os.environ.get("LEDGEROS_DB") or f"sqlite:///{_REPO_ROOT / 'ledgeros_dev.db'}"
+    url = db_url or os.environ.get("XERP_DB") or f"sqlite:///{_REPO_ROOT / 'ledgeros_dev.db'}"
     from sqlalchemy import create_engine
 
     engine = create_engine(url)
     Base.metadata.create_all(engine)
 
-    app = FastAPI(title="LedgerOS Web")
+    app = FastAPI(title="XErp Web")
 
     def session() -> Session:
         return Session(engine)
@@ -264,7 +264,7 @@ def main() -> None:
     import uvicorn
 
     uvicorn.run(
-        build_app(os.environ.get("LEDGEROS_DB")),
+        build_app(os.environ.get("XERP_DB")),
         host="127.0.0.1",
         port=int(os.environ.get("PORT", "8001")),
     )

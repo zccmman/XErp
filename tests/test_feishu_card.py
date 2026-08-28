@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "mcp-server"))
 
-from ledgeros_mcp.feishu import build_approval_card, load_env
+from xerp_mcp.feishu import build_approval_card, load_env
 
 
 def test_card_structure():
@@ -29,7 +29,7 @@ def test_card_structure():
         ],
         voucher_id="v-123",
     )
-    assert card["header"]["title"]["content"].startswith("LedgerOS 审批请求 · 记-0001")
+    assert card["header"]["title"]["content"].startswith("XErp 审批请求 · 记-0001")
     guide = card["elements"][-1]["text"]["content"]
     assert "回复" in guide and "同意 记-0001" in guide and "驳回 记-0001" in guide
     body = card["elements"][3]["text"]["content"]

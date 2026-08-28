@@ -1,4 +1,4 @@
-"""Alembic 环境：URL 优先取 LEDGEROS_DB 环境变量。"""
+"""Alembic 环境：URL 优先取 XERP_DB 环境变量。"""
 
 from logging.config import fileConfig
 
@@ -18,7 +18,11 @@ target_metadata = Base.metadata
 def _url() -> str:
     import os
 
-    return os.environ.get("LEDGEROS_DB", config.get_main_option("sqlalchemy.url"))
+    return (
+        os.environ.get("XERP_DB")
+        or os.environ.get("LEDGEROS_DB")
+        or config.get_main_option("sqlalchemy.url")
+    )
 
 
 def run_migrations_offline() -> None:

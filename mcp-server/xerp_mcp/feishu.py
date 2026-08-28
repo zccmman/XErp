@@ -74,7 +74,7 @@ def build_approval_card(*, voucher_no: str, status: str, summary: str,
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "orange",
-            "title": {"tag": "plain_text", "content": f"LedgerOS 审批请求 · {voucher_no}"},
+            "title": {"tag": "plain_text", "content": f"XErp 审批请求 · {voucher_no}"},
         },
         "elements": [
             {

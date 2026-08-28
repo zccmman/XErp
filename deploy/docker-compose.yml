@@ -15,7 +15,7 @@ services:
       init:
         condition: service_completed_successfully
     environment:
-      LEDGEROS_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
+      XERP_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
     ports:
       - "8001:8001"
     command: ["python", "-m", "kernel.webapp"]
@@ -36,7 +36,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      LEDGEROS_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
+      XERP_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
     # 一次性：迁移(0001-0003, PG 触发器生效) + 演示账套 + 144 科目 + 双身份
     command: ["python", "scripts/init_demo.py"]
     restart: "no"
@@ -51,7 +51,7 @@ services:
       init:
         condition: service_completed_successfully
     environment:
-      LEDGEROS_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
+      XERP_DB: "postgresql+psycopg://ledgeros:ledgeros@db:5432/ledgeros"
     ports:
       - "8000:8000"
     command: ["python", "deploy/run_http.py"]

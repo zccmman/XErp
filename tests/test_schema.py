@@ -116,7 +116,7 @@ def test_alembic_upgrade_downgrade(tmp_path, monkeypatch):
     import sys
 
     db = tmp_path / "mig.db"
-    env = {**os.environ, "LEDGEROS_DB": f"sqlite:///{db}"}
+    env = {**os.environ, "XERP_DB": f"sqlite:///{db}"}
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for args in (["upgrade", "head"], ["downgrade", "base"], ["upgrade", "head"]):
         r = subprocess.run(

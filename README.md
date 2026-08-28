@@ -1,4 +1,4 @@
-# LedgerOS
+# XErp
 
 AI Native 智能体 ERP 内核 —— 确定性记账内核 + 概率性 AI 外壳，总账（GL）优先。
 

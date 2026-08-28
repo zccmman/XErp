@@ -1,7 +1,7 @@
 [project]
-name = "ledgeros"
+name = "xerp"
 version = "0.1.0"
-description = "LedgerOS — AI Native 智能体 ERP 内核（总账优先，确定性内核 + 概率性外壳）"
+description = "XErp — AI Native 智能体 ERP 内核（总账优先，确定性内核 + 概率性外壳）"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
