@@ -21,3 +21,4 @@ Thumbs.db
 .coverage
 ledgeros_dev.db
 deploy/demo_state.json
+logs/
