@@ -525,6 +525,36 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except ReportError as e:
             return _err("REPORT_ERROR", str(e))
 
+    @mcp.tool()
+    def close_period(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+        actor_id: str,
+        accounting_standard: str = "small_business",
+    ) -> dict:
+        """期末结转：损益类科目余额结转至本年利润（3103），生成「结转-YYYYMM-NNN」凭证。
+
+        幂等保护：同期间重复调用返回 ALREADY_CLOSED。结转后该期间损益科目清零，
+        利润表仍可按凭证分录回放。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.closing import close_period as _close
+
+                v = _close(
+                    s,
+                    ledger_set_id=ledger_set_id,
+                    year=period_year,
+                    month=period_month,
+                    actor={"type": "user", "id": actor_id},
+                    standard=accounting_standard,
+                )
+                s.flush()
+                return _ok(voucher=_brief(v))
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()

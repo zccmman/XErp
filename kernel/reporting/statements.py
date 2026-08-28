@@ -82,6 +82,13 @@ def balance_sheet(session: Session, ledger_set_id: str, year: int, month: int,
         groups.setdefault(pos, []).append({"code": code, "ending": bal})
 
     np = net_profit(session, ledger_set_id, year, month, standard)
+    # 已执行期结转 → 净利润已在 3103 权益科目内，不再挂临时插值项
+    closed = session.scalars(
+        select(Voucher.id).where(
+            Voucher.ledger_set_id == ledger_set_id,
+            Voucher.voucher_no.like(f"结转-{year}{month:02d}-%"),
+        )
+    ).first() is not None
 
     def build(major: str) -> tuple[list[dict], Decimal]:
         items, total = [], ZERO
@@ -97,8 +104,8 @@ def balance_sheet(session: Session, ledger_set_id: str, year: int, month: int,
     liabs, total_liabs = build("负债")
     equity, total_equity = build("所有者权益")
 
-    # 本期净利润尚未结转（P1-02），暂列权益项下，保证表内平衡
-    if np != ZERO:
+    # 本期净利润尚未期结转时暂列权益项下，保证表内平衡
+    if np != ZERO and not closed:
         equity.append({
             "group": "未分配利润（本期净利润，未结转）",
             "amount": np,
@@ -126,7 +133,29 @@ def income_statement(session: Session, ledger_set_id: str, year: int, month: int
                      standard: str = "small_business") -> dict:
     mp = M.get_mapping(standard)
     period = _period(session, ledger_set_id, year, month)
-    amounts = _amounts_by_code(session, period)
+    # 利润表从 POSTED 凭证分录取数（排除结转凭证）——事件可回放口径，
+    # 期结转后历史期间利润表不丢（结转凭证以「结转-」前缀标识）
+    accounts = {a.id: a.code for a in session.scalars(select(Account)).all()}
+    vouchers = session.scalars(
+        select(Voucher).where(
+            Voucher.ledger_set_id == ledger_set_id,
+            Voucher.period_id == period.id,
+            Voucher.status == "POSTED",
+        )
+    ).all()
+    amounts: dict[str, tuple[Decimal, Decimal]] = {}
+    for v in vouchers:
+        if v.voucher_no.startswith("结转-"):
+            continue
+        for ln in session.scalars(
+            select(VoucherLine).where(VoucherLine.voucher_id == v.id)
+        ):
+            code = accounts.get(ln.account_id, "")
+            dr, cr = amounts.get(code, (ZERO, ZERO))
+            amounts[code] = (
+                dr + Decimal(str(ln.debit)),
+                cr + Decimal(str(ln.credit)),
+            )
 
     items: list[dict] = []
     revenue = ZERO

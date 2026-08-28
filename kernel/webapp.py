@@ -232,7 +232,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
     # ---------- 凭证详情 ----------
 
     @app.get("/ledger/{ls_id}/reports", response_class=HTMLResponse)
-    def reports(ls_id: str, year: int = 0, month: int = 0):
+    def reports(ls_id: str, year: int = 0, month: int = 0, error: str = ""):
         with session() as s:
             ls = s.get(LedgerSet, ls_id)
             if ls is None:
@@ -289,9 +289,23 @@ def build_app(db_url: str | None = None) -> FastAPI:
             cf_rows.append(("现金净增加额", cf["net_increase"]))
 
             badge = "✅ 平衡" if bs["balanced"] else f"❌ 差 {bs['check']['diff']}"
+            err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            closed = s.scalars(
+                select(Voucher.id).where(
+                    Voucher.ledger_set_id == ls_id,
+                    Voucher.voucher_no.like(f"结转-{yr}{mo:02d}-%"),
+                )
+            ).first() is not None
+            close_ui = (
+                '<span class=badge>✅ 已执行期末结转</span>' if closed else
+                f'<form method=post action="/ledger/{ls_id}/close">'
+                f'<input type=hidden name=year value={yr}>'
+                f'<input type=hidden name=month value={mo}>'
+                f'<button type=submit>执行 {yr}-{mo:02d} 期末结转</button></form>'
+            )
             body = (
                 f"<h2>{html.escape(ls.name)} · {yr}-{mo:02d} 三大报表</h2>"
-                f"<p><a href=/ledger/{ls_id}>← 返回账套</a></p>"
+                f"<p><a href=/ledger/{ls_id}>← 返回账套</a></p>{err}<p>{close_ui}</p>"
                 f"<h3>利润表</h3>{table(inc_rows, '项目', '金额')}"
                 f"<h3>资产负债表 <span class=badge>{badge}</span></h3>"
                 f"{table(bs_rows, '项目', '金额')}"
@@ -301,6 +315,26 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"{cf['reconcile']['closing_cash']:,.2f}</p>"
             )
             return _page(f"{ls.name} 报表", body)
+
+    @app.post("/ledger/{ls_id}/close")
+    def do_close(ls_id: str, year: int = Form(0), month: int = Form(0)):
+        from kernel.closing import close_period
+        from kernel.posting import PostingError
+
+        subject = s_first_subject()
+        try:
+            with session() as s:
+                close_period(s, ledger_set_id=ls_id, year=year, month=month,
+                             actor={"type": "user", "id": subject})
+                s.commit()
+        except PostingError as e:
+            return RedirectResponse(
+                f"/ledger/{ls_id}/reports?year={year}&month={month}"
+                f"&error={e.message_zh}",
+                status_code=303,
+            )
+        return RedirectResponse(f"/ledger/{ls_id}/reports?year={year}&month={month}",
+                                status_code=303)
 
     @app.get("/voucher/{vid}", response_class=HTMLResponse)
     def voucher_detail(vid: str):

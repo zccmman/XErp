@@ -38,6 +38,7 @@ SMALL_BUSINESS = {
         ("营业外收入", ["6301"], "credit"),
         ("营业外支出", ["6711"], "debit"),
     ],
+    "closing": {"profit_account": "3103"},
     "cash_accounts": ["1001", "1002"],
     "cash_flow": [
         ("经营活动-流入", ["6001", "6051", "6301", "1121", "1122", "1123", "6051"], "in"),
@@ -73,6 +74,7 @@ ENTERPRISE = {
         ("营业外收入", ["6301"], "credit"),
         ("营业外支出", ["6711"], "debit"),
     ],
+    "closing": {"profit_account": "3103"},
     "cash_accounts": ["1001", "1002"],
     "cash_flow": SMALL_BUSINESS["cash_flow"],
 }
