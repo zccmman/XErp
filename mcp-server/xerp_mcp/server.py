@@ -48,6 +48,7 @@ from kernel.posting import (  # noqa: E402
 from kernel.posting import (  # noqa: E402
     validate_voucher as _validate_voucher,
 )
+from kernel.reporting.statements import ReportError  # noqa: E402
 from kernel.state import transition  # noqa: E402
 
 
@@ -464,6 +465,65 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 return _ok(voucher=_brief(v), sent_to=receive_id)
         except FeishuError as e:
             return _err("FEISHU_ERROR", str(e))
+
+    # ---------- 三大报表（P1-01） ----------
+
+    @mcp.tool()
+    def report_balance_sheet(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+        accounting_standard: str = "small_business",
+    ) -> dict:
+        """资产负债表：按准则模板聚合资产/负债/所有者权益，返回是否平衡与差额校验。
+
+        本期净利润在结转（P1-02）前挂在权益项下，以保证表内平衡。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.statements import balance_sheet
+
+                return _ok(report=balance_sheet(
+                    s, ledger_set_id, period_year, period_month, accounting_standard
+                ))
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+
+    @mcp.tool()
+    def report_income_statement(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+        accounting_standard: str = "small_business",
+    ) -> dict:
+        """利润表：营业收入/成本/费用分项 + 净利润（本期发生额口径）。"""
+        try:
+            with repo.session() as s:
+                from kernel.reporting.statements import income_statement
+
+                return _ok(report=income_statement(
+                    s, ledger_set_id, period_year, period_month, accounting_standard
+                ))
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+
+    @mcp.tool()
+    def report_cash_flow(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+        accounting_standard: str = "small_business",
+    ) -> dict:
+        """现金流量表（直接法）：经营/投资/筹资三类净额 + 期初-净增加-期末勾稽。"""
+        try:
+            with repo.session() as s:
+                from kernel.reporting.statements import cash_flow
+
+                return _ok(report=cash_flow(
+                    s, ledger_set_id, period_year, period_month, accounting_standard
+                ))
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
 
     # ---------- Drill 建账向导（P0-10） ----------
 

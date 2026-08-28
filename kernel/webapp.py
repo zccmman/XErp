@@ -179,7 +179,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
             ) or "（无期间）"
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
             body = (
-                f"<h2>账套：{html.escape(ls.name)}</h2>"
+                f"<h2>账套：{html.escape(ls.name)}　"
+                f"<a href='/ledger/{ls_id}/reports'>三大报表 →</a></h2>"
                 f"<p>期间切换：{ptabs}</p>{err}"
                 "<h3>凭证（最近 50 张）</h3>"
                 "<table><tr><th>凭证号</th><th>日期</th><th>状态</th><th>摘要</th></tr>"
@@ -229,6 +230,77 @@ def build_app(db_url: str | None = None) -> FastAPI:
             return sub.id if sub else ""
 
     # ---------- 凭证详情 ----------
+
+    @app.get("/ledger/{ls_id}/reports", response_class=HTMLResponse)
+    def reports(ls_id: str, year: int = 0, month: int = 0):
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>")
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc()
+                )
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"), None) or (
+                periods[0] if periods else None
+            )
+            if period is None:
+                return _page(f"{ls.name}", "<p class=err>尚无期间</p>")
+            yr, mo = period.year, period.month
+            try:
+                from kernel.reporting.statements import (
+                    balance_sheet,
+                    cash_flow,
+                    income_statement,
+                )
+
+                bs = balance_sheet(s, ls_id, yr, mo, ls.accounting_standard)
+                inc = income_statement(s, ls_id, yr, mo, ls.accounting_standard)
+                cf = cash_flow(s, ls_id, yr, mo, ls.accounting_standard)
+            except Exception as e:  # noqa: BLE001
+                return _page(f"{ls.name}", f'<p class=err>报表生成失败: {html.escape(str(e))}</p>')
+
+            def table(rows, head1, head2):
+                out = f"<table><tr><th>{head1}</th><th style=text-align:right>{head2}</th></tr>"
+                for name, amt in rows:
+                    out += (
+                        f"<tr><td>{html.escape(name)}</td>"
+                        f"<td style=text-align:right>{amt:,.2f}</td></tr>"
+                    )
+                return out + "</table>"
+
+            bs_rows = []
+            for key, label in (("assets", "资产"), ("liabilities", "负债"),
+                               ("equity", "所有者权益")):
+                for it in bs[key]["items"]:
+                    bs_rows.append((f"{label} · {it['group']}", it["amount"]))
+            bs_rows.append(("资产合计", bs["assets"]["total"]))
+            bs_rows.append(("负债和所有者权益合计",
+                            bs["liabilities"]["total"] + bs["equity"]["total"]))
+
+            inc_rows = [(i["item"], i["amount"]) for i in inc["items"]]
+            inc_rows.append(("净利润", inc["net_profit"]))
+
+            cf_rows = [(i["item"], i["amount"]) for i in cf["items"]]
+            cf_rows.append(("经营活动净额", cf["operating"]))
+            cf_rows.append(("投资活动净额", cf["investing"]))
+            cf_rows.append(("筹资活动净额", cf["financing"]))
+            cf_rows.append(("现金净增加额", cf["net_increase"]))
+
+            badge = "✅ 平衡" if bs["balanced"] else f"❌ 差 {bs['check']['diff']}"
+            body = (
+                f"<h2>{html.escape(ls.name)} · {yr}-{mo:02d} 三大报表</h2>"
+                f"<p><a href=/ledger/{ls_id}>← 返回账套</a></p>"
+                f"<h3>利润表</h3>{table(inc_rows, '项目', '金额')}"
+                f"<h3>资产负债表 <span class=badge>{badge}</span></h3>"
+                f"{table(bs_rows, '项目', '金额')}"
+                f"<h3>现金流量表（直接法）</h3>{table(cf_rows, '项目', '金额')}"
+                f"<p>勾稽：期初现金 {cf['reconcile']['opening_cash']:,.2f} + 净增加 "
+                f"{cf['reconcile']['net_increase']:,.2f} = 期末现金 "
+                f"{cf['reconcile']['closing_cash']:,.2f}</p>"
+            )
+            return _page(f"{ls.name} 报表", body)
 
     @app.get("/voucher/{vid}", response_class=HTMLResponse)
     def voucher_detail(vid: str):
