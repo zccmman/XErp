@@ -317,12 +317,14 @@ def test_posted_event_aggregate_matches_voucher():
         VoucherLine(line_no=2, account_id=ids["cash_account_id"],
                     debit=Decimal("0.00"), credit=Decimal("5.00")),
     ]
-    s.add(v); s.flush()
+    s.add(v)
+    s.flush()
     transition(s, voucher_id=v.id, actor={"type": "agent", "id": "a"}, target="PUSHED")
     from kernel.db.models import Subject
 
     reviewer = Subject(type="user", display_name="回归审批人", autonomy_level=3)
-    s.add(reviewer); s.flush()
+    s.add(reviewer)
+    s.flush()
     transition(s, voucher_id=v.id, actor={"type": "user", "id": reviewer.id}, target="APPROVED")
     post_voucher(s, voucher_id=v.id, actor={"type": "user", "id": ids["subject_id"]})
     s.commit()
