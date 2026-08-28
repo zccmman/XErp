@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import io
-import json
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -96,7 +94,6 @@ def main(name: str = "OPC 一人公司") -> int:
             f"| {code} | {nm} | {sd:,.2f} | {sc:,.2f} | {md:,.2f} | {mc:,.2f} | "
             f"{net:,.2f} | {direction(code)} | {ok} |"
         )
-    tot_d = sum(md for *_, md, mc, net, ok in [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]) for r in rows])
     lines += ["", f"**差异科目：{diff if diff else '无 ✅'}**"]
     md_path = REPO / "docs" / "dogfood_reconcile.md"
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
