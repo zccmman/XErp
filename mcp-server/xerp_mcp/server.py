@@ -1084,6 +1084,31 @@ def build_server(db_url: str | None = None) -> FastMCP:
             except AutonomyError as e:
                 return _err(e.code, e.message_zh, e.details)
 
+    # ---------- 账簿查询（复盘 D2） ----------
+
+    @mcp.tool()
+    def ledger_detail(
+        ledger_set_id: str,
+        account_code: str,
+        period_year: int,
+        period_month: int,
+    ) -> dict:
+        """科目明细账：期初余额 + 逐笔分录（滚动余额）+ 期末合计，可联查凭证。
+
+        仅 POSTED 凭证（法定账簿口径）；余额方向按科目档案（借/贷）。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.ledgerbook import LedgerBookError, ledger_detail
+
+                return _ok(detail=ledger_detail(
+                    s, ledger_set_id=ledger_set_id,
+                    account_code=account_code,
+                    year=period_year, month=period_month,
+                ))
+        except LedgerBookError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()
