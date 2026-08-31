@@ -66,13 +66,15 @@ def build_ledger_messages(
         "net_profit": _fmt(inc["net_profit"]),
     }
 
-    # 组件树：Column(标题, 副标题, Divider?, 逐行 Text)
+    # 组件树：Column(标题, 副标题, 逐行 Text)
+    # 官方 zod schema 为 strict 模式：Text 只接受 text/weight/variant/accessibility，
+    # variant 枚举 h1~h5/caption/body（写 style/title 等字段会被整条消息拒绝）
     children_ids = ["title", "subtitle"]
     components = [
         {"id": "title", "component": "Text",
-         "text": {"path": "/title"}, "style": "headline"},
+         "text": {"path": "/title"}, "variant": "h1"},
         {"id": "subtitle", "component": "Text",
-         "text": {"path": "/subtitle"}},
+         "text": {"path": "/subtitle"}, "variant": "caption"},
     ]
     for i in range(len(lines)):
         cid = f"line-{i}"
