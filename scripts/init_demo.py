@@ -45,6 +45,18 @@ def main() -> None:
             s.add(reviewer)
         s.commit()
 
+        # P1-03：为现有账套补种子权限策略（所有者 admin / 审批人 accountant+reviewer）
+        from kernel.authz import grant_ledger_role
+
+        grant_ledger_role(s, ledger_set_id=ids["ledger_set_id"],
+                          subject_id=ids["subject_id"], role="admin")
+        if reviewer is not None:
+            grant_ledger_role(s, ledger_set_id=ids["ledger_set_id"],
+                              subject_id=reviewer.id, role="accountant")
+            grant_ledger_role(s, ledger_set_id=ids["ledger_set_id"],
+                              subject_id=reviewer.id, role="reviewer")
+        s.commit()
+
         state = {
             "db_url": url,
             "ledger_set": {"id": ids["ledger_set_id"], "name": "演示账套"},

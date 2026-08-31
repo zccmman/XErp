@@ -7,6 +7,8 @@ PG 上线的并发成链（advisory lock 或唯一 (ledger_set_id, prev_hash) �
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,6 +24,7 @@ def append_event(
     aggregate_id: str,
     payload: dict,
     actor: dict,
+    occurred_at: datetime | None = None,
 ) -> Event:
     last = session.scalars(
         select(Event)
@@ -30,7 +33,7 @@ def append_event(
         .limit(1)
     ).first()
     prev_hash = last.hash if last else GENESIS
-    occurred_at = utcnow()
+    occurred_at = occurred_at or utcnow()
     evt = Event(
         ledger_set_id=ledger_set_id,
         event_type=event_type,

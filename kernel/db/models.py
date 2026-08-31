@@ -8,6 +8,7 @@
 import decimal
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Date,
@@ -68,6 +69,11 @@ class Subject(Base):
     type: Mapped[str] = mapped_column(String(8))  # user | agent
     display_name: Mapped[str] = mapped_column(String(100))
     autonomy_level: Mapped[int] = mapped_column(Integer, default=1)  # L0-L3（ADR-004）
+    # P1-03：Agent 自治额度（仅 type=agent 生效；NULL=不限）
+    daily_voucher_limit: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    quota_currency: Mapped[str | None] = mapped_column(String(8), default="CNY")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

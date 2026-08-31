@@ -37,6 +37,16 @@ def env():
         ids["coa_created"] = stats["created"]
         ids["reviewer_subject_id"] = reviewer.id
         s.commit()  # MCP 工具用独立连接访问该库，种子必须真正落盘
+        # P1-03：为演示账套补种子权限（制单人 admin / 审批人 reviewer 角色）
+        from kernel.authz import grant_ledger_role
+
+        grant_ledger_role(s, ledger_set_id=ids["ledger_set_id"],
+                          subject_id=ids["subject_id"], role="admin")
+        grant_ledger_role(s, ledger_set_id=ids["ledger_set_id"],
+                          subject_id=reviewer.id, role="reviewer")
+        grant_ledger_role(s, ledger_set_id=ids["ledger_set_id"],
+                          subject_id=reviewer.id, role="accountant")
+        s.commit()
     engine.dispose()
     return {"url": url, "ids": ids}
 

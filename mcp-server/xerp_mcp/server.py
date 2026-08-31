@@ -107,9 +107,22 @@ def build_server(db_url: str | None = None) -> FastMCP:
     )
     repo = _Repo(url)
 
+    _ACTION_BY_TARGET = {
+        "PUSHED": "voucher:push",
+        "APPROVED": "voucher:approve",
+        "POSTED": "voucher:post",
+        "DRAFT": "voucher:cancel",
+    }
+
     def guarded(voucher_id: str, actor_id: str, target: str) -> dict:
         try:
             with repo.session() as s:
+                from kernel.authz import AuthzError, enforce
+
+                v0 = s.get(Voucher, voucher_id)
+                if v0 is not None:
+                    enforce(s, actor_id=actor_id, ledger_set_id=v0.ledger_set_id,
+                            action=_ACTION_BY_TARGET[target])
                 v = transition(
                     s,
                     voucher_id=voucher_id,
@@ -118,8 +131,10 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 )
                 s.flush()
                 return _ok(voucher=_brief(v))
-        except PostingError as e:
-            return _err(e.code, e.message_zh, e.details)
+        except (PostingError, AuthzError) as e:
+            code = "FORBIDDEN" if isinstance(e, AuthzError) else e.code
+            msg = str(e) if isinstance(e, AuthzError) else e.message_zh
+            return _err(code, msg, getattr(e, "details", None))
 
     mcp = FastMCP(
         "XErp",
@@ -276,6 +291,20 @@ def build_server(db_url: str | None = None) -> FastMCP:
         lines 形如 [{"account_code":"6602","debit":"800","credit":""}]，金额字符串。
         不平衡/金额非法/科目不存在将直接拒绝（VOUCHER_UNBALANCED 等）。
         """
+        try:
+            with repo.session() as sess:
+                from decimal import Decimal as _D
+
+                from kernel.authz import AuthzError, check_agent_quota, enforce
+
+                enforce(sess, actor_id=actor_id, ledger_set_id=ledger_set_id,
+                        action="voucher:create")
+                total = sum(_D(ln.get("debit") or "0") for ln in (lines or []))
+                check_agent_quota(
+                    sess, actor_id=actor_id, voucher_amount=total,
+                )
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
         actor = {"type": "user", "id": actor_id}
         try:
             with repo.session() as s:
@@ -608,6 +637,10 @@ def build_server(db_url: str | None = None) -> FastMCP:
             s.add(owner)
             s.flush()
             s.commit()
+            # P1-03：所有者自动获得该账套 admin 角色
+            from kernel.authz import grant_ledger_role
+
+            grant_ledger_role(s, ledger_set_id=ls.id, subject_id=owner.id, role="admin")
             return _ok(
                 ledger_set_id=ls.id,
                 owner_subject_id=owner.id,
@@ -686,10 +719,12 @@ def build_server(db_url: str | None = None) -> FastMCP:
             a.id: a.code
             for a in s.scalars(select(Account).where(Account.id.in_(ids)))
         }
+        total_debit = sum((ln.debit for ln in v.lines), Decimal("0"))
         return {
             "voucher_no": v.voucher_no,
             "voucher_date": v.voucher_date.isoformat(),
             "summary": v.summary or "",
+            "total_debit": _fmt(total_debit),
             "lines": [
                 {
                     "account_code": cmap.get(ln.account_id, "?"),
