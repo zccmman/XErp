@@ -92,7 +92,7 @@ ledgeros/
 | P1-02 | ✅ 期末结转引擎（实际 0.5d；声明式规则+幂等+closing.executed 事件+利润表可回放，74 passed） | 损益结转声明式规则配置→关账自动执行→可回放 |
 | P1-03 | ✅ 多账套 + Casbin 权限（实际 0.8d；RBAC 5 角色×账套 domain、MCP 层强制鉴权、Agent 自治额度字段与检查，80 passed） | 数据权限（账套/科目维度）+ 功能权限 + Agent 自治额度字段 |
 | P1-04 | ✅ 审计增强（实际 0.6d；AI 决策留痕入事件流(默认仅 prompt 哈希)+账账核对四项校验，85 passed） | 全量 AI 决策留痕（prompt/工具调用/输出摘要入事件流）；对账 总账组件 等价物 |
-| P1-05 | A2UI 正式前端 | 官方 React 渲染器接入；凭证/报表/余额三类 Surface |
+| P1-05 | ⏳ 阶段1完成（React 三类 Surface + JSON API 层，85 passed；阶段2：A2UI 官方协议渲染器接入） | 官方 React 渲染器接入；凭证/报表/余额三类 Surface |
 | P1-06 | dogfood 月度运行 | OPC 账套连续 1 个月真实记账，出月度三表 |
 
 ### P2 业务接入（+8 周，Gate G6）
