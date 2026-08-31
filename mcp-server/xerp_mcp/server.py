@@ -787,6 +787,62 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 )
             )
 
+    # ---------- 发票 OCR（P2-03） ----------
+
+    @mcp.tool()
+    def ocr_ingest_invoice(
+        ledger_set_id: str,
+        actor_id: str,
+        invoice: dict | None = None,
+        image_base64: str | None = None,
+    ) -> dict:
+        """一张发票的完整入账流程：提取→校验→查重→凭证草稿。
+
+        invoice 传结构化 JSON（上游视觉 LLM/人工已提取）；image_base64 传图片
+        （需配置视觉通道环境变量）。处置三态：
+        ingested=已生成 PUSHED 凭证；flagged=校验不过/低置信度，进人工复核
+        （未入账，ocr.invoice.flagged 事件可回放）；DUPLICATE_INVOICE=发票号已
+        处理过（防重复报销）。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.authz import AuthzError, enforce
+                from kernel.ocr import CompositeExtractor, PipelineError
+                from kernel.ocr import ingest_invoice as _ingest
+
+                enforce(s, actor_id=actor_id, ledger_set_id=ledger_set_id,
+                        action="voucher:create")
+                res = _ingest(
+                    s, ledger_set_id=ledger_set_id,
+                    source=invoice if invoice is not None else image_base64,
+                    actor={"type": "user", "id": actor_id},
+                    extractor=CompositeExtractor(),
+                )
+                s.commit()
+                return _ok(**res)
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+        except (PipelineError, PostingError) as e:
+            code = e.code if isinstance(e, PipelineError) else e.code
+            msg = e.message_zh if isinstance(e, PipelineError) else e.message_zh
+            return _err(code, msg, getattr(e, "details", None))
+
+    @mcp.tool()
+    def ocr_accuracy_report(samples: list[dict]) -> dict:
+        """字段级准确率抽检报告（DoD：抽检 ≥95%）。
+
+        samples: [{"extracted": {...提取器输出}, "ground_truth": {...人工真值}}]。
+        逐字段加权比对（金额容差 ±0.01），返回总体正确率与逐样本明细。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.ocr import PipelineError
+                from kernel.ocr import accuracy_report as _report
+
+                return _ok(report=_report(s, samples=samples))
+        except PipelineError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()

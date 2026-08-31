@@ -1,0 +1,27 @@
+{
+  "adapter": "ocr",
+  "event_type": "invoice.received",
+  "version": "v1",
+  "target_status": "PUSHED",
+  "summary": "采购发票 {invoice_no}（{expense_category}）",
+  "date_field": "invoice_date",
+  "lines": [
+    {
+      "side": "debit",
+      "account_from": "expense_category",
+      "account_map": {
+        "办公费": "660202",
+        "差旅费": "660203",
+        "业务招待费": "660204"
+      },
+      "default_account": "660202",
+      "amount": {"from": "total_amount"}
+    },
+    {
+      "side": "credit",
+      "account": "2202",
+      "amount": {"from": "total_amount"},
+      "partner": {"dim": "supplier", "from": "supplier"}
+    }
+  ]
+}

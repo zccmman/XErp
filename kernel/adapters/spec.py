@@ -181,14 +181,19 @@ def validate_rule(rule: dict) -> None:
                 "BAD_SIDE", f"第 {idx} 条分录 side 必须是 debit/credit，收到 {side}"
             )
         sides.add(side)
-        if not ln.get("account"):
-            raise RuleError("BAD_ACCOUNT", f"第 {idx} 条分录缺少科目编码")
+        account_spec = _validate_account_spec(ln, idx)
         if "amount" not in ln:
             raise RuleError("BAD_AMOUNT_SPEC", f"第 {idx} 条分录缺少 amount 规格")
         _validate_amount_spec(ln["amount"], idx)
         partner = ln.get("partner")
         if partner is not None:
             _validate_partner(partner, idx)
+        if account_spec:  # 动态科目：映射表值必须合法
+            for code in account_spec.values():
+                if not re.match(r"^\d{4,6}$", str(code)):
+                    raise RuleError(
+                        "BAD_ACCOUNT", f"第 {idx} 条分录科目映射值非法：{code}"
+                    )
 
     if sides != set(_SIDES):
         raise RuleError("ONE_SIDED", "规则必须同时包含借方与贷方分录")
@@ -196,6 +201,27 @@ def validate_rule(rule: dict) -> None:
     summary = rule.get("summary", "")
     if not isinstance(summary, str):
         raise RuleError("BAD_SUMMARY", "summary 必须是字符串")
+
+
+def _validate_account_spec(line: dict, line_idx: int) -> dict | None:
+    """科目规格：静态 ``account`` 或动态 ``account_from`` + ``account_map``。
+
+    动态映射用于「发票归类决定科目」类场景：按事件字段值查映射表取科目，
+    未命中走 ``default_account``。
+    """
+    where = f"第 {line_idx} 条分录"
+    if line.get("account"):
+        return None
+    src = line.get("account_from")
+    mapping = line.get("account_map")
+    if src and isinstance(mapping, dict) and mapping:
+        if not _is_valid_path(src):
+            raise RuleError("BAD_FIELD_PATH", f"{where} 非法科目来源路径：{src}")
+        return mapping
+    raise RuleError(
+        "BAD_ACCOUNT",
+        f"{where} 缺少科目：需 account 或 account_from+account_map",
+    )
 
 
 def _validate_partner(partner: Any, line_idx: int) -> None:

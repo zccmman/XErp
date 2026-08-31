@@ -116,6 +116,21 @@ def _next_voucher_no(session: Session, ledger_set_id: str) -> str:
     return f"记-{seq + 1:04d}"
 
 
+def _resolve_account(spec: dict, event: dict) -> str:
+    """解析行科目：静态 account，或按事件字段查 account_map（未命中走 default）。"""
+    if spec.get("account"):
+        return str(spec["account"])
+    value = str(get_field(event, spec["account_from"]))
+    code = spec["account_map"].get(value) or spec.get("default_account")
+    if not code:
+        raise AdapterError(
+            "ACCOUNT_MAP_MISS",
+            f"科目映射未命中且无默认科目：{spec['account_from']}={value!r}",
+            {"value": value, "known": sorted(spec["account_map"])},
+        )
+    return str(code)
+
+
 def build_lines(
     session: Session, ledger_set_id: str, rule: dict, event: dict
 ) -> list[VoucherLine]:
@@ -124,7 +139,7 @@ def build_lines(
     if len(lines) > MAX_LINES:
         raise RuleError("TOO_MANY_LINES", f"分录数超过上限 {MAX_LINES}")
 
-    codes = {str(ln["account"]) for ln in lines}
+    codes = {_resolve_account(ln, event) for ln in lines}
     accounts = {
         a.code: a
         for a in session.scalars(
@@ -144,10 +159,9 @@ def build_lines(
     # 适配器比内核更严格：只允许记到叶子科目。
     # 内核记账引擎目前不校验 is_leaf（父/子科目混用会让明细账分散到两级），
     # 外部事件自动入账必须落在最明细科目上，否则无人能发现。
+    resolved_codes = [_resolve_account(ln, event) for ln in lines]
     non_leaf = sorted(
-        str(ln["account"])
-        for ln in lines
-        if not accounts[str(ln["account"])].is_leaf
+        code for code in resolved_codes if not accounts[code].is_leaf
     )
     if non_leaf:
         raise AdapterError(
@@ -172,11 +186,11 @@ def build_lines(
             total_debit += amount
         else:
             total_credit += amount
-        aux = _resolve_aux_dims(spec, accounts[str(spec["account"])], event, idx)
+        aux = _resolve_aux_dims(spec, accounts[_resolve_account(spec, event)], event, idx)
         out.append(
             VoucherLine(
                 line_no=idx,
-                account_id=accounts[str(spec["account"])].id,
+                account_id=accounts[_resolve_account(spec, event)].id,
                 debit=amount if is_debit else ZERO,
                 credit=ZERO if is_debit else amount,
                 aux_dims=aux,
