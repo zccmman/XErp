@@ -30,6 +30,10 @@ for _p in (_REPO_ROOT, _MCP_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from kernel.adapters.spec import (  # noqa: E402
+    EventFieldError,
+    RuleError,
+)
 from kernel.db.models import (  # noqa: E402
     Account,
     Balance,
@@ -615,6 +619,92 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 s.flush()
                 return _ok(voucher=_brief(v))
         except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    # ---------- 事件适配器（P2-01） ----------
+
+    @mcp.tool()
+    def adapter_list() -> dict:
+        """列出已注册的事件适配器规则（第三方业务事件 → 凭证模板）。
+
+        内置规则位于 kernel/data/adapters/*.json；第三方可用 adapter_register 追加。
+        """
+        from kernel.adapters import list_rules
+
+        return _ok(rules=list_rules())
+
+    @mcp.tool()
+    def adapter_preview(adapter: str, event_type: str, event: dict) -> dict:
+        """不落库地预览「该事件按规则会生成怎样的凭证」。
+
+        用于规则调试与上线前核对；返回借贷合计与是否平衡。
+        """
+        try:
+            from kernel.adapters import RuleNotFoundError, get_rule, preview
+
+            rule = get_rule(adapter, event_type)
+            if rule is None:
+                raise RuleNotFoundError(adapter, event_type)
+            return _ok(preview=preview(rule, event))
+        except (RuleError, EventFieldError, RuleNotFoundError) as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def adapter_ingest(
+        ledger_set_id: str,
+        actor_id: str,
+        adapter: str,
+        event_type: str,
+        event: dict,
+        event_id: str | None = None,
+    ) -> dict:
+        """消费一个第三方业务事件，按规则自动生成凭证（幂等）。
+
+        凭证状态由规则 target_status 决定（默认 PUSHED 待人审，绝不自动过账）。
+        外部事件 id 作为幂等键：同一事件重复投喂返回 replayed=True，不会重复入账。
+        每条消费都会追加 adapter.event.consumed 事件，保留来源事件 id 以便追溯。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.adapters import AdapterError, ingest_event
+                from kernel.authz import AuthzError, enforce
+
+                enforce(
+                    s,
+                    actor_id=actor_id,
+                    ledger_set_id=ledger_set_id,
+                    action="voucher:create",
+                )
+                res = ingest_event(
+                    s,
+                    ledger_set_id=ledger_set_id,
+                    adapter=adapter,
+                    event_type=event_type,
+                    event=event,
+                    actor={"type": "user", "id": actor_id},
+                    event_id=event_id,
+                )
+                s.commit()
+                return _ok(**res)
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+        except (AdapterError, RuleError, EventFieldError) as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def adapter_register(rule: dict) -> dict:
+        """运行时注册/更新一条适配器规则——第三方接入的唯一入口，零核心改动。
+
+        规则为声明式 JSON：adapter/event_type/version/date_field/summary/lines。
+        金额规格只支持 from/const/ratio/op 四种受限形式，不做表达式求值。
+        """
+        try:
+            from kernel.adapters import register, validate_rule
+
+            validate_rule(rule)
+            register(rule)
+            return _ok(rule=rule)
+        except RuleError as e:
             return _err(e.code, e.message_zh, e.details)
 
     # ---------- 审计增强（P1-04） ----------

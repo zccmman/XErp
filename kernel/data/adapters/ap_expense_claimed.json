@@ -1,0 +1,12 @@
+{
+  "adapter": "ap",
+  "event_type": "expense.claimed",
+  "version": "v1",
+  "target_status": "PUSHED",
+  "summary": "员工报销 {category}",
+  "date_field": "claimed_at",
+  "lines": [
+    {"side": "debit", "account": "660204", "amount": {"from": "amount"}},
+    {"side": "credit", "account": "100201", "amount": {"from": "amount"}}
+  ]
+}
