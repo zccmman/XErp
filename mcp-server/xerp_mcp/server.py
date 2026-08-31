@@ -996,6 +996,93 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except Exception as e:  # noqa: BLE001
             return _err("RELEASE_FAILED", str(e))
 
+    # ---------- L3 自治档（P3-03） ----------
+
+    @mcp.tool()
+    def autonomy_post(
+        ledger_set_id: str,
+        actor_id: str,
+        voucher_date: str,
+        summary: str,
+        lines: list[dict],
+    ) -> dict:
+        """L3 自治过账：autonomy_level≥3 且断路器闭合且单日额度内 → 直接 POSTED。
+
+        不是 Agent 自审——是系统规则执行（额度内），全部凭证进入抽检池。
+        超额度 QUOTA_EXCEEDED / 断路器开 BREAKER_OPEN / 非 L3 主体 L3_REQUIRED。
+        """
+        try:
+            with repo.session() as s:
+                from decimal import Decimal as _D
+
+                from kernel.authz import AuthzError, enforce
+                from kernel.autonomy import AutonomyError, autonomous_post
+
+                enforce(s, actor_id=actor_id, ledger_set_id=ledger_set_id,
+                        action="voucher:create")
+                res = autonomous_post(
+                    s, ledger_set_id=ledger_set_id,
+                    voucher_date=date.fromisoformat(voucher_date),
+                    actor_id=actor_id, summary=summary,
+                    lines=[(ln["account_code"],
+                            _D(ln.get("debit") or "0"),
+                            _D(ln.get("credit") or "0")) for ln in lines],
+                )
+                s.commit()
+                return _ok(**res)
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+        except AutonomyError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def autonomy_audit_list(ledger_set_id: str) -> dict:
+        """抽检池：全部 L3 自治过账凭证及其抽检状态（pending/passed/reversed）。"""
+        with repo.session() as s:
+            from kernel.autonomy import audit_list as _list
+
+            return _ok(**_list(s, ledger_set_id=ledger_set_id))
+
+    @mcp.tool()
+    def autonomy_audit_review(
+        ledger_set_id: str,
+        actor_id: str,
+        voucher_id: str,
+        verdict: str,
+        note: str = "",
+    ) -> dict:
+        """抽检裁决（人工）：pass=通过 / reverse=推翻（生成红字冲销凭证并过账）。
+
+        已裁决凭证不可重复裁决（ALREADY_REVIEWED）。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.authz import AuthzError, enforce
+                from kernel.autonomy import AutonomyError, audit_review
+
+                enforce(s, actor_id=actor_id, ledger_set_id=ledger_set_id,
+                        action="ledger:manage")
+                res = audit_review(s, voucher_id=voucher_id, verdict=verdict,
+                                   reviewer_id=actor_id, note=note)
+                s.commit()
+                return _ok(**res)
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+        except AutonomyError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def autonomy_replay(voucher_id: str) -> dict:
+        """一键回放：按凭证聚合全部事件（创建/推送/审批/过账/AI 决策），审计轨迹不漏一行。"""
+        with repo.session() as s:
+            from kernel.autonomy import AutonomyError
+            from kernel.autonomy import replay as _replay
+
+            try:
+                return _ok(**_replay(s, voucher_id=voucher_id))
+            except AutonomyError as e:
+                return _err(e.code, e.message_zh, e.details)
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()
