@@ -1109,6 +1109,61 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except LedgerBookError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    # ---------- 转账模板（复盘 D3） ----------
+
+    @mcp.tool()
+    def transfer_define(template: dict) -> dict:
+        """注册/更新转账模板（声明式 JSON：取数公式=科目×scope×ratio）。
+
+        Agent 原生入口：把自然语言转账规则转成模板 JSON 后调用本工具。
+        模板分录必须借贷两侧齐全；取数 source 仅支持 balance 投影。
+        """
+        try:
+            from kernel.transfers import TransferError, register_template
+
+            register_template(template)
+            return _ok(registered=template["name"])
+        except TransferError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def transfer_list() -> dict:
+        """列出全部转账模板。"""
+        from kernel.transfers import list_templates
+
+        return _ok(templates=list_templates())
+
+    @mcp.tool()
+    def transfer_run(
+        ledger_set_id: str,
+        actor_id: str,
+        template_name: str,
+        period_year: int,
+        period_month: int,
+    ) -> dict:
+        """执行转账模板：按取数公式生成 PUSHED 凭证（模拟计算待人审）。
+
+        幂等（同期间同名模板 ALREADY_RUN）；不平衡 TEMPLATE_UNBALANCED；
+        取数为零 NOTHING_TO_TRANSFER。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.authz import AuthzError, enforce
+                from kernel.transfers import TransferError, run_template
+
+                enforce(s, actor_id=actor_id, ledger_set_id=ledger_set_id,
+                        action="voucher:create")
+                res = run_template(s, ledger_set_id=ledger_set_id,
+                                   template_name=template_name,
+                                   year=period_year, month=period_month,
+                                   actor={"type": "user", "id": actor_id})
+                s.commit()
+                return _ok(**res)
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+        except TransferError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()
