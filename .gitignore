@@ -22,3 +22,6 @@ Thumbs.db
 ledgeros_dev.db
 deploy/demo_state.json
 logs/
+web/node_modules/
+web/.npm-cache/
+web/dist/

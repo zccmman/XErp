@@ -9,10 +9,11 @@ from __future__ import annotations
 import html
 import os
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -371,6 +372,164 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + ">← 返回账套</a></p>"
             )
             return _page(v.voucher_no, body)
+
+    # ---------- JSON API（React 前端 / A2UI 渲染器数据底座，P1-05） ----------
+
+    @app.get("/api/workspace")
+    def api_workspace():
+        with session() as s:
+            ledgers = []
+            for ls in s.scalars(select(LedgerSet)).all():
+                open_p = s.scalars(
+                    select(Period).where(
+                        Period.ledger_set_id == ls.id, Period.status == "OPEN"
+                    )
+                ).all()
+                ledgers.append({
+                    "id": ls.id,
+                    "name": ls.name,
+                    "standard": ls.accounting_standard,
+                    "open_periods": [{"year": p.year, "month": p.month} for p in open_p],
+                })
+            return {"ledgers": ledgers}
+
+    @app.get("/api/ledger/{ls_id}")
+    def api_ledger(ls_id: str, year: int = 0, month: int = 0):
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return JSONResponse({"error": "ledger not found"}, status_code=404)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc()
+                )
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"), None) or (
+                periods[0] if periods else None
+            )
+            vouchers = [
+                {
+                    "id": v.id, "voucher_no": v.voucher_no,
+                    "date": v.voucher_date.isoformat(), "status": v.status,
+                    "summary": v.summary or "",
+                }
+                for v in s.scalars(
+                    select(Voucher).where(Voucher.ledger_set_id == ls_id)
+                    .order_by(Voucher.voucher_no.desc()).limit(100)
+                )
+            ]
+            balances = []
+            if period is not None:
+                for b in s.scalars(select(Balance).where(Balance.period_id == period.id)):
+                    acc = s.get(Account, b.account_id)
+                    balances.append({
+                        "code": acc.code if acc else "?",
+                        "name": acc.name if acc else "?",
+                        "debit_total": f"{b.debit_total:.2f}",
+                        "credit_total": f"{b.credit_total:.2f}",
+                    })
+            return {
+                "id": ls.id, "name": ls.name, "standard": ls.accounting_standard,
+                "periods": [{"year": p.year, "month": p.month, "status": p.status}
+                            for p in periods],
+                "current_period": {"year": period.year, "month": period.month}
+                if period else None,
+                "vouchers": vouchers, "balances": balances,
+            }
+
+    @app.get("/api/ledger/{ls_id}/reports")
+    def api_reports(ls_id: str, year: int = 0, month: int = 0):
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return JSONResponse({"error": "ledger not found"}, status_code=404)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc()
+                )
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"), None) or (
+                periods[0] if periods else None
+            )
+            if period is None:
+                return JSONResponse({"error": "no period"}, status_code=404)
+            from kernel.reconcile import reconcile_ledger
+            from kernel.reporting.statements import (
+                balance_sheet,
+                cash_flow,
+                income_statement,
+            )
+
+            def _dec(x):
+                return f"{x:.2f}"
+
+            bs = balance_sheet(s, ls_id, period.year, period.month, ls.accounting_standard)
+            inc = income_statement(s, ls_id, period.year, period.month, ls.accounting_standard)
+            cf = cash_flow(s, ls_id, period.year, period.month, ls.accounting_standard)
+            rec = reconcile_ledger(s, ls_id, period.year, period.month, ls.accounting_standard)
+
+            def _money(d):
+                return {k: _dec(v) if isinstance(v, Decimal) else v for k, v in d.items()}
+
+            return {
+                "ledger": {"id": ls.id, "name": ls.name},
+                "period": {"year": period.year, "month": period.month},
+                "balance_sheet": {
+                    "assets": {"total": _dec(bs["assets"]["total"]),
+                               "items": [{"group": i["group"], "amount": _dec(i["amount"])}
+                                         for i in bs["assets"]["items"]]},
+                    "liabilities": {"total": _dec(bs["liabilities"]["total"]),
+                                    "items": [{"group": i["group"], "amount": _dec(i["amount"])}
+                                              for i in bs["liabilities"]["items"]]},
+                    "equity": {"total": _dec(bs["equity"]["total"]),
+                               "items": [{"group": i["group"], "amount": _dec(i["amount"])}
+                                         for i in bs["equity"]["items"]]},
+                    "balanced": bs["balanced"],
+                },
+                "income_statement": {
+                    "items": [{"item": i["item"], "amount": _dec(i["amount"])}
+                              for i in inc["items"]],
+                    "net_profit": _dec(inc["net_profit"]),
+                },
+                "cash_flow": {
+                    "items": [{"item": i["item"], "amount": _dec(i["amount"])}
+                              for i in cf["items"]],
+                    "operating": _dec(cf["operating"]),
+                    "investing": _dec(cf["investing"]),
+                    "financing": _dec(cf["financing"]),
+                    "net_increase": _dec(cf["net_increase"]),
+                },
+                "reconcile": {"ok": rec["ok"],
+                              "issues": rec["issues"]},
+            }
+
+    @app.get("/api/voucher/{vid}")
+    def api_voucher(vid: str):
+        with session() as s:
+            v = s.get(Voucher, vid)
+            if v is None:
+                return JSONResponse({"error": "voucher not found"}, status_code=404)
+            lines = []
+            for ln in v.lines:
+                acc = s.get(Account, ln.account_id)
+                lines.append({
+                    "line_no": ln.line_no,
+                    "account_code": acc.code if acc else "?",
+                    "account_name": acc.name if acc else "?",
+                    "debit": f"{ln.debit:.2f}", "credit": f"{ln.credit:.2f}",
+                })
+            return {
+                "voucher_no": v.voucher_no, "status": v.status,
+                "date": v.voucher_date.isoformat(), "summary": v.summary or "",
+                "lines": lines,
+            }
+
+    # ---------- React 构建产物挂载（P1-05，/ui/） ----------
+    dist = _REPO_ROOT / "web" / "dist"
+    if dist.exists():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/ui", StaticFiles(directory=str(dist), html=True), name="ui")
 
     return app
 
