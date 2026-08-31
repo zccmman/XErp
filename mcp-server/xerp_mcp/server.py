@@ -48,6 +48,7 @@ from kernel.posting import (  # noqa: E402
 from kernel.posting import (  # noqa: E402
     validate_voucher as _validate_voucher,
 )
+from kernel.reconcile import ReconcileError  # noqa: E402
 from kernel.reporting.statements import ReportError  # noqa: E402
 from kernel.state import transition  # noqa: E402
 
@@ -583,6 +584,61 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 return _ok(voucher=_brief(v))
         except PostingError as e:
             return _err(e.code, e.message_zh, e.details)
+
+    # ---------- 审计增强（P1-04） ----------
+
+    @mcp.tool()
+    def log_agent_decision(
+        ledger_set_id: str,
+        actor_id: str,
+        prompt: str = "",
+        output_summary: str = "",
+        tool_calls: list[dict] | None = None,
+        include_prompt: bool = False,
+        model: str = "",
+    ) -> dict:
+        """AI 决策留痕：把 prompt 哈希（可选全文）、工具调用、输出摘要写入事件账本。
+
+        默认只存 prompt 的 sha256 与字数，避免敏感上下文进入不可篡改账本；
+        需留全文时显式传 include_prompt=true（调用方负责脱敏）。
+        """
+        with repo.session() as s:
+            from kernel.agent_audit import log_agent_decision as _log
+
+            evt = _log(
+                s,
+                ledger_set_id=ledger_set_id,
+                actor={"type": "agent", "id": actor_id},
+                prompt=prompt,
+                tool_calls=tool_calls,
+                output_summary=output_summary,
+                include_prompt=include_prompt,
+                model=model,
+            )
+            s.commit()
+            return _ok(event_id=evt.id, event_type=evt.event_type,
+                       prompt_sha256=evt.payload["prompt_sha256"])
+
+    @mcp.tool()
+    def reconcile_ledger(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+        accounting_standard: str = "small_business",
+    ) -> dict:
+        """账账核对：逐凭证平衡、投影 vs 凭证明细重算、试算平衡、现金流勾稽。
+
+        返回 ok 与 issues 明细；对不上即说明投影被破坏或存在篡改。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reconcile import reconcile_ledger as _rec
+
+                return _ok(report=_rec(
+                    s, ledger_set_id, period_year, period_month, accounting_standard
+                ))
+        except ReconcileError as e:
+            return _err("RECONCILE_ERROR", str(e))
 
     # ---------- Drill 建账向导（P0-10） ----------
 

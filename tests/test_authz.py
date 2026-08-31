@@ -15,7 +15,7 @@ from kernel.authz import (
     revoke_ledger_role,
 )
 from kernel.db.base import Base
-from kernel.db.models import Subject, utcnow
+from kernel.db.models import Subject
 from kernel.seed import seed_demo_ledger
 
 
@@ -95,8 +95,6 @@ def test_agent_quota_exceeded(ctx):
     s, ids = ctx["s"], ctx["ids"]
     bot = ids["mk"](name="记账Agent", type_="agent", limit="500.00")
     from kernel.ledger import append_event
-
-    today = utcnow().date()
 
     def simulate(amount: str, occurred: object) -> None:
         append_event(

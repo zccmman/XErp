@@ -289,6 +289,14 @@ def build_app(db_url: str | None = None) -> FastAPI:
             cf_rows.append(("现金净增加额", cf["net_increase"]))
 
             badge = "✅ 平衡" if bs["balanced"] else f"❌ 差 {bs['check']['diff']}"
+            from kernel.reconcile import reconcile_ledger
+
+            rec = reconcile_ledger(s, ls_id, yr, mo, ls.accounting_standard)
+            rec_badge = (
+                "✅ 账账核对一致" if rec["ok"]
+                else f"❌ 对账异常 {len(rec['issues'])} 项："
+                + "、".join(i["kind"] for i in rec["issues"])
+            )
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
             closed = s.scalars(
                 select(Voucher.id).where(
@@ -310,6 +318,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"<h3>资产负债表 <span class=badge>{badge}</span></h3>"
                 f"{table(bs_rows, '项目', '金额')}"
                 f"<h3>现金流量表（直接法）</h3>{table(cf_rows, '项目', '金额')}"
+                f"<h3>账账核对</h3><p>{rec_badge}</p>"
                 f"<p>勾稽：期初现金 {cf['reconcile']['opening_cash']:,.2f} + 净增加 "
                 f"{cf['reconcile']['net_increase']:,.2f} = 期末现金 "
                 f"{cf['reconcile']['closing_cash']:,.2f}</p>"
