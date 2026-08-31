@@ -6,8 +6,30 @@
   "summary": "销售开票 {invoice_no}",
   "date_field": "issued_at",
   "lines": [
-    {"side": "debit", "account": "1122", "amount": {"from": "total_amount"}},
-    {"side": "credit", "account": "6001", "amount": {"from": "net_amount"}},
-    {"side": "credit", "account": "222101", "amount": {"from": "tax_amount"}}
+    {
+      "side": "debit",
+      "account": "1122",
+      "amount": {
+        "from": "total_amount"
+      },
+      "partner": {
+        "dim": "customer",
+        "from": "customer"
+      }
+    },
+    {
+      "side": "credit",
+      "account": "6001",
+      "amount": {
+        "from": "net_amount"
+      }
+    },
+    {
+      "side": "credit",
+      "account": "222101",
+      "amount": {
+        "from": "tax_amount"
+      }
+    }
   ]
 }

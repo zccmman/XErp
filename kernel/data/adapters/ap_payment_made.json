@@ -6,7 +6,23 @@
   "summary": "支付 {payee} 款项",
   "date_field": "paid_at",
   "lines": [
-    {"side": "debit", "account": "2202", "amount": {"from": "amount"}},
-    {"side": "credit", "account": "100201", "amount": {"from": "amount"}}
+    {
+      "side": "debit",
+      "account": "2202",
+      "amount": {
+        "from": "amount"
+      },
+      "partner": {
+        "dim": "supplier",
+        "from": "supplier"
+      }
+    },
+    {
+      "side": "credit",
+      "account": "100201",
+      "amount": {
+        "from": "amount"
+      }
+    }
   ]
 }

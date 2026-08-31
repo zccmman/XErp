@@ -172,12 +172,14 @@ def build_lines(
             total_debit += amount
         else:
             total_credit += amount
+        aux = _resolve_aux_dims(spec, accounts[str(spec["account"])], event, idx)
         out.append(
             VoucherLine(
                 line_no=idx,
                 account_id=accounts[str(spec["account"])].id,
                 debit=amount if is_debit else ZERO,
                 credit=ZERO if is_debit else amount,
+                aux_dims=aux,
             )
         )
 
@@ -188,6 +190,36 @@ def build_lines(
             {"debit": str(total_debit), "credit": str(total_credit)},
         )
     return out
+
+
+def _resolve_aux_dims(
+    spec: dict, account: Account, event: dict, line_idx: int
+) -> dict | None:
+    """把规则的 partner 配置解析成 aux_dims。
+
+    校验两层：科目声明支持该维度（aux_dim_defs）、事件确实提供了往来单位。
+    往来明细不建子科目、只挂维度——这是 Ontology 设计的核心约束。
+    """
+    partner = spec.get("partner")
+    if partner is None:
+        return None
+    dim = str(partner["dim"])
+    declared = set(account.aux_dim_defs or [])
+    if dim not in declared:
+        raise AdapterError(
+            "DIM_NOT_DECLARED",
+            f"科目 {account.code} 未声明辅助维度 {dim}"
+            f"（该科目支持：{'、'.join(sorted(declared)) or '无'}）",
+            {"account": account.code, "dim": dim, "declared": sorted(declared)},
+        )
+    value = get_field(event, partner["from"])
+    if not isinstance(value, str) or not value.strip():
+        raise EventFieldError(
+            "BAD_PARTNER_VALUE",
+            f"第 {line_idx} 条分录往来单位取值非法：{value!r}",
+            {"field": partner["from"]},
+        )
+    return {dim: value.strip()}
 
 
 def ingest_event(

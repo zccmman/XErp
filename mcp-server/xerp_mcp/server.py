@@ -762,6 +762,31 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except ReconcileError as e:
             return _err("RECONCILE_ERROR", str(e))
 
+    # ---------- 往来余额（P2-02） ----------
+
+    @mcp.tool()
+    def partner_balances(
+        ledger_set_id: str,
+        year: int = 0,
+        month: int = 0,
+    ) -> dict:
+        """往来余额表：按客户/供应商维度聚合应收与应付，回答「谁欠我、我欠谁」。
+
+        数据来自余额投影（适配器挂账的 aux_dims）；未指定期间取最新 OPEN 期间。
+        早期未挂维度的余额单独列 untracked_total，不混入明细（脏数据宁暴露不吞）。
+        """
+        with repo.session() as s:
+            from kernel.adapters.partners import partner_balances as _pb
+
+            return _ok(
+                report=_pb(
+                    s,
+                    ledger_set_id,
+                    year=year or None,
+                    month=month or None,
+                )
+            )
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()

@@ -158,6 +158,7 @@ def test_ingest_creates_pushed_voucher(ctx):
     s, ids = ctx["s"], ctx["ids"]
     event = {
         "event_id": "INV-1", "invoice_no": "INV-1", "issued_at": "2026-08-10",
+        "customer": "客户甲",
         "net_amount": "1000.00", "tax_amount": "10.00", "total_amount": "1010.00",
     }
     res = ingest_event(
@@ -183,6 +184,7 @@ def test_ingest_is_idempotent(ctx):
     s, ids = ctx["s"], ctx["ids"]
     event = {
         "event_id": "INV-2", "invoice_no": "INV-2", "issued_at": "2026-08-11",
+        "customer": "客户甲",
         "net_amount": "500.00", "tax_amount": "5.00", "total_amount": "505.00",
     }
     first = ingest_event(
@@ -204,7 +206,7 @@ def test_ingest_appends_traceable_event(ctx):
     """每条消费追加 adapter.event.consumed，保留来源事件 id。"""
     s, ids = ctx["s"], ctx["ids"]
     event = {
-        "event_id": "PAY-9", "payee": "云服务商", "paid_at": "2026-08-12",
+        "event_id": "PAY-9", "supplier": "云服务商", "paid_at": "2026-08-12",
         "amount": "3600.00",
     }
     res = ingest_event(
@@ -278,7 +280,8 @@ def test_ingest_rejects_unknown_rule_and_period(ctx):
         ingest_event(
             s, ledger_set_id=ids["ledger_set_id"], adapter="ar",
             event_type="invoice.issued",
-            event={"event_id": "Z", "invoice_no": "Z", "issued_at": "2030-01-01",
+            event={"event_id": "Z", "invoice_no": "Z", "customer": "客户甲",
+                   "issued_at": "2030-01-01",
                    "net_amount": "1", "tax_amount": "0", "total_amount": "1"},
             actor=ctx["actor"])
     assert ei.value.code == "PERIOD_NOT_FOUND"

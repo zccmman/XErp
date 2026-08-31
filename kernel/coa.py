@@ -114,6 +114,13 @@ def import_chart_of_accounts(
         code = r["code"]
         if code in existing:
             skipped += 1
+            # 幂等不再等于"完全跳过"：模板是科目表的权威定义，
+            # 旧种子（如 seed_demo_ledger）建的科目可能缺辅助维度声明；
+            # 只补维度，不动名称/方向等其余字段。
+            acc0 = existing[code]
+            want_dims = _parse_dims(r.get("aux_dims"))
+            if want_dims and not acc0.aux_dim_defs:
+                acc0.aux_dim_defs = want_dims
             continue
         if parent_code and parent_code not in existing:
             raise CoaImportError(f"{code}: 父科目 {parent_code} 不存在（须先定义父级）")

@@ -186,6 +186,9 @@ def validate_rule(rule: dict) -> None:
         if "amount" not in ln:
             raise RuleError("BAD_AMOUNT_SPEC", f"第 {idx} 条分录缺少 amount 规格")
         _validate_amount_spec(ln["amount"], idx)
+        partner = ln.get("partner")
+        if partner is not None:
+            _validate_partner(partner, idx)
 
     if sides != set(_SIDES):
         raise RuleError("ONE_SIDED", "规则必须同时包含借方与贷方分录")
@@ -193,6 +196,23 @@ def validate_rule(rule: dict) -> None:
     summary = rule.get("summary", "")
     if not isinstance(summary, str):
         raise RuleError("BAD_SUMMARY", "summary 必须是字符串")
+
+
+def _validate_partner(partner: Any, line_idx: int) -> None:
+    """往来辅助维度规格：``{"dim": "customer", "from": "payer"}``。
+
+    挂上 partner 的分录会把 ``{"dim": 取值}`` 写入 aux_dims，
+    余额投影天然按（科目 × 往来单位）聚合——往来明细不建子科目。
+    """
+    where = f"第 {line_idx} 条分录 partner"
+    if not isinstance(partner, dict):
+        raise RuleError("BAD_PARTNER", f"{where} 必须是对象")
+    dim = partner.get("dim")
+    if not isinstance(dim, str) or not _is_valid_path(dim):
+        raise RuleError("BAD_PARTNER_DIM", f"{where} 维度名非法：{dim!r}")
+    src = partner.get("from")
+    if not src or not _is_valid_path(src):
+        raise RuleError("BAD_PARTNER_FIELD", f"{where} 缺少合法的 from 字段路径")
 
 
 def _validate_amount_spec(spec: Any, line_idx: int) -> None:
