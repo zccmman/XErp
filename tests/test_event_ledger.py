@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from kernel.db.append_only import install_append_only_sqlite
 from kernel.db.base import Base
 from kernel.db.models import Event
+from kernel.events import E
 from kernel.ledger import append_event, verify_chain
 
 LS = "ledger_a"
@@ -21,7 +22,7 @@ ACTOR = {"type": "user", "id": "u1", "display_name": "丞辰"}
 def _evt(i: int) -> dict:
     return {
         "ledger_set_id": LS,
-        "event_type": "voucher.created",
+        "event_type": E.VOUCHER_CREATED,
         "aggregate_id": f"v-{i}",
         "payload": {"voucher_no": f"记-{i:04d}", "amount": "100.00"},
         "actor": ACTOR,

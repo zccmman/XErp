@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Event, Voucher, VoucherLine
+from kernel.events import E
 
 ZERO = Decimal("0.00")
 # 勾对默认银行科目（基本户）
@@ -97,7 +98,7 @@ def import_csv(
         seen_in_file.add(txn_id)
         if session.scalars(
             select(Event).where(
-                Event.event_type == "bank.txn.imported",
+                Event.event_type == E.BANK_TXN_IMPORTED,
                 Event.aggregate_id == txn_id,
             )
         ).first():
@@ -123,7 +124,7 @@ def append_event_txn(
     append_event(
         session,
         ledger_set_id=ledger_set_id,
-        event_type="bank.txn.imported",
+        event_type=E.BANK_TXN_IMPORTED,
         aggregate_id=txn_id,
         payload=payload,
         actor=actor,
@@ -137,7 +138,7 @@ def _load_txns(session: Session, ledger_set_id: str) -> list[dict]:
         for e in session.scalars(
             select(Event).where(
                 Event.ledger_set_id == ledger_set_id,
-                Event.event_type == "bank.txn.matched",
+                Event.event_type == E.BANK_TXN_MATCHED,
             )
         )
     }
@@ -145,7 +146,7 @@ def _load_txns(session: Session, ledger_set_id: str) -> list[dict]:
     for e in session.scalars(
         select(Event).where(
             Event.ledger_set_id == ledger_set_id,
-            Event.event_type == "bank.txn.imported",
+            Event.event_type == E.BANK_TXN_IMPORTED,
         ).order_by(Event.id)
     ):
         if e.id in matched_ids:
@@ -259,7 +260,7 @@ def reconcile(
             append_event(
                 session,
                 ledger_set_id=ledger_set_id,
-                event_type="bank.txn.matched",
+                event_type=E.BANK_TXN_MATCHED,
                 aggregate_id=m["txn_id"],
                 payload={
                     "txn_event_id": m["txn_event_id"],

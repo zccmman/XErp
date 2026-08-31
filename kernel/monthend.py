@@ -29,6 +29,7 @@ from kernel.bankrec import reconcile as bank_reconcile
 from kernel.carryforward import open_next_period
 from kernel.closing import close_period
 from kernel.db.models import Period, Voucher
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.posting import PostingError
 from kernel.reconcile import reconcile_ledger
@@ -241,7 +242,7 @@ def run_monthend(
     # ---------- 全程事件 ----------
     append_event(
         session, ledger_set_id=ledger_set_id,
-        event_type="agent.monthend.run", aggregate_id=f"{year}{month:02d}",
+        event_type=E.AGENT_MONTHEND_RUN, aggregate_id=f"{year}{month:02d}",
         payload={
             "steps": list(report["steps"].keys()),
             "dry_run": dry_run,

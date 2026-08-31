@@ -28,6 +28,7 @@ from kernel.adapters.spec import EventFieldError, resolve_amount, validate_rule
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Account, Event, Voucher
+from kernel.events import E
 from kernel.seed import seed_demo_ledger
 
 
@@ -214,7 +215,7 @@ def test_ingest_appends_traceable_event(ctx):
         event_type="payment.made", event=event, actor=ctx["actor"])
     s.commit()
     ev = s.scalars(select(Event).where(
-        Event.event_type == "adapter.event.consumed")).one()
+        Event.event_type == E.ADAPTER_EVENT_CONSUMED)).one()
     assert ev.payload["external_event_id"] == "PAY-9"
     assert ev.payload["voucher_no"] == res["voucher"]["voucher_no"]
     assert ev.aggregate_id == res["voucher"]["id"]

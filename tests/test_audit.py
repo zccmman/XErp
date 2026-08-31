@@ -15,6 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from kernel.db.base import Base
+from kernel.events import E
 from kernel.ledger import append_event
 
 REPO = Path(__file__).resolve().parents[1]
@@ -30,7 +31,7 @@ def db_url(tmp_path):
             append_event(
                 s,
                 ledger_set_id="LS",
-                event_type="voucher.created",
+                event_type=E.VOUCHER_CREATED,
                 aggregate_id=f"v-{i}",
                 payload={"n": i},
                 actor={"type": "user", "id": "u1"},

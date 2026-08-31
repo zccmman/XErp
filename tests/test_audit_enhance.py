@@ -15,6 +15,7 @@ from kernel.agent_audit import log_agent_decision
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Account, Balance, Subject, Voucher, VoucherLine
+from kernel.events import E
 from kernel.ledger import verify_chain
 from kernel.opening import import_opening_balances
 from kernel.posting import post_voucher
@@ -88,7 +89,7 @@ def test_agent_decision_logged_with_prompt_hash_only(ctx):
         model="demo-model",
     )
     s.commit()
-    assert evt.event_type == "agent.decision"
+    assert evt.event_type == E.AGENT_DECISION
     assert evt.payload["prompt_sha256"].startswith(  # sha256 长度 64
         evt.payload["prompt_sha256"][:10]
     ) and len(evt.payload["prompt_sha256"]) == 64

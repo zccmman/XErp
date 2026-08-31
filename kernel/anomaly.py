@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Event, Subject, Voucher, VoucherLine, utcnow
+from kernel.events import E
 from kernel.ledger import append_event
 
 # ---------- 规则阈值（默认值，可参数覆盖） ----------
@@ -64,15 +65,15 @@ def breaker_is_open(session: Session, agent_subject_id: str) -> dict | None:
     last = None
     for e in session.scalars(
         select(Event).where(
-            Event.event_type.in_(("agent.breaker.tripped",
-                                  "agent.breaker.released"))
+            Event.event_type.in_((E.BREAKER_TRIPPED,
+                                  E.BREAKER_RELEASED))
         ).order_by(Event.id.desc())
     ):
         if (e.payload or {}).get("subject_id") != agent_subject_id:
             continue
         last = e
         break
-    if last is not None and last.event_type == "agent.breaker.tripped":
+    if last is not None and last.event_type == E.BREAKER_TRIPPED:
         return {
             "tripped_at": last.occurred_at.isoformat() if last.occurred_at else None,
             "reasons": (last.payload or {}).get("reasons", []),
@@ -100,7 +101,7 @@ def trip_breaker(session: Session, *, subject_id: str, reasons: list[str],
                  actor: dict) -> None:
     append_event(
         session, ledger_set_id="__breaker__",
-        event_type="agent.breaker.tripped", aggregate_id=subject_id,
+        event_type=E.BREAKER_TRIPPED, aggregate_id=subject_id,
         payload={"subject_id": subject_id, "reasons": reasons},
         actor=actor,
     )
@@ -110,7 +111,7 @@ def release_breaker(session: Session, *, subject_id: str, actor: dict,
                     note: str = "") -> None:
     append_event(
         session, ledger_set_id="__breaker__",
-        event_type="agent.breaker.released", aggregate_id=subject_id,
+        event_type=E.BREAKER_RELEASED, aggregate_id=subject_id,
         payload={"subject_id": subject_id, "note": note}, actor=actor,
     )
 
@@ -187,7 +188,7 @@ def rule_scan(session: Session, v: Voucher, *,
         today = created.date()
         count = 0
         for e in session.scalars(
-            select(Event).where(Event.event_type == "voucher.created")
+            select(Event).where(Event.event_type == E.VOUCHER_CREATED)
         ):
             if (e.actor or {}).get("id") != creator:
                 continue
@@ -265,7 +266,7 @@ def scan_voucher(
     if findings:
         append_event(
             session, ledger_set_id=v.ledger_set_id,
-            event_type="agent.anomaly.detected", aggregate_id=v.id,
+            event_type=E.AGENT_ANOMALY_DETECTED, aggregate_id=v.id,
             payload={
                 "voucher_no": v.voucher_no,
                 "findings": [{"rule": f.rule, "severity": f.severity,

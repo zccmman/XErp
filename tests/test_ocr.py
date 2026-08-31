@@ -10,6 +10,7 @@ from kernel.adapters.registry import clear
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Account, Event, Voucher
+from kernel.events import E
 from kernel.ocr import (
     InvoiceData,
     PipelineError,
@@ -121,7 +122,7 @@ def test_invalid_invoice_flagged_not_booked(ctx):
     assert s.scalars(select(Voucher).where(
         Voucher.ledger_set_id == ids["ledger_set_id"])).all() == []
     flagged = s.scalars(select(Event).where(
-        Event.event_type == "ocr.invoice.flagged")).all()
+        Event.event_type == E.INVOICE_FLAGGED)).all()
     assert len(flagged) == 1
     assert flagged[0].payload["invoice_no"] == "26120002"
 

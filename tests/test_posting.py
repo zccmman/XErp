@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Balance, Event, Period, Voucher, VoucherLine
+from kernel.events import E
 from kernel.posting import (
     PostingError,
     PostingLine,
@@ -229,7 +230,7 @@ def test_post_happy_path_posts_event_and_balances(session, ids):
 
     evt = post_voucher(session, voucher_id=v.id, actor=ACTOR)
 
-    assert evt.event_type == "voucher.posted"
+    assert evt.event_type == E.VOUCHER_POSTED
     assert evt.aggregate_id == v.id
     assert evt.actor == ACTOR
     assert evt.payload["voucher_no"] == "记-0001"
@@ -329,7 +330,7 @@ def test_posted_event_aggregate_matches_voucher():
     post_voucher(s, voucher_id=v.id, actor={"type": "user", "id": ids["subject_id"]})
     s.commit()
     posted = s.scalars(
-        select(Event).where(Event.event_type == "voucher.posted")
+        select(Event).where(Event.event_type == E.VOUCHER_POSTED)
     ).all()
     assert [e.aggregate_id for e in posted] == [v.id]
     s.close()

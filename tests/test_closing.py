@@ -15,6 +15,7 @@ from kernel.closing import close_period
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Account, Balance, Event, Period, Subject, Voucher, VoucherLine
+from kernel.events import E
 from kernel.ledger import verify_chain
 from kernel.opening import import_opening_balances
 from kernel.posting import post_voucher
@@ -99,7 +100,7 @@ def test_close_period_creates_closing_voucher_and_zeroes_pl(ctx):
     assert profit and profit[0].credit_total == Decimal("7500.00")
     # 事件流含 closing.executed，链完整
     evts = s.scalars(select(Event).where(Event.aggregate_id == v.id)).all()
-    assert [e.event_type for e in evts] == ["closing.executed"]
+    assert [e.event_type for e in evts] == [E.CLOSING_EXECUTED]
     ok, problem = verify_chain(s, ids["ledger_set_id"])
     assert ok and problem is None
 

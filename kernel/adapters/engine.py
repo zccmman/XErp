@@ -38,6 +38,7 @@ from kernel.adapters.spec import (
     resolve_amount,
 )
 from kernel.db.models import Account, Period, Voucher, VoucherLine
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.state import transition
 
@@ -299,7 +300,7 @@ def ingest_event(
     append_event(
         session,
         ledger_set_id=ledger_set_id,
-        event_type="adapter.event.consumed",
+        event_type=E.ADAPTER_EVENT_CONSUMED,
         aggregate_id=voucher.id,
         payload={
             "adapter": adapter,

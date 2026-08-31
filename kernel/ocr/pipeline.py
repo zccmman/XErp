@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from kernel.adapters.engine import ingest_event
 from kernel.db.models import Event
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.ocr.extractors import ExtractError, InvoiceExtractor
 from kernel.ocr.model import low_confidence_fields, validate_invoice
@@ -36,7 +37,7 @@ class PipelineError(ValueError):
 
 
 def _invoice_no_seen(session: Session, invoice_no: str) -> Event | None:
-    for etype in ("invoice.recorded", "ocr.invoice.flagged"):
+    for etype in (E.INVOICE_RECORDED, E.INVOICE_FLAGGED):
         for e in session.scalars(
             select(Event).where(Event.event_type == etype)
         ):
@@ -82,7 +83,7 @@ def ingest_invoice(
     if problems or low_conf:
         append_event(
             session, ledger_set_id=ledger_set_id,
-            event_type="ocr.invoice.flagged", aggregate_id=inv.invoice_no,
+            event_type=E.INVOICE_FLAGGED, aggregate_id=inv.invoice_no,
             payload=payload, actor=actor,
         )
         session.flush()
@@ -103,7 +104,7 @@ def ingest_invoice(
     # 回填消耗事件与凭证号（入账成功才记 recorded，保证查重与账一致）
     append_event(
         session, ledger_set_id=ledger_set_id,
-        event_type="invoice.recorded", aggregate_id=res["voucher"]["id"],
+        event_type=E.INVOICE_RECORDED, aggregate_id=res["voucher"]["id"],
         payload={**payload, "voucher_no": res["voucher"]["voucher_no"]},
         actor=actor,
     )

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Account, Event, Subject, Voucher, VoucherLine
+from kernel.events import E
 from kernel.monthend import MonthendError, run_monthend
 from kernel.seed import seed_demo_ledger
 from kernel.state import transition
@@ -89,7 +90,7 @@ def test_dry_run_reports_pending_and_does_not_touch_books(ctx):
         Voucher.ledger_set_id == ids["ledger_set_id"])).all()
     assert all(v.status != "POSTED" or "7001" not in v.voucher_no for v in vouchers)
     assert s.scalars(select(Event).where(
-        Event.event_type == "agent.monthend.run")).all() == []
+        Event.event_type == E.AGENT_MONTHEND_RUN)).all() == []
 
 
 def test_chase_notifies_pending_vouchers(ctx):
@@ -125,7 +126,7 @@ def test_full_monthend_happy_path(ctx):
     assert steps["open_next"]["voucher_no"].startswith("期初-")
     assert steps["chase"]["pending_count"] == 0
     run_events = s.scalars(select(Event).where(
-        Event.event_type == "agent.monthend.run")).all()
+        Event.event_type == E.AGENT_MONTHEND_RUN)).all()
     assert len(run_events) == 1
     assert run_events[0].payload["net_profit"] == "-800.00"
 

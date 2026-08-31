@@ -14,6 +14,7 @@ import hashlib
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Event
+from kernel.events import E
 from kernel.ledger import append_event
 
 MAX_SUMMARY = 500
@@ -59,7 +60,7 @@ def log_agent_decision(
     return append_event(
         session,
         ledger_set_id=ledger_set_id,
-        event_type="agent.decision",
+        event_type=E.AGENT_DECISION,
         aggregate_id="agent:" + str(actor.get("id") or ""),
         payload=payload,
         actor=actor,

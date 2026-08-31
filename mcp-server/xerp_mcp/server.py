@@ -42,6 +42,7 @@ from kernel.db.models import (  # noqa: E402
     Voucher,
     VoucherLine,
 )
+from kernel.events import E  # noqa: E402
 from kernel.posting import (  # noqa: E402
     PostingError,
     PostingLine,
@@ -408,7 +409,7 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 append_event(
                     s,
                     ledger_set_id=v.ledger_set_id,
-                    event_type="voucher.created",
+                    event_type=E.VOUCHER_CREATED,
                     aggregate_id=v.id,
                     payload=_snapshot(s, v),
                     actor=actor,

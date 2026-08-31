@@ -24,12 +24,13 @@ from kernel.db.models import (
     Voucher,
     utcnow,
 )
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.posting import PostingError, _dims_key
 
 ALLOWED: dict[tuple[str, str], str] = {
-    ("DRAFT", "PUSHED"): "voucher.pushed",
-    ("PUSHED", "APPROVED"): "voucher.approved",
+    ("DRAFT", "PUSHED"): E.VOUCHER_PUSHED,
+    ("PUSHED", "APPROVED"): E.VOUCHER_APPROVED,
 }
 
 
@@ -128,11 +129,11 @@ def cancel_post_voucher(session: Session, *, voucher_id: str, actor: dict) -> Vo
     append_event(
         session,
         ledger_set_id=voucher.ledger_set_id,
-        event_type="voucher.cancelled",
+        event_type=E.VOUCHER_CANCELLED,
         aggregate_id=voucher.id,
         payload={
             "voucher_no": voucher.voucher_no,
-            "reversal_of": "voucher.posted",
+            "reversal_of": E.VOUCHER_POSTED,
             "lines": [
                 {
                     "account_code": cmap.get(ln.account_id, "?"),

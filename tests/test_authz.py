@@ -16,6 +16,7 @@ from kernel.authz import (
 )
 from kernel.db.base import Base
 from kernel.db.models import Subject
+from kernel.events import E
 from kernel.seed import seed_demo_ledger
 
 
@@ -98,7 +99,7 @@ def test_agent_quota_exceeded(ctx):
 
     def simulate(amount: str, occurred: object) -> None:
         append_event(
-            s, ledger_set_id=ids["ledger_set_id"], event_type="voucher.created",
+            s, ledger_set_id=ids["ledger_set_id"], event_type=E.VOUCHER_CREATED,
             aggregate_id=f"v-{amount}-{occurred}", payload={"total_debit": amount},
             actor={"type": "agent", "id": bot.id}, occurred_at=occurred,
         )

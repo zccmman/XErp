@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from kernel.anomaly import AnomalyError, check_breaker
 from kernel.db.models import Account, Event, Subject, Voucher, VoucherLine, utcnow
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.posting import PostingLine, _accumulate_balances
 
@@ -43,7 +44,7 @@ def _quota_used_today(session: Session, agent_id: str, today: date) -> Decimal:
     """
     used = ZERO
     for e in session.scalars(
-        select(Event).where(Event.event_type == "voucher.autonomous.posted")
+        select(Event).where(Event.event_type == E.AUTONOMOUS_POSTED)
     ):
         if (e.payload or {}).get("subject_id") != agent_id:
             continue
@@ -161,7 +162,7 @@ def autonomous_post(
 
     append_event(
         session, ledger_set_id=ledger_set_id,
-        event_type="voucher.autonomous.posted", aggregate_id=voucher.id,
+        event_type=E.AUTONOMOUS_POSTED, aggregate_id=voucher.id,
         payload={
             "subject_id": actor_id,
             "total": str(total),
@@ -191,7 +192,7 @@ def autonomous_post(
 def _is_autonomous(session: Session, voucher_id: str) -> Event | None:
     return session.scalars(
         select(Event).where(
-            Event.event_type == "voucher.autonomous.posted",
+            Event.event_type == E.AUTONOMOUS_POSTED,
             Event.aggregate_id == voucher_id,
         )
     ).first()
@@ -202,7 +203,7 @@ def audit_list(session: Session, *, ledger_set_id: str) -> dict:
     pool: list[dict] = []
     for e in session.scalars(
         select(Event).where(
-            Event.event_type == "voucher.autonomous.posted"
+            Event.event_type == E.AUTONOMOUS_POSTED
         ).order_by(Event.id.desc())
     ):
         p = e.payload or {}
@@ -211,14 +212,14 @@ def audit_list(session: Session, *, ledger_set_id: str) -> dict:
         verdict = "pending"
         for re_ in session.scalars(
             select(Event).where(
-                Event.event_type == "agent.autonomous.reviewed",
+                Event.event_type == E.AUTONOMOUS_REVIEWED,
                 Event.aggregate_id == vid,
             )
         ):
             verdict = (re_.payload or {}).get("verdict", "pending")
         reversed_ = session.scalars(
             select(Event).where(
-                Event.event_type == "agent.autonomous.reversed",
+                Event.event_type == E.AUTONOMOUS_REVERSED,
                 Event.aggregate_id == vid,
             )
         ).first() is not None
@@ -252,7 +253,7 @@ def audit_review(
 
     already = session.scalars(
         select(Event).where(
-            Event.event_type == "agent.autonomous.reviewed",
+            Event.event_type == E.AUTONOMOUS_REVIEWED,
             Event.aggregate_id == voucher_id,
         )
     ).first()
@@ -267,7 +268,7 @@ def audit_review(
     if verdict == "pass":
         append_event(
             session, ledger_set_id=voucher.ledger_set_id,
-            event_type="agent.autonomous.reviewed", aggregate_id=voucher_id,
+            event_type=E.AUTONOMOUS_REVIEWED, aggregate_id=voucher_id,
             payload={"verdict": "pass", "note": note,
                      "voucher_no": voucher.voucher_no},
             actor={"type": "user", "id": reviewer_id},
@@ -302,7 +303,7 @@ def audit_review(
         session.flush()
         append_event(
             session, ledger_set_id=voucher.ledger_set_id,
-            event_type="agent.autonomous.reviewed", aggregate_id=voucher_id,
+            event_type=E.AUTONOMOUS_REVIEWED, aggregate_id=voucher_id,
             payload={"verdict": "reverse", "note": note,
                      "reversal_voucher_no": reversal.voucher_no,
                      "voucher_no": voucher.voucher_no},
@@ -310,7 +311,7 @@ def audit_review(
         )
         append_event(
             session, ledger_set_id=voucher.ledger_set_id,
-            event_type="agent.autonomous.reversed", aggregate_id=voucher_id,
+            event_type=E.AUTONOMOUS_REVERSED, aggregate_id=voucher_id,
             payload={"reversal_voucher_no": reversal.voucher_no,
                      "voucher_no": voucher.voucher_no},
             actor={"type": "user", "id": reviewer_id},

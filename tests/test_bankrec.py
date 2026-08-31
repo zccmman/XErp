@@ -62,6 +62,8 @@ def _book(s, ids, ctx, no, d, summary, bank_dr, bank_cr):
 
 from decimal import Decimal  # noqa: E402  （置于 fixture 后便于阅读）
 
+from kernel.events import E  # noqa: E402
+
 
 def test_import_csv_idempotent(ctx):
     s, ids = ctx["s"], ctx["ids"]
@@ -147,7 +149,7 @@ def test_reconcile_persists_matched_events(ctx):
     assert rep2["summary"]["matched_count"] == 0
     assert rep2["summary"]["book_only_count"] == 1  # 账侧条目仍在（流水已消耗）
     events = s.scalars(select(Event).where(
-        Event.event_type == "bank.txn.matched")).all()
+        Event.event_type == E.BANK_TXN_MATCHED)).all()
     assert len(events) == 1
     assert events[0].payload["voucher_no"] == "记-0301"
 
@@ -166,7 +168,7 @@ def test_reconcile_dry_run(ctx):
     s.commit()
     assert rep["summary"]["matched_count"] == 1
     assert s.scalars(select(Event).where(
-        Event.event_type == "bank.txn.matched")).all() == []
+        Event.event_type == E.BANK_TXN_MATCHED)).all() == []
 
 
 def test_reconcile_date_window_respected(ctx):

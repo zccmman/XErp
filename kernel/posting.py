@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Balance, Event, Period, Voucher, utcnow
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.ledger.canonical import canonical_json
 
@@ -172,7 +173,7 @@ def post_voucher(session: Session, *, voucher_id: str, actor: dict) -> Event:
     evt = append_event(
         session,
         ledger_set_id=voucher.ledger_set_id,
-        event_type="voucher.posted",
+        event_type=E.VOUCHER_POSTED,
         aggregate_id=voucher.id,
         payload=payload,
         actor=actor,

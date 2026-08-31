@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Period, Voucher, VoucherLine, utcnow
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.posting import PostingError, PostingLine, _accumulate_balances
 from kernel.reporting import mapping as M
@@ -147,7 +148,7 @@ def close_period(session: Session, *, ledger_set_id: str, year: int, month: int,
     append_event(
         session,
         ledger_set_id=ledger_set_id,
-        event_type="closing.executed",
+        event_type=E.CLOSING_EXECUTED,
         aggregate_id=voucher.id,
         payload={
             "period": f"{year}-{month:02d}",

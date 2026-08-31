@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Event, Subject, utcnow
+from kernel.events import E
 
 MODEL_TEXT = """
 [request_definition]
@@ -116,7 +117,7 @@ def check_agent_quota(session: Session, *, actor_id: str,
     today = utcnow().date()
     used = Decimal("0")
     for e in session.scalars(
-        select(Event).where(Event.event_type == "voucher.created")
+        select(Event).where(Event.event_type == E.VOUCHER_CREATED)
     ):
         if (e.actor or {}).get("id") != actor_id:
             continue

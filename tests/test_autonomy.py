@@ -20,6 +20,7 @@ from kernel.autonomy import (
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Account, Subject, Voucher
+from kernel.events import E
 from kernel.seed import seed_demo_ledger
 
 
@@ -175,8 +176,8 @@ def test_replay_full_timeline(ctx):
     s.commit()
     rep = replay(s, voucher_id=res["voucher"]["id"])
     types = [e["event_type"] for e in rep["timeline"]]
-    assert "voucher.autonomous.posted" in types
-    assert "agent.autonomous.reviewed" in types
+    assert E.AUTONOMOUS_POSTED in types
+    assert E.AUTONOMOUS_REVIEWED in types
     assert rep["event_count"] == len(types)
 
 

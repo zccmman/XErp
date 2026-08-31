@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Period, Voucher, VoucherLine, utcnow
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.posting import PostingError, _accumulate_balances
 
@@ -137,7 +138,7 @@ def import_opening_balances(
     append_event(
         session,
         ledger_set_id=ledger_set_id,
-        event_type="opening_balance.imported",
+        event_type=E.OPENING_BALANCE_IMPORTED,
         aggregate_id=voucher.id,
         payload={
             "voucher_no": voucher.voucher_no,

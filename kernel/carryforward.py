@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Balance, Period, Voucher, VoucherLine, utcnow
+from kernel.events import E
 from kernel.ledger import append_event
 from kernel.posting import PostingError, PostingLine, _accumulate_balances
 from kernel.reporting import mapping as M
@@ -129,7 +130,7 @@ def open_next_period(session: Session, *, ledger_set_id: str, year: int, month: 
     append_event(
         session,
         ledger_set_id=ledger_set_id,
-        event_type="opening_balance.imported",
+        event_type=E.OPENING_BALANCE_IMPORTED,
         aggregate_id=voucher.id,
         payload={
             "period": f"{ny}-{nm:02d}",

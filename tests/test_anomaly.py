@@ -22,6 +22,7 @@ from kernel.anomaly import (
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import Account, Event, Subject, Voucher, VoucherLine
+from kernel.events import E
 from kernel.seed import seed_demo_ledger
 
 
@@ -98,8 +99,8 @@ def test_release_restores_autonomy(ctx):
     s.commit()
     assert breaker_is_open(s, ctx["bot"].id) is None
     types = [e.event_type for e in s.scalars(select(Event).order_by(Event.id))]
-    assert types.count("agent.breaker.tripped") == 1
-    assert types.count("agent.breaker.released") == 1
+    assert types.count(E.BREAKER_TRIPPED) == 1
+    assert types.count(E.BREAKER_RELEASED) == 1
 
 
 def test_off_hours_rule(ctx):
