@@ -304,6 +304,12 @@ def build_server(db_url: str | None = None) -> FastMCP:
 
                 enforce(sess, actor_id=actor_id, ledger_set_id=ledger_set_id,
                         action="voucher:create")
+                from kernel.anomaly import AnomalyError, check_breaker
+
+                try:
+                    check_breaker(sess, actor_id)
+                except AnomalyError as be:
+                    return _err("BREAKER_OPEN", be.message_zh)
                 total = sum(_D(ln.get("debit") or "0") for ln in (lines or []))
                 check_agent_quota(
                     sess, actor_id=actor_id, voucher_amount=total,
@@ -940,6 +946,55 @@ def build_server(db_url: str | None = None) -> FastMCP:
             code = e.code if isinstance(e, MonthendError) else e.code
             msg = e.message_zh if isinstance(e, MonthendError) else e.message_zh
             return _err(code, msg, getattr(e, "details", None))
+
+    # ---------- 异常侦测（P3-02） ----------
+
+    @mcp.tool()
+    def anomaly_scan(
+        ledger_set_id: str,
+        actor_id: str,
+        voucher_id: str,
+    ) -> dict:
+        """对单张凭证执行异常侦测（规则+LLM 双通道）。
+
+        命中大额/频率规则且创建主体是 Agent → 断路器自动跳闸冻结其自治；
+        人类主体只记录事件不冻结。检出结果落 agent.anomaly.detected 事件。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.anomaly import scan_voucher
+                from kernel.authz import AuthzError, enforce
+
+                enforce(s, actor_id=actor_id, ledger_set_id=ledger_set_id,
+                        action="ledger:read")
+                v = s.get(Voucher, voucher_id)
+                if v is None or v.ledger_set_id != ledger_set_id:
+                    return _err("NOT_FOUND", "凭证不存在")
+                findings = scan_voucher(
+                    s, v, actor={"type": "user", "id": actor_id})
+                s.commit()
+                return _ok(findings=[{"rule": f.rule, "severity": f.severity,
+                                      "message": f.message_zh} for f in findings])
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+
+    @mcp.tool()
+    def anomaly_release(
+        actor_id: str,
+        subject_id: str,
+        note: str = "",
+    ) -> dict:
+        """人工解除 Agent 断路器（恢复自治）。Agent 不能自解，需人类 admin 操作。"""
+        try:
+            with repo.session() as s:
+                from kernel.anomaly import release_breaker
+
+                release_breaker(s, subject_id=subject_id,
+                                actor={"type": "user", "id": actor_id}, note=note)
+                s.commit()
+                return _ok(released=subject_id)
+        except Exception as e:  # noqa: BLE001
+            return _err("RELEASE_FAILED", str(e))
 
     # ---------- Drill 建账向导（P0-10） ----------
 
