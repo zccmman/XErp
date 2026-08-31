@@ -25,3 +25,6 @@ logs/
 web/node_modules/
 web/.npm-cache/
 web/dist/
+web/.npm-cache*/
+web/dist2/
+*.tmp

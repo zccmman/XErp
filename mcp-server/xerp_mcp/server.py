@@ -585,6 +585,38 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except PostingError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    # ---------- 月度运行（P1-06） ----------
+
+    @mcp.tool()
+    def open_next_period(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+        actor_id: str,
+        accounting_standard: str = "small_business",
+    ) -> dict:
+        """期初结转：把 (period_year, period_month) 的资产负债类期末余额滚入下一期间。
+
+        前置：该期间已执行期末结转（close_period）。生成「期初-YYYYMM-NNN」凭证，
+        新期间自动创建为 OPEN。幂等：重复调用返回 ALREADY_OPENED。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.carryforward import open_next_period as _open
+
+                v = _open(
+                    s,
+                    ledger_set_id=ledger_set_id,
+                    year=period_year,
+                    month=period_month,
+                    actor={"type": "user", "id": actor_id},
+                    standard=accounting_standard,
+                )
+                s.flush()
+                return _ok(voucher=_brief(v))
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- 审计增强（P1-04） ----------
 
     @mcp.tool()

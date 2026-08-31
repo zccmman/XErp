@@ -503,6 +503,28 @@ def build_app(db_url: str | None = None) -> FastAPI:
                               "issues": rec["issues"]},
             }
 
+    @app.get("/api/ledger/{ls_id}/a2ui")
+    def api_a2ui(ls_id: str, year: int = 0, month: int = 0):
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return JSONResponse({"error": "ledger not found"}, status_code=404)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc()
+                )
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"), None) or (
+                periods[0] if periods else None
+            )
+            if period is None:
+                return JSONResponse({"error": "no period"}, status_code=404)
+            from kernel.a2ui import build_ledger_messages
+
+            return build_ledger_messages(
+                s, ls_id, period.year, period.month, ls.name, ls.accounting_standard
+            )
+
     @app.get("/api/voucher/{vid}")
     def api_voucher(vid: str):
         with session() as s:
