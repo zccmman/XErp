@@ -843,6 +843,64 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except PipelineError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    # ---------- 银行对账（P2-04） ----------
+
+    @mcp.tool()
+    def bank_import_csv(
+        ledger_set_id: str,
+        actor_id: str,
+        csv_text: str,
+    ) -> dict:
+        """导入银行流水 CSV（表头：date,amount,counterparty,summary,txn_id）。
+
+        amount 正 = 银行收到、负 = 银行支出。流水以 bank.txn.imported 事件落链
+        （append-only，流水号幂等——重复导入自动跳过），零新表。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.authz import AuthzError, enforce
+                from kernel.bankrec import BankRecError, import_csv
+
+                enforce(s, actor_id=actor_id, ledger_set_id=ledger_set_id,
+                        action="ledger:read")
+                res = import_csv(s, ledger_set_id=ledger_set_id, csv_text=csv_text,
+                                 actor={"type": "user", "id": actor_id})
+                s.commit()
+                return _ok(**res)
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+        except BankRecError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def bank_reconcile(
+        ledger_set_id: str,
+        actor_id: str,
+        bank_code: str = "100201",
+        window_days: int = 15,
+        persist: bool = True,
+    ) -> dict:
+        """自动勾对并输出未达账项报告。
+
+        一对一贪心匹配：金额相等 + 方向一致 + 日期差最小（≤window_days 天）。
+        返回 matched（已勾对）/ bank_only（银行已收付企业未记账）/
+        book_only（企业已记账银行未到账，在途）。persist=False 只试算不落勾对事件。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.bankrec import BankRecError
+                from kernel.bankrec import reconcile as _rec
+
+                rep = _rec(s, ledger_set_id=ledger_set_id,
+                           actor={"type": "user", "id": actor_id},
+                           bank_code=bank_code, window_days=window_days,
+                           persist=persist)
+                if persist:
+                    s.commit()
+                return _ok(report=rep)
+        except BankRecError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()
