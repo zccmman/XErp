@@ -901,6 +901,46 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except BankRecError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    # ---------- 关账 Agent（P3-01） ----------
+
+    @mcp.tool()
+    def monthend_run(
+        ledger_set_id: str,
+        actor_id: str,
+        period_year: int,
+        period_month: int,
+        dry_run: bool = False,
+    ) -> dict:
+        """关账 Agent：检查未审凭证→催办→结转→试算→报表草稿→开下期。
+
+        dry_run=True 只检查+催办不动账。正式执行时若存在未审凭证会中止
+        （PENDING_VOUCHERS，催办已发）——Agent 永不代审，人工闸门不绕过。
+        全程产出 agent.monthend.run 事件，可回放。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.authz import AuthzError, enforce
+                from kernel.monthend import MonthendError
+                from kernel.monthend import run_monthend as _run
+
+                enforce(s, actor_id=actor_id, ledger_set_id=ledger_set_id,
+                        action="ledger:close")
+                rep = _run(
+                    s, ledger_set_id=ledger_set_id, year=period_year,
+                    month=period_month,
+                    actor={"type": "user", "id": actor_id},
+                    dry_run=dry_run,
+                )
+                if not dry_run:
+                    s.commit()
+                return _ok(report=rep)
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+        except (MonthendError, PostingError) as e:
+            code = e.code if isinstance(e, MonthendError) else e.code
+            msg = e.message_zh if isinstance(e, MonthendError) else e.message_zh
+            return _err(code, msg, getattr(e, "details", None))
+
     # ---------- Drill 建账向导（P0-10） ----------
 
     @mcp.tool()

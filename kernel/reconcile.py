@@ -108,15 +108,18 @@ def reconcile_ledger(
             c + Decimal(str(b.credit_total)),
         )
 
+    # 投影契约是「净额」口径：期结转会对净零损益行做清理（P1-02），
+    # 因此按借贷合计逐项比对会把被清理的净零行误报为失配。
+    # 净额一致即投影与凭证明细一致；净额失配仍能检出篡改/丢失。
     for code in sorted(set(recomputed) | set(projected)):
         rd, rc = recomputed.get(code, (ZERO, ZERO))
         pd_, pc = projected.get(code, (ZERO, ZERO))
-        if (rd, rc) != (pd_, pc):
+        if rd - rc != pd_ - pc:
             issues.append({
                 "kind": "PROJECTION_MISMATCH",
                 "account": code,
-                "from_vouchers": [rd, rc],
-                "projection": [pd_, pc],
+                "from_vouchers_net": str(rd - rc),
+                "projection_net": str(pd_ - pc),
             })
 
     # 3) 试算平衡
