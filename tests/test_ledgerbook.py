@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import datetime as _dt
+from decimal import Decimal
+
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -28,10 +31,12 @@ def ctx():
     import_chart_of_accounts(s, ids["ledger_set_id"], load_template_rows())
     p9 = Period(ledger_set_id=ids["ledger_set_id"], year=2026, month=9,
                 status="OPEN")
-    s.add(p9); s.flush()
+    s.add(p9)
+    s.flush()
     maker = Subject(type="user", display_name="验收人", autonomy_level=3)
     approver = Subject(type="user", display_name="审批员", autonomy_level=3)
-    s.add_all([maker, approver]); s.commit()
+    s.add_all([maker, approver])
+    s.commit()
     act = {"type": "user", "id": maker.id}
     import_opening_balances(s, ledger_set_id=ids["ledger_set_id"], actor=act,
                             period_year=2026, period_month=9,
@@ -53,13 +58,15 @@ def ctx():
     ]
     for i, (d, summ, lines) in enumerate(books, 1):
         v = Voucher(ledger_set_id=ids["ledger_set_id"], period_id=p9.id,
-                    voucher_no=f"记-{i:04d}", voucher_date=__import__("datetime").date(2026, 9, int(d)),
+                    voucher_no=f"记-{i:04d}",
+                    voucher_date=_dt.date(2026, 9, int(d)),
                     status="DRAFT", summary=summ, created_by=maker.id)
         v.lines = [VoucherLine(line_no=j + 1, account_id=accs[c].id,
-                               debit=__import__("decimal").Decimal(dr or 0),
-                               credit=__import__("decimal").Decimal(cr or 0))
+                               debit=Decimal(dr or 0),
+                               credit=Decimal(cr or 0))
                    for j, (c, dr, cr) in enumerate(lines)]
-        s.add(v); s.flush()
+        s.add(v)
+        s.flush()
         transition(s, voucher_id=v.id, actor=act, target="PUSHED")
         transition(s, voucher_id=v.id, actor={"type": "user", "id": approver.id}, target="APPROVED")
         from kernel.posting import post_voucher
@@ -75,7 +82,9 @@ def test_bank_detail_running_balance(ctx):
     d = ledger_detail(s, ledger_set_id=ids["ledger_set_id"],
                       account_code="100201", year=2026, month=9)
     assert d["opening_balance"] == "100,000.00"
-    assert len(d["rows"]) == 5          # 销售 11,000 / 偿还 2,000 / 回款 5,000 / 房租 3,000 / 广告 1,500
+    # 5 笔: 销售 11,000 / 偿还 2,000 / 回款 5,000
+    #       房租 3,000 / 广告 1,500
+    assert len(d['rows']) == 5
     assert d["totals"]["debit"] == "16,000.00"
     assert d["totals"]["credit"] == "6,500.00"
     assert d["closing_balance"] == "109,500.00"
@@ -119,17 +128,18 @@ def test_detail_excludes_draft_and_pushed(ctx):
     accs = {a.code: a for a in s.scalars(select(Account)).all()}
     v = Voucher(ledger_set_id=ids["ledger_set_id"], period_id=ids["period_id"],
                 voucher_no="记-9001",
-                voucher_date=__import__("datetime").date(2026, 9, 30),
+                voucher_date=_dt.date(2026, 9, 30),
                 status="DRAFT", summary="未过账", created_by=ids["subject_id"])
     v.lines = [
         VoucherLine(line_no=1, account_id=accs["100201"].id,
-                    debit=__import__("decimal").Decimal("999.00"),
-                    credit=__import__("decimal").Decimal("0.00")),
+                    debit=Decimal("999.00"),
+                    credit=Decimal("0.00")),
         VoucherLine(line_no=2, account_id=accs["6001"].id,
-                    debit=__import__("decimal").Decimal("0.00"),
-                    credit=__import__("decimal").Decimal("999.00")),
+                    debit=Decimal("0.00"),
+                    credit=Decimal("999.00")),
     ]
-    s.add(v); s.commit()
+    s.add(v)
+    s.commit()
     d = ledger_detail(s, ledger_set_id=ids["ledger_set_id"],
                       account_code="100201", year=2026, month=9)
     assert all(r["voucher_no"] != "记-9001" for r in d["rows"])
