@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from "react";
+import { MessageProcessor } from "@a2ui/web_core/v0_9";
+import { A2uiSurface, basicCatalog } from "@a2ui/react/v0_9";
+import "@a2ui/react/styles";
 
 const API = import.meta.env.BASE_URL.replace(/\/ui\/$/, "") + "/api";
 const fmt = (n) => Number(n).toLocaleString("zh-CN", { minimumFractionDigits: 2 });
@@ -106,6 +109,36 @@ function ReportSurface({ lsId }) {
   );
 }
 
+/* ---------- Surface 4: A2UI 官方渲染器 ---------- */
+function A2UISurface({ lsId }) {
+  const [processor, setProcessor] = useState(null);
+  const [surfaces, setSurfaces] = useState([]);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    fetch(`${API}/ledger/${lsId}/a2ui`)
+      .then((r) => r.json())
+      .then((data) => {
+        const p = new MessageProcessor([basicCatalog]);
+        p.processMessages(data.messages);
+        setProcessor(p);
+        const sync = () => setSurfaces(Array.from(p.model.surfacesMap.values()));
+        p.onSurfaceCreated(sync);
+        p.onSurfaceDeleted(sync);
+        sync();
+      })
+      .catch((e) => setErr(String(e)));
+  }, [lsId]);
+  if (err) return <p className="err">A2UI 加载失败：{err}</p>;
+  if (!processor) return <p>加载中…</p>;
+  return (
+    <div>
+      <p className="ok">✅ 本区块由 Agent 输出的 A2UI v0.9 声明式 JSON 经官方渲染器（@a2ui/react）实时生成</p>
+      {surfaces.length === 0 && <p>等待 Agent 消息…</p>}
+      {surfaces.map((sf) => <A2uiSurface key={sf.id} surface={sf} />)}
+    </div>
+  );
+}
+
 /* ---------- 主应用 ---------- */
 function App() {
   const [ledgers, setLedgers] = useState(null);
@@ -128,15 +161,16 @@ function App() {
       {cur && (
         <div>
           <div className="tabs">
-            {["vouchers", "balances", "reports"].map((t) => (
+            {["vouchers", "balances", "reports", "a2ui"].map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-                {{ vouchers: "凭证", balances: "余额", reports: "报表" }[t]}
+                {{ vouchers: "凭证", balances: "余额", reports: "报表", a2ui: "A2UI" }[t]}
               </button>
             ))}
           </div>
           {tab === "vouchers" && <VoucherSurface ledger={cur} />}
           {tab === "balances" && <BalanceSurface ledger={cur} />}
           {tab === "reports" && <ReportSurface lsId={cur.id} />}
+          {tab === "a2ui" && <A2UISurface lsId={cur.id} />}
         </div>
       )}
       {!cur && <p>← 选择一个账套开始</p>}
