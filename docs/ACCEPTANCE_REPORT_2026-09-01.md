@@ -49,12 +49,12 @@
 
 ## 4. 真机项状态（验收 D 项：双审批通道）
 
-| 通道 | 代码/测试 | 真机联调 | 阻塞项 |
+| 通道 | 代码/测试 | 真机联调 | 说明 |
 |---|---|---|---|
-| 飞书审批卡片 | ✅ 已落地（`kernel/approval_bot.py` 渠道无关内核） | ⏳ 待真机 | 飞书自建应用凭据（app_id/app_secret）+ 事件订阅回调地址 |
-| 企业微信审批 | ✅ 已落地（`kernel/wecom.py`：token 缓存/卡片推送/回调 AES 加解密；MCP `wecom_send_approval`/`wecom_send`/`wecom_finish_card`） | ⏳ 待真机 | 企微自建应用凭据（corpid/secret/agentid/Token/AESKey）+ 公网回调 URL |
+| 飞书审批卡片 | ✅ 已落地（`mcp-server/xerp_mcp/feishu.py` tenant_access_token + `scripts/feishu_ws.py` WebSocket 长连接，无需公网回调） | ✅ 已闭环（P0-11，真机凭证 记-0002：飞书回复「同意」→ APPROVED→POSTED） | 凭据已在 `.env`（FEISHU_APP_ID/SECRET + 已绑定 open_id/chat_id）；交互方式为「回复消息 同意/驳回 凭证号」 |
+| 企业微信审批 | ✅ 已落地（`kernel/wecom.py`：token 缓存/卡片推送/回调 AES 加解密；MCP `wecom_send_approval`/`wecom_send`/`wecom_finish_card`） | ✅ 已闭环（2026-09-01 真机：绑定→推卡→点「批准」→ APPROVED，actor=ZhengChengChen） | 凭据已在 `.env`；交互方式为「模板卡片按钮回调」；遗留：trycloudflare 隧道域名临时，正式化需固定域名 |
 
-提供凭据后即可补跑 D 项真机验收（发卡片→手机审批→回调回写凭证状态）。
+双通道均已真机端到端闭环；仅企微正式化待固定域名（F7）。
 
 ## 5. 复跑方式
 
