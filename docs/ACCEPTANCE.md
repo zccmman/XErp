@@ -217,7 +217,11 @@ Start-Process "C:\Users\chengchen.zheng\.workbuddy\binaries\python\envs\default\
 ### G1 合格发票
 
 **对 AI 说**：
-> 用发票入账通道处理这张发票：发票号 26123001，日期 2026-08-28，销方「供应商丙」，价税合计 1130、不含税 1118.81、税额 11.19，类别办公费。
+> 用发票入账通道处理这张发票：发票号 26123001，日期 2026-09-01，销方「供应商丙」，价税合计 1130、不含税 1118.81、税额 11.19，类别办公费。
+
+> ⚠️ 日期约束：发票日期必须 ≤ 当天（未来日期会被判 flagged 进复核），
+> 且不得早于已开账期间的首日（凭证按发票日期入账，落到未开账期间会直接
+> AdapterError「请先开账」）。业务期间为 2026-09 时统一用 2026-09-01。
 
 **AI 执行**：`ocr_ingest_invoice(ledger_set_id=<LS>, actor_id=<ME>, invoice={...})`
 
@@ -410,13 +414,14 @@ git ls-tree -r --name-only HEAD | grep -E "\.env$|\.db$"        # 预期空
 | PENDING_VOUCHERS | 有未审凭证 | 关账 Agent 闸门 |
 | FORBIDDEN | 无权限 | Casbin 拒绝 |
 
-## 附录 B：36 个 MCP 工具速查
+## 附录 B：43 个 MCP 工具速查
 
-账套类：`init_ledger_set` `ensure_period` `get_workspace` `list_accounts`
+账套类：`init_ledger_set` `ensure_period` `get_workspace` `list_accounts` `ledger_detail`
 凭证类：`create_voucher` `push_voucher` `approve_voucher` `post_voucher` `cancel_post_voucher` `get_voucher` `import_opening_balances`
 查询类：`query_balances` `report_balance_sheet` `report_income_statement` `report_cash_flow` `reconcile_ledger`
 月结类：`close_period` `open_next_period` `monthend_run`
-集成类：`feishu_send_approval` `adapter_ingest` `adapter_list` `adapter_preview` `adapter_register` `partner_balances`
+转账类：`transfer_define` `transfer_list` `transfer_run`
+集成类：`feishu_send_approval` `wecom_send` `wecom_send_approval` `wecom_finish_card` `adapter_ingest` `adapter_list` `adapter_preview` `adapter_register` `partner_balances`
 智能类：`ocr_ingest_invoice` `ocr_accuracy_report` `bank_import_csv` `bank_reconcile` `log_agent_decision`
 自治类：`autonomy_post` `autonomy_audit_list` `autonomy_audit_review` `autonomy_replay` `anomaly_scan` `anomaly_release`
 
