@@ -20,8 +20,9 @@
 若服务未启动（终端在 `ledgeros/` 目录）：
 
 ```powershell
-Start-Process "C:\Users\chengchen.zheng\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -ArgumentList "-m","kernel.webapp" -WindowStyle Hidden
-Start-Process "C:\Users\chengchen.zheng\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -ArgumentList "scripts\feishu_ws.py" -WindowStyle Hidden
+# <python> 替换为你本机的 Python 解释器路径（Windows 下可用 venv 的 python.exe）
+Start-Process "<python>" -ArgumentList "-m","kernel.webapp" -WindowStyle Hidden
+Start-Process "<python>" -ArgumentList "scripts\feishu_ws.py" -WindowStyle Hidden
 ```
 
 ### 0.2 创建验收账套
