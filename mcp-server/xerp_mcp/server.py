@@ -567,6 +567,33 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except wecom.WecomError as e:
             return _err("WECOM_ERROR", str(e))
 
+    @mcp.tool()
+    def wecom_finish_card(voucher_id: str, user: str = "",
+                          result_text: str = "已批准 ✅") -> dict:
+        """推送完成态展示卡片：无交互按钮，仅展示凭证最终处理结果。
+
+        与 wecom_send_approval（待审交互卡片）互补；不校验状态机（任意状态均可推，
+        便于展示已批准/已驳回/已记账等终态）。task_id 用 finish{voucher_id} 规避企微
+        42014（task_id 复用或非法字符）。
+        """
+        try:
+            with repo.session() as s:
+                from kernel import wecom
+
+                v = s.get(Voucher, voucher_id)
+                if v is None:
+                    return _err("VOUCHER_NOT_FOUND", f"凭证 {voucher_id} 不存在")
+                to_user = user or wecom.default_user()
+                resp = wecom.send_finished_card(to_user, v.voucher_no, result_text, v.id)
+                return _ok(
+                    voucher=_brief(v),
+                    sent_to=to_user,
+                    task_id=f"finish{v.id}",
+                    msgid=resp.get("msgid"),
+                )
+        except wecom.WecomError as e:
+            return _err("WECOM_ERROR", str(e))
+
     # ---------- 三大报表（P1-01） ----------
 
     @mcp.tool()

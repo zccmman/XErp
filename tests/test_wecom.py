@@ -133,6 +133,26 @@ def test_approval_card_structure():
     assert keys == ["approve:vid-1", "reject:vid-1"]
 
 
+def test_send_finished_card_task_id(env_vars, monkeypatch):
+    """完成态卡片用独立 task_id（finish{vid}，无冒号）——规避企微 42014。"""
+    captured = {}
+
+    def fake_post(url, payload):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"errcode": 0, "msgid": "msg-1"}
+
+    monkeypatch.setattr(wecom, "_post_api", fake_post)
+    resp = wecom.send_finished_card("boss", "记-9501", "已批准 ✅", "vid-1")
+    assert resp["msgid"] == "msg-1"
+    card = captured["payload"]["template_card"]
+    assert captured["payload"]["touser"] == "boss"
+    assert card["task_id"] == "finishvid-1"
+    assert ":" not in card["task_id"]  # 冒号是 task_id 非法字符
+    assert card["button_list"][0]["key"] == "noop:vid-1"
+    assert "已批准 ✅" in card["main_title"]["title"]
+
+
 # ---------- 文本指令 → 渠道无关审批内核 ----------
 
 def test_text_command_approve(ctx):

@@ -204,6 +204,19 @@ def send_approval_card(user: str, card: dict) -> dict:
     )
 
 
+def send_finished_card(user: str, voucher_no: str, result_text: str,
+                       voucher_id: str) -> dict:
+    """推送完成态展示卡片（无交互按钮，仅展示凭证最终处理结果，如已批准/已驳回）。
+
+    与待审交互卡片（task_id=voucher_id）互补：企微 message/send 的 task_id 一旦发过
+    即被永久占用（42014），且仅允许 数字/字母/_/-/@（冒号 : 非法，同样报 42014）。
+    故完成态用独立 task_id ``finish{voucher_id}`` 规避。
+    """
+    card = _finished_card(voucher_no, result_text, voucher_id)
+    card["task_id"] = f"finish{voucher_id}"
+    return send_approval_card(user, card)
+
+
 # ---------- 回调加解密（WXBizMsgCrypt 等价实现） ----------
 
 _PKCS7_BLOCK = 32  # 企微约定块长 32 字节（非标准 16）
