@@ -598,6 +598,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 if event != "template_card_event":
                     return Response("", media_type="text/plain")
                 event_key = msg.findtext("EventKey") or ""
+                response_code = msg.findtext("ResponseCode") or ""
                 with session() as s:
                     try:
                         result = wecom.handle_card_event(s, event_key, from_user)
@@ -605,11 +606,13 @@ def build_app(db_url: str | None = None) -> FastAPI:
                         result = f"error:{e.message_zh}"
                 if result.startswith(("approved:", "rejected:")):
                     state, _, voucher_no = result.partition(":")
-                    # 按钮处理成功：主动更新卡片为已完成态；失败则文本告知
+                    # 按钮处理成功：用回调 ResponseCode 整体替换卡片为已完成态；
+                    # 失败则文本告知（状态机已落库，不影响审批结果）
                     try:
                         vid = event_key.partition(":")[2]
                         wecom.update_card(
-                            from_user, vid, "已批准" if state == "approved" else "已驳回",
+                            from_user, response_code, vid,
+                            "已批准 ✅" if state == "approved" else "已驳回 ↩️",
                             voucher_no,
                         )
                     except wecom.WecomError as e:
@@ -617,7 +620,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                         wecom.send_text(
                             from_user,
                             f"✅ {voucher_no} 已{'批准' if state == 'approved' else '驳回'}"
-                            "（卡片更新失败）",
+                            "（卡片更新失败，请以本条为准）",
                         )
             return Response("", media_type="text/plain")
         except wecom.WecomError as e:

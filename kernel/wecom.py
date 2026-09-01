@@ -3,7 +3,7 @@
 能力：
 - access_token 缓存（corpid + corpsecret）
 - 主动推送：text / markdown / 模板卡片（button_interaction，批准/驳回按钮）
-- 按钮回调后更新卡片（template_card/update）
+- 按钮回调后更新卡片（message/update_template_card，消费回调 ResponseCode）
 - 回调加解密：与官方 WXBizMsgCrypt 等价的实现
   （sha1 签名校验 + AES-256-CBC + PKCS7(block=32) + corp_id 尾部校验）
 
@@ -36,7 +36,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TOKEN_URL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
 _SEND_URL = "https://qyapi.weixin.qq.com/cgi-bin/message/send"
-_CARD_UPDATE_URL = "https://qyapi.weixin.qq.com/cgi-bin/message/template_card/update"
+_CARD_UPDATE_URL = "https://qyapi.weixin.qq.com/cgi-bin/message/update_template_card"
 
 _TOKEN_TTL_SECONDS = 7200
 
@@ -179,14 +179,19 @@ def _finished_card(voucher_no: str, result_text: str, voucher_id: str) -> dict:
     }
 
 
-def update_card(user: str, voucher_id: str, result_text: str, voucher_no: str) -> dict:
-    """按钮点击后主动更新同 task_id 的卡片。"""
+def update_card(user: str, response_code: str, voucher_id: str, result_text: str,
+                voucher_no: str) -> dict:
+    """按钮点击后整体替换同 task_id 卡片（消费回调 ResponseCode，一次性、72h 有效）。
+
+    必须传 response_code（来自回调事件 <ResponseCode> 字段）——否则企微无法定位
+    要更新的按钮，卡片不会变化、可被重复点击。
+    """
     return _post_api(
         _CARD_UPDATE_URL,
         {
             "userids": [user],
             "agentid": _agent_id(),
-            "task_id": voucher_id,
+            "response_code": response_code,
             "template_card": _finished_card(voucher_no, result_text, voucher_id),
         },
     )

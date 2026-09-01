@@ -190,6 +190,24 @@ def test_card_event_noop_and_unknown(ctx):
     assert "未知按钮" in wecom.handle_card_event(ctx["s"], "haha", "u")
 
 
+def test_update_card_sends_response_code(env_vars, monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"errcode": 0}
+
+    monkeypatch.setattr(wecom, "_post_api", fake_post)
+    wecom.update_card("boss", "resp-code-123", "vid-1", "已批准 ✅", "记-9501")
+    assert "update_template_card" in captured["url"]
+    assert captured["payload"]["response_code"] == "resp-code-123"
+    assert captured["payload"]["agentid"] == 1000002
+    card = captured["payload"]["template_card"]
+    assert card["button_list"][0]["key"] == "noop:vid-1"
+    assert "已批准 ✅" in card["main_title"]["title"]
+
+
 # ---------- 回调端点（GET 验证 + POST 分发） ----------
 
 @pytest.fixture()
@@ -240,6 +258,42 @@ def test_callback_text_command_end_to_end(ctx, client):
     assert "已批准" in reply.findtext("Content")
     ctx["s"].rollback()  # 丢弃本会话快照，读取 webapp 会话提交的最新状态
     assert ctx["s"].get(Voucher, v.id).status == "APPROVED"
+
+
+def test_callback_card_event_updates_card(ctx, client, monkeypatch):
+    v = ctx["make_pushed"]()
+    calls = {}
+
+    def fake_update(user, response_code, vid, result_text, voucher_no):
+        calls.update(user=user, response_code=response_code, vid=vid,
+                     result_text=result_text, voucher_no=voucher_no)
+        return {"errcode": 0}
+
+    monkeypatch.setattr(wecom, "update_card", fake_update)
+    inner = (
+        "<xml>"
+        "<FromUserName><![CDATA[wecom_boss]]></FromUserName>"
+        "<CreateTime>1</CreateTime><MsgType><![CDATA[event]]></MsgType>"
+        "<Event><![CDATA[template_card_event]]></Event>"
+        f"<EventKey><![CDATA[approve:{v.id}]]></EventKey>"
+        "<TaskId><![CDATA[task-x]]></TaskId>"
+        "<CardType><![CDATA[button_interaction]]></CardType>"
+        "<ResponseCode><![CDATA[resp-code-xyz]]></ResponseCode>"
+        "<AgentID>1000002</AgentID>"
+        "</xml>"
+    )
+    enc, sig, ts, nonce = _encrypted(inner)
+    r = client.post(
+        "/wecom/callback",
+        params={"msg_signature": sig, "timestamp": ts, "nonce": nonce},
+        content=f"<xml><Encrypt><![CDATA[{enc}]]></Encrypt></xml>".encode(),
+    )
+    assert r.status_code == 200
+    ctx["s"].rollback()  # 读取 webapp 会话提交的最新状态
+    assert ctx["s"].get(Voucher, v.id).status == "APPROVED"
+    assert calls.get("response_code") == "resp-code-xyz"
+    assert calls.get("vid") == v.id
+    assert calls.get("result_text") == "已批准 ✅"
 
 
 def test_callback_bad_signature(client):

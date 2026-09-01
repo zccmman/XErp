@@ -12,7 +12,7 @@
   │     wecom_send：通用通知
   └── 回调（企微 → 服务端）：POST /wecom/callback
         文本指令   → kernel/approval_bot.handle_approval_command → 被动加密回复
-        卡片按钮   → kernel/wecom.handle_card_event → 状态机 + template_card/update 更新卡片
+        卡片按钮   → kernel/wecom.handle_card_event → 状态机 + message/update_template_card 更新卡片
 ```
 
 - 回调加解密为与官方 `WXBizMsgCrypt` 等价的实现（sha1 签名 + AES-256-CBC + PKCS7(32) + corp_id 校验）。
@@ -83,5 +83,5 @@ python -m pytest tests/test_wecom.py -v
 ## 7. 已知边界
 
 - 卡片按钮驳回暂无意见输入框，意见以占位语入链（企微 API 限制），随后可用文本指令补充。
-- `template_card/update` 要求卡片 `card_type` 不变，完成后按钮降级为「已处理 ✅」noop 按钮。
+- `message/update_template_card` 必须消费回调事件里的 `ResponseCode`（一次性、72h 有效）才能更新按钮；完成后整体替换为「已处理 ✅」noop 卡片，杜绝重复点击。
 - 同凭证重复推送 `wecom_send_approval` 复用同一 `task_id`（=voucher_id），旧卡自动被覆盖。
