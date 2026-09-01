@@ -158,8 +158,8 @@ def build_approval_card(
             for ln in lines
         ],
         "button_list": [
-            {"type": 1, "text": "批准", "style": 1, "key": f"approve:{voucher_id}"},
-            {"type": 1, "text": "驳回", "style": 2, "key": f"reject:{voucher_id}"},
+            {"text": "批准", "style": 2, "key": f"approve:{voucher_id}"},
+            {"text": "驳回", "style": 3, "key": f"reject:{voucher_id}"},
         ],
         "task_id": voucher_id,
     }
@@ -173,7 +173,7 @@ def _finished_card(voucher_no: str, result_text: str, voucher_id: str) -> dict:
         "main_title": {"title": f"{result_text} · {voucher_no}"},
         "sub_title_text": "该凭证已处理，如需驳回请回复：驳回 凭证号 意见",
         "button_list": [
-            {"type": 1, "text": "已处理 ✅", "style": 2, "key": f"noop:{voucher_id}"},
+            {"text": "已处理 ✅", "style": 1, "key": f"noop:{voucher_id}"},
         ],
         "task_id": voucher_id,
     }
