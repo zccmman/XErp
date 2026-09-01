@@ -28,3 +28,6 @@ web/dist/
 web/.npm-cache*/
 web/dist2/
 *.tmp
+
+# 本地工具/隧道二进制（cloudflared 等）
+.tools/
