@@ -21,7 +21,7 @@ import json
 import os
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -124,11 +124,17 @@ def _voucher_amount(v: Voucher) -> Decimal:
 
 
 def _is_off_hours(created_at: datetime, thresholds: dict) -> bool:
-    hour = created_at.hour
+    # created_at 为 UTC（naive）；「非常规时间」按业务时区（北京时间）判定。
+    # 中国无夏令时，用固定 UTC+8 偏移即可，不引 tzdata 依赖。
+    # （2026-09-01 实测踩坑：直接用 UTC 小时会把工作日上午判成夜间。）
+    local = created_at.replace(tzinfo=UTC).astimezone(
+        timezone(timedelta(hours=8))
+    )
+    hour = local.hour
     start, end = thresholds["off_hours_start"], thresholds["off_hours_end"]
     if start <= hour or hour < end:      # 跨午夜窗口
         return True
-    return created_at.weekday() >= 5     # 周末
+    return local.weekday() >= 5     # 周末
 
 
 def rule_scan(session: Session, v: Voucher, *,
@@ -146,11 +152,14 @@ def rule_scan(session: Session, v: Voucher, *,
             {"total": str(total)},
         ))
 
-    # 2) 非常规时间（创建时刻）
+    # 2) 非常规时间（创建时刻，按北京时间判定与展示）
     if _is_off_hours(created, th):
+        local = created.replace(tzinfo=UTC).astimezone(
+            timezone(timedelta(hours=8))
+        )
         findings.append(Finding(
             "off_hours", "info",
-            f"创建于非常规时间：{created.isoformat()[:19]}（周末或夜间）",
+            f"创建于非常规时间：{local.isoformat()[:19]}（周末或夜间，北京时间）",
         ))
 
     # 3) 罕见科目：近 N 天该账套其他凭证未使用过该科目。

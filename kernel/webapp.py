@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import html
 import os
+import xml.etree.ElementTree as ET
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -205,7 +206,6 @@ def build_app(db_url: str | None = None) -> FastAPI:
     def opening_import(ls_id: str, lines_text: str = Form("")):
         from kernel.opening import import_opening_balances
         from kernel.posting import PostingError
-
         back = f"/ledger/{ls_id}"
         subject = s_first_subject()
         actor = {"type": "user", "id": subject}
@@ -545,6 +545,83 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 "date": v.voucher_date.isoformat(), "summary": v.summary or "",
                 "lines": lines,
             }
+
+    # ---------- 企业微信回调（审核与交互端，P4-W1） ----------
+
+    @app.get("/wecom/callback")
+    def wecom_verify(msg_signature: str, timestamp: str, nonce: str, echostr: str):
+        """企微回调 URL 验证：解密 echostr 原样返回明文。"""
+        from kernel import wecom
+
+        try:
+            token = wecom._cfg("WECOM_TOKEN")
+            if not wecom.verify_signature(token, msg_signature, timestamp, nonce, echostr):
+                return Response("签名校验失败", status_code=400)
+            plain = wecom.decrypt_message(echostr)
+            return Response(plain, media_type="text/plain")
+        except wecom.WecomError as e:
+            return Response(str(e), status_code=400)
+
+    @app.post("/wecom/callback")
+    async def wecom_callback(
+        request: Request, msg_signature: str, timestamp: str, nonce: str
+    ):
+        """企微事件分发：文本指令 → 被动回复；模板卡片按钮 → 状态机 + 卡片更新。"""
+        from kernel import wecom
+        from kernel.posting import PostingError
+
+        body = await request.body()
+        try:
+            token = wecom._cfg("WECOM_TOKEN")
+            encrypt = wecom.parse_encrypt_xml(body)
+            if not wecom.verify_signature(token, msg_signature, timestamp, nonce, encrypt):
+                return Response("签名校验失败", status_code=400)
+            plain = wecom.decrypt_message(encrypt)
+            msg = ET.fromstring(plain)
+            msg_type = msg.findtext("MsgType") or ""
+            from_user = msg.findtext("FromUserName") or ""
+
+            if msg_type == "text":
+                content = (msg.findtext("Content") or "").strip()
+                with session() as s:
+                    try:
+                        reply = wecom.handle_text_command(s, content, from_user)
+                    except PostingError as e:
+                        reply = f"❌ {e.message_zh}"
+                return Response(
+                    wecom.build_text_reply_xml(reply, to_user=from_user),
+                    media_type="text/plain",
+                )
+
+            if msg_type == "event":
+                event = msg.findtext("Event") or ""
+                if event != "template_card_event":
+                    return Response("", media_type="text/plain")
+                event_key = msg.findtext("EventKey") or ""
+                with session() as s:
+                    try:
+                        result = wecom.handle_card_event(s, event_key, from_user)
+                    except PostingError as e:
+                        result = f"error:{e.message_zh}"
+                if result.startswith(("approved:", "rejected:")):
+                    state, _, voucher_no = result.partition(":")
+                    # 按钮处理成功：主动更新卡片为已完成态；失败则文本告知
+                    try:
+                        vid = event_key.partition(":")[2]
+                        wecom.update_card(
+                            from_user, vid, "已批准" if state == "approved" else "已驳回",
+                            voucher_no,
+                        )
+                    except wecom.WecomError as e:
+                        print(f"[wecom] 卡片更新失败: {e}")
+                        wecom.send_text(
+                            from_user,
+                            f"✅ {voucher_no} 已{'批准' if state == 'approved' else '驳回'}"
+                            "（卡片更新失败）",
+                        )
+            return Response("", media_type="text/plain")
+        except wecom.WecomError as e:
+            return Response(str(e), status_code=400)
 
     # ---------- React 构建产物挂载（P1-05，/ui/） ----------
     dist = _REPO_ROOT / "web" / "dist"

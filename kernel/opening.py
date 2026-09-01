@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -114,7 +115,9 @@ def import_opening_balances(
         ledger_set_id=ledger_set_id,
         period_id=period.id,
         voucher_no=f"期初-{seq:04d}",
-        voucher_date=utcnow().date(),
+        # 期初凭证日期固定为期间首日（确定性）：不得取当天，否则跨月边界
+        # 时日期漂移会把期初挤进当期发生额（2026-09-01 实测踩坑）。
+        voucher_date=date(period.year, period.month, 1),
         status="POSTED",
         summary="期初余额导入",
         created_by=str(actor.get("id") or ""),

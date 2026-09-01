@@ -507,6 +507,66 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except FeishuError as e:
             return _err("FEISHU_ERROR", str(e))
 
+    @mcp.tool()
+    def wecom_send_approval(voucher_id: str, user: str = "") -> dict:
+        """把待审凭证推送为企业微信模板卡片（批准/驳回按钮，回调写回状态机）。
+
+        user 为企微 userid，缺省用「绑定」指令写入的 WECOM_RECEIVE_USER。
+        回调端点 /wecom/callback 需已通过企微管理后台验证（docs/WECOM.md）。
+        """
+        try:
+            with repo.session() as s:
+                from kernel import wecom
+
+                v = s.get(Voucher, voucher_id)
+                if v is None:
+                    return _err("VOUCHER_NOT_FOUND", f"凭证 {voucher_id} 不存在")
+                if v.status != "PUSHED":
+                    return _err(
+                        "INVALID_TRANSITION",
+                        f"仅待审（PUSHED）凭证可推送审批卡片，当前 {v.status}",
+                    )
+                line_ids = [ln.account_id for ln in v.lines]
+                cmap = {a.id: a for a in s.scalars(select(Account).where(Account.id.in_(line_ids)))}
+                card = wecom.build_approval_card(
+                    voucher_no=v.voucher_no,
+                    status=v.status,
+                    summary=v.summary or "",
+                    lines=[
+                        {
+                            "account_code": cmap[ln.account_id].code,
+                            "account_name": cmap[ln.account_id].name,
+                            "debit": f"{ln.debit:.2f}",
+                            "credit": f"{ln.credit:.2f}",
+                        }
+                        for ln in v.lines
+                    ],
+                    voucher_id=v.id,
+                )
+                to_user = user or wecom.default_user()
+                wecom.send_approval_card(to_user, card)
+                return _ok(voucher=_brief(v), sent_to=to_user)
+        except wecom.WecomError as e:
+            return _err("WECOM_ERROR", str(e))
+
+    @mcp.tool()
+    def wecom_send(content: str, msg_type: str = "text", user: str = "") -> dict:
+        """企业微信通知推送：text 或 markdown（agent 主动汇报用）。
+
+        user 为企微 userid，缺省用 WECOM_RECEIVE_USER。
+        """
+        try:
+            from kernel import wecom
+
+            to_user = user or wecom.default_user()
+            if msg_type == "markdown":
+                wecom.send_markdown(to_user, content)
+            else:
+                wecom.send_text(to_user, content)
+            return _ok(sent_to=to_user, msg_type=msg_type)
+        except wecom.WecomError as e:
+            return _err("WECOM_ERROR", str(e))
+
     # ---------- 三大报表（P1-01） ----------
 
     @mcp.tool()

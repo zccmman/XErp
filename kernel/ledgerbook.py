@@ -86,7 +86,7 @@ def ledger_detail(
     def signed(dr: Decimal, cr: Decimal) -> Decimal:
         return dr - cr if is_debit_dir else cr - dr
 
-    # 期初余额 = 期间开始前的全部净额
+    # 期初余额 = 期间开始前的全部净额 + 期初导入凭证（建账基线，非业务发生）
     opening = ZERO
     in_period: list[dict] = []
     for ln, v in rows:
@@ -98,7 +98,9 @@ def ledger_detail(
             "debit": Decimal(str(ln.debit)),
             "credit": Decimal(str(ln.credit)),
         }
-        if (v.voucher_date.year, v.voucher_date.month) < (year, month):
+        if v.voucher_no.startswith("期初-"):
+            opening += signed(entry["debit"], entry["credit"])
+        elif (v.voucher_date.year, v.voucher_date.month) < (year, month):
             opening += signed(entry["debit"], entry["credit"])
         elif (v.voucher_date.year, v.voucher_date.month) == (year, month):
             in_period.append(entry)

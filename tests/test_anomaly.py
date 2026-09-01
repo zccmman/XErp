@@ -108,10 +108,10 @@ def test_off_hours_rule(ctx):
     s, ids = ctx["s"], ctx["ids"]
     v = _voucher(s, ids, ctx["bot"].id, "记-8102",
                  __import__("decimal").Decimal("100.00"))
-    # 强制 created_at 到周日 23:00
+    # 强制 created_at 到北京时间周日 23:00（存储为 UTC：2026-08-09 15:00Z）
     import datetime as dt
 
-    v.created_at = dt.datetime(2026, 8, 9, 23, 0)   # 2026-08-09 是周日
+    v.created_at = dt.datetime(2026, 8, 9, 15, 0)   # UTC 15:00 = 北京周日 23:00
     s.commit()
     findings = rule_scan(s, v)
     assert any(f.rule == "off_hours" for f in findings)
