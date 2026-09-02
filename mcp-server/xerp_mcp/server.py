@@ -1339,12 +1339,17 @@ def build_server(db_url: str | None = None) -> FastMCP:
         lines: list[dict],
         period_year: int | None = None,
         period_month: int | None = None,
+        force: bool = False,
     ) -> dict:
-        """【建账向导 第 2 步】导入期初余额（试算平衡自动校验）。
+        """【建账向导 第 2 步】导入期初余额（试算平衡自动校验 + 防重复导入）。
 
         lines: [{"account_code":"1002","debit":"200000","credit":""}, …]；
         借贷合计必须相等，否则整体拒绝（TRIAL_BALANCE_UNBALANCED）。
         成功生成「期初-NNNN」凭证（直接 POSTED）并更新余额投影。
+
+        幂等：同一账套已存在期初凭证时，默认返回 OPENING_ALREADY_IMPORTED 拒绝
+        （重复导入会直接把期初翻倍，属毁账级事故）。确需重导时显式传 force=true：
+        先红字冲销全部旧期初（余额归零 + 审计留痕，原凭证保留），再导入新期初。
         """
         try:
             with repo.session() as s:
@@ -1357,6 +1362,7 @@ def build_server(db_url: str | None = None) -> FastMCP:
                     lines=lines,
                     period_year=period_year,
                     period_month=period_month,
+                    force=force,
                 )
                 s.flush()
                 return _ok(voucher=_brief(v))

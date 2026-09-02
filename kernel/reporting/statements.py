@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Balance, LedgerSet, Period, Voucher, VoucherLine
+from kernel.opening import is_opening_voucher
 from kernel.reporting import mapping as M
 
 ZERO = Decimal("0")
@@ -52,11 +53,19 @@ def _amounts_by_code(session: Session, period: Period) -> dict[str, tuple[Decima
     return out
 
 
-def _ending(code: str, debits: Decimal, credits: Decimal) -> Decimal:
-    """期末余额：资产/成本/费用类借方为正，其余贷方为正。"""
+def ending_balance(code: str, debits: Decimal, credits: Decimal) -> Decimal:
+    """期末余额：资产/成本/费用类借方为正，其余贷方为正。
+
+    对外暴露是为了让 Web 科目余额表与三大报表共用同一口径，
+    避免「报表一个数、页面另一个数」这种最伤信任的不一致。
+    """
     if code.startswith(("1", "6")) and not code.startswith(("6001", "6051", "6301")):
         return debits - credits
     return credits - debits
+
+
+# 内部沿用旧名，避免牵动既有调用点
+_ending = ending_balance
 
 
 def net_profit(session: Session, ledger_set_id: str, year: int, month: int,
@@ -147,6 +156,10 @@ def income_statement(session: Session, ledger_set_id: str, year: int, month: int
     for v in vouchers:
         if v.voucher_no.startswith("结转-"):
             continue
+        # 期初及其红字冲销都不是「本期经营成果」，必须排除：否则建账当期
+        # 利润表会被期初数（甚至 force 重导时的冲销额）直接污染。
+        if is_opening_voucher(v.voucher_no):
+            continue
         for ln in session.scalars(
             select(VoucherLine).where(VoucherLine.voucher_id == v.id)
         ):
@@ -229,7 +242,8 @@ def cash_flow(session: Session, ledger_set_id: str, year: int, month: int,
                 others.append(ln)
         if delta == ZERO:
             continue
-        if v.voucher_no.startswith("期初-"):
+        # 期初及其红字冲销 → 归入期初现金，不计入本期三类流量
+        if is_opening_voucher(v.voucher_no):
             opening_cash += delta
             continue
         inflow = delta > ZERO

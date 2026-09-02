@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Period, Voucher, VoucherLine
+from kernel.opening import is_opening_voucher
 
 ZERO = Decimal("0.00")
 CENT = Decimal("0.01")
@@ -98,7 +99,7 @@ def ledger_detail(
             "debit": Decimal(str(ln.debit)),
             "credit": Decimal(str(ln.credit)),
         }
-        if v.voucher_no.startswith("期初-"):
+        if is_opening_voucher(v.voucher_no):
             opening += signed(entry["debit"], entry["credit"])
         elif (v.voucher_date.year, v.voucher_date.month) < (year, month):
             opening += signed(entry["debit"], entry["credit"])

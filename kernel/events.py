@@ -27,6 +27,7 @@ class E(StrEnum):
 
     # ---------- 账务规则执行 ----------
     OPENING_BALANCE_IMPORTED = "OPENING_BALANCE_IMPORTED"
+    OPENING_BALANCE_REVERSED = "OPENING_BALANCE_REVERSED"
     CLOSING_EXECUTED = "CLOSING_EXECUTED"
 
     # ---------- Agent 治理（Autonomy/Audit） ----------
@@ -58,6 +59,7 @@ DESCRIPTIONS: dict[E, str] = {
     E.VOUCHER_POSTED: "凭证过账",
     E.VOUCHER_CANCELLED: "过账凭证撤销（窗口内）",
     E.OPENING_BALANCE_IMPORTED: "期初余额导入",
+    E.OPENING_BALANCE_REVERSED: "期初余额红字冲销（force 重导前置）",
     E.CLOSING_EXECUTED: "期末损益结转执行",
     E.AGENT_DECISION: "AI 决策留痕",
     E.AGENT_MONTHEND_RUN: "关账 Agent 执行",

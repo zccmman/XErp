@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Account, Balance, Period, Voucher, VoucherLine
+from kernel.opening import is_opening_voucher
 from kernel.reporting import mapping as M
 
 ZERO = Decimal("0")
@@ -145,7 +146,7 @@ def reconcile_ledger(
     cash_codes = [c for c in projected if M.is_cash_account(mp, c)]
     cash_begin = ZERO
     for v in vouchers:
-        if v.voucher_no.startswith("期初-"):
+        if is_opening_voucher(v.voucher_no):
             for ln in session.scalars(
                 select(VoucherLine).where(VoucherLine.voucher_id == v.id)
             ):

@@ -5,6 +5,20 @@ description = "XErp — AI Native 智能体 ERP 内核（总账优先，确定�
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
+# 权威依赖清单：新增依赖必须写在这里，并同步 deploy/Dockerfile 的 pip install
+# （Dockerfile 不执行 pip install .，以免把项目自身打进镜像层）
+dependencies = [
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "fastmcp>=2.0",
+    "psycopg[binary]>=3.1",
+    "fastapi>=0.141",
+    "uvicorn>=0.52",
+    "casbin>=1.43",
+    "casbin_sqlalchemy_adapter>=1.4",
+    "cryptography>=49.0",
+    "lark-oapi>=1.7",
+]
 
 [tool.ruff]
 line-length = 100

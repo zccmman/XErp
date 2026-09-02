@@ -1,24 +1,112 @@
-# XErp 快速开始（Docker Compose · 目标：30 分钟内完成首张凭证）
+# XErp 快速开始
 
-## 前置
+> 目标：**30 分钟内跑起来，并完成第一次建账 + 期初导入 + 查看三大报表**。
 
-- Docker Desktop（或任意 Docker Engine 20+），已启动
-- WorkBuddy / 任意支持 MCP 的 Agent 客户端
+本文面向「第一次接触 XErp 的人」，包含两条使用路径：**Web 界面**（人操作）与 **MCP 对话**（AI Agent 操作）。两者共用同一个内核与同一份数据。
 
-## 三步启动
+---
+
+## 一、前置条件
+
+| 项 | 要求 | 说明 |
+|---|---|---|
+| Docker | Docker Desktop 或 Engine 20+，已启动 | Compose 插件需可用（`docker compose version` 验证） |
+| 端口 | 8001（Web）、8000（MCP）未被占用 | 冲突时改 `docker-compose.yml` 的 `ports` |
+| Agent 客户端（可选） | 支持 MCP 的客户端 | 仅走「对话式记账」时需要；纯 Web 使用不需要 |
+
+---
+
+## 二、启动
 
 ```bash
-cd ledgeros/deploy
-docker compose up -d --build        # 首次构建约 3-5 分钟（拉取镜像）
-docker compose logs -f init         # 看到 "完成: 1 个账套…" 即初始化成功（Ctrl+C 退出日志）
+cd deploy
+docker compose up -d --build      # 首次构建约 3-5 分钟
+docker compose logs -f init       # 看到「完成: 1 个账套…」即初始化成功（Ctrl+C 退出）
+docker compose ps                 # 三个服务：db / mcp / web 均应为 Up
 ```
 
 服务拓扑：
-- `db`：PostgreSQL 16（数据持久化在命名卷 `pgdata`；append-only 触发器在此生效）
-- `init`：一次性执行 alembic 迁移 0001-0003 + 演示账套 + 144 科目模板 + 制单/审批双身份
-- `mcp`：HTTP MCP 服务，端点 `http://localhost:8000/mcp`
 
-## 接入 WorkBuddy
+| 服务 | 作用 | 端口 |
+|---|---|---|
+| `db` | PostgreSQL 16，数据持久化在命名卷 `pgdata`；append-only 触发器在此生效 | — |
+| `init` | **一次性**：执行 alembic 迁移 + 演示账套 + 144 科目模板 + 制单/审批双身份 | — |
+| `web` | Web 界面（建账 / 期初 / 查凭证 / 看报表） | **8001** |
+| `mcp` | HTTP MCP 服务（供 Agent 客户端调用 43 个工具） | **8000** |
+
+> `init` 是一次性任务，跑完就退出（`restart: "no"`），这是**正常的**，不是崩溃。
+
+---
+
+## 三、路径 A：Web 界面（推荐先走这条）
+
+### 1. 打开并登录
+
+浏览器访问 <http://localhost:8001>
+
+#### 全新安装（空库）：先建账，建账即登录
+
+系统里还没有任何操作身份时，登录页会直接给出**建账向导**入口——这是全新安装的正常首启流程，不是报错。建账会同时创建第一个（管理员）身份，完成后**自动以该身份登录**，不用再回登录页选一次。
+
+> 若已设置 `XERP_WEB_PASSWORD`，建账表单会多出一栏「管理员口令」，
+> 防止他人抢先建账占下管理员身份。**请在受信任的网络环境下完成首次建账**；
+> 建账完成后 Web 端即刻上锁，之后所有访问都要登录。
+
+#### 已有身份：选择身份 + 口令
+
+选一个**操作身份**（决定凭证记在谁名下，直接影响审批与审计链）。
+
+- 演示账套预置了两个身份：制单人、审批人（用于体验「制单与审批不能是同一人」的红线）
+- 口令由环境变量 `XERP_WEB_PASSWORD` 控制，**未设置时为单机开放模式**（口令留空即可登录）
+
+> ⚠️ **生产部署必须设置口令**，否则任何人都能访问：
+> ```bash
+> # docker-compose.yml 的 web 服务 environment 中增加
+> XERP_WEB_PASSWORD: "你的强口令"
+> XERP_WEB_SECRET: "随机长字符串"   # 会话签名密钥；不设则每次重启后需重新登录
+> ```
+
+### 2. 建账
+
+首页 → **建账向导** → 填「账套名称」与「所有者姓名」→ 提交。
+
+系统自动完成：导入 144 个科目（小企业准则）→ 建立当月 OPEN 期间 → 注册所有者身份。
+
+### 3. 导入期初余额
+
+进入账套 → 页面底部「导入期初余额」，每行一条 `科目编码,借方,贷方`：
+
+```
+1002,200000,
+3001,,200000
+```
+
+提交时自动校验试算平衡，不平衡整体拒绝，不会落下脏数据。
+
+**重复导入会被拒绝**（期初翻倍是毁账级事故）。如果确实填错了，勾选「覆盖」再提交：
+
+- 系统生成一张 **`冲销-期初-NNNN`** 红字冲销凭证（借贷互换，直接 POSTED），余额归零
+- 再导入新期初；原凭证**不删不改**，完整留在审计链里
+- 冲销凭证在凭证列表中**可见可查**，不是悄悄改数字
+
+### 4. 查看科目余额表与三大报表
+
+账套页的**科目余额表**按会计惯例分列，不会把期初混进本期发生额：
+
+| 编码 | 科目 | 期初余额 | 本期借方 | 本期贷方 | 期末余额 |
+|---|---|---:|---:|---:|---:|
+| 1002 | 银行存款 | 200,000.00 | 0.00 | 0.00 | 200,000.00 |
+
+> 期初是**存量**、不是本期经营成果；红字冲销是对期初的调整，同样不属本期业务。
+> 这两类凭证都不计入利润表与现金流量表的本期流量，但资产负债表要的是期末余额
+> （= 期初 + 本期发生额），因此**包含**期初。
+
+账套页 → **三大报表** → 资产负债表 / 利润表 / 现金流量表，含账账勾稽核对。
+force 重导之后建议看一眼「账账核对」，应为 ✅ 一致。
+
+---
+
+## 四、路径 B：MCP 对话（AI Agent 操作）
 
 连接器管理 → 添加自定义连接器（URL 方式）：
 
@@ -30,22 +118,84 @@ http://localhost:8000/mcp
 
 > 帮我建个新账套，公司叫「演示科技」，所有者写我名字
 
-向导会引导：`init_ledger_set`（144 科目+当月期间）→ 报期初余额 → `import_opening_balances`
-（试算平衡自动校验）→ 直接开始日常记账（报销/付款/收入…）。
+向导会引导：`init_ledger_set`（144 科目 + 当月期间）→ 报期初余额 → `import_opening_balances`（试算平衡自动校验）→ 日常记账（报销 / 付款 / 收入…）。
 
-## 常用运维
+对话式操作适合：发票 OCR 入账、银行流水对账、期末结转、关账检查。
+
+---
+
+## 五、当前能力边界（重要）
+
+**诚实说明当前版本能做什么、不能做什么**，避免你按错误的预期去撞墙。
+
+| 能力 | Web 界面 | MCP / 对话 |
+|---|---|---|
+| 建账、导入科目模板 | ✅ | ✅ |
+| 导入期初余额 | ✅ | ✅ |
+| 查看凭证、余额、明细 | ✅ | ✅ |
+| 三大报表 | ✅ | ✅ |
+| 期末结转、关账 | ✅（报表页） | ✅ |
+| **填制凭证（制单）** | ❌ **暂不支持** | ✅ |
+| 推送审批、审批通过 | ❌ **暂不支持** | ✅ |
+| 发票 OCR 入账 | ❌ | ✅ |
+| 银行流水对账 | ❌ | ✅ |
+
+> **Web 端制单与审批属于下一步的重点工作（G1）**。在此之前，日常制单请走 MCP 对话或 API。
+
+月度结账的推荐组合：**Web 建账 + 期初 → MCP 完成日常制单与审批 → Web 查凭证看报表 → Web 执行结转关账**。
+
+---
+
+## 六、常用运维
 
 ```bash
-docker compose down            # 停止（数据保留在 pgdata 卷）
-docker compose down -v         # 停止并清空数据
-docker compose logs -f mcp     # 看 MCP 服务日志
-docker compose exec db psql -U ledgeros -d ledgeros -c "select count(*) from events;"
+docker compose down               # 停止（数据保留在 pgdata 卷）
+docker compose down -v            # 停止并清空数据（不可恢复）
+docker compose logs -f web        # 看 Web 服务日志
+docker compose logs -f mcp        # 看 MCP 服务日志
+docker compose exec db psql -U ledgeros -d ledgeros \
+  -c "select count(*) from events;"     # 查事件账本条数
 ```
 
-## 排障
+### 部署配置自检（提交前 / 排障第一件事）
+
+```bash
+python scripts/check_deploy.py    # 23 项静态断言，失败 exit 1
+```
+
+会在 `docker compose up` **之前**拦住三类常见「纸面缺陷」：compose 依赖链断裂、Dockerfile 漏 COPY、依赖漏装。
+
+### 全量验收回归
+
+```bash
+python scripts/acceptance_regression.py   # 31 项数字级断言
+```
+
+---
+
+## 七、排障
 
 | 现象 | 处理 |
 |---|---|
-| `init` 退出非 0 | `docker compose logs init` 看迁移报错；常见为 db 未就绪（healthcheck 已缓解） |
-| WorkBuddy 连不上 8000 | 确认 `docker compose ps` 中 mcp 为 Up；端口被占用时改 compose 端口映射 |
-| 想换 PG 密码 | 同时改 db.environment 与两个服务的 XERP_DB |
+| `init` 退出非 0 | `docker compose logs init` 看迁移报错；多为 db 未就绪（healthcheck 已缓解） |
+| 服务起不来，报 `service_healthy` 相关 | 跑 `python scripts/check_deploy.py`，多半是依赖方缺 healthcheck |
+| 容器启动报 `No such file` | 同上，多为 Dockerfile 漏 COPY 入口脚本 |
+| 容器报 `ModuleNotFoundError` | 依赖漏装，检查 `pyproject.toml` 与 `Dockerfile` 是否一致 |
+| Web 打不开 8001 | `docker compose ps` 看 web 是否 Up；端口占用时改 `ports` |
+| 登录后立刻跳回登录页 | 未设 `XERP_WEB_SECRET` 时重启会失效，重新登录即可；或显式配置该变量 |
+| 连不上 8000 | 确认 `mcp` 为 Up；端口占用时改 `ports` |
+| 想换 PG 密码 | 同时改 `db.environment` 与其余服务的 `XERP_DB` |
+
+---
+
+## 八、不使用 Docker（SQLite 单机模式）
+
+适合评估与开发：
+
+```bash
+export XERP_DB="sqlite:///./xerp.db"
+export XERP_WEB_PASSWORD="你的口令"     # 可选，不设则开放模式
+python -m kernel.webapp                  # Web http://127.0.0.1:8001
+```
+
+> SQLite 模式下 append-only 触发器与 PG 一致生效，但**不适合多用户并发生产使用**。

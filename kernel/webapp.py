@@ -20,7 +20,15 @@ from sqlalchemy.orm import Session
 
 from kernel.coa import CoaImportError, import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
-from kernel.db.models import Account, Balance, LedgerSet, Period, Subject, Voucher
+from kernel.db.models import (
+    Account,
+    Balance,
+    LedgerSet,
+    Period,
+    Subject,
+    Voucher,
+    VoucherLine,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,22 +42,71 @@ th{background:#f5f5f0}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;
        background:#eef4e6;color:#3b6d11;font-size:12px}
 .err{color:#a32d2d;background:#fcebeb;padding:8px 12px;border-radius:6px}
+.warn{color:#7a4a00;background:#fff7e6;border:1px solid #ffd591;
+      padding:10px 14px;border-radius:6px;margin:8px 0;font-size:14px;line-height:1.7}
+.warn ul{margin:6px 0 6px 20px;padding:0}
 a{color:#185fa5;text-decoration:none}a:hover{text-decoration:underline}
 input,textarea{width:100%;padding:6px;margin:4px 0;box-sizing:border-box}
+input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}
+label{font-size:14px;cursor:pointer;user-select:none}
 button{padding:6px 18px;background:#185fa5;color:#fff;border:0;border-radius:6px;cursor:pointer}
+.userbar{float:right;font-size:13px;color:#555;margin-top:-34px}
+.userbar b{color:#1a1a1a}
+select{width:100%;padding:6px;margin:4px 0;box-sizing:border-box}
 </style>"""
 
 
-def _page(title: str, body: str) -> HTMLResponse:
+def _page(title: str, body: str, user: str | None = None) -> HTMLResponse:
+    """渲染页面。user 非空时在右上角显示当前身份与退出入口——
+    让「这笔账记在谁名下」始终可见，是审计可追溯的第一道防线。"""
+    userbar = ""
+    if user:
+        userbar = (
+            f'<div class="userbar">当前身份：<b>{html.escape(user)}</b>'
+            f'　<a href="/logout">退出</a></div>'
+        )
     return HTMLResponse(
         f"<!doctype html><html lang=zh><head><meta charset=utf-8>"
         f"<title>{html.escape(title)} · XErp</title>{_CSS}</head>"
-        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{body}</body></html>"
+        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{userbar}{body}</body></html>"
     )
 
 
 def _fmt(d) -> str:
     return f"{(d or 0):.2f}"
+
+
+def _opening_form(ls_id: str, existing: list) -> str:
+    """期初导入表单。已存在期初时切换为警告态：默认导入会被内核拒绝，
+    必须显式勾选「覆盖」才走 force 红字冲销重导。"""
+    textarea = (
+        '<textarea name=lines_text rows=6 '
+        'placeholder="1002,200000,&#10;3001,,200000"></textarea>'
+    )
+    if not existing:
+        return (
+            f'<form method=post action="/ledger/{ls_id}/opening">'
+            "每行一条：<code>科目编码,借方,贷方</code>（留空填 0 亦可省略为空段）<br>"
+            f"{textarea}<br>"
+            '<button type=submit>导入（试算平衡校验）</button></form>'
+        )
+
+    rows = "".join(
+        f"<li>{html.escape(v.voucher_no)}（{v.voucher_date}）</li>" for v in existing
+    )
+    return (
+        '<div class="warn">'
+        "<b>本账套已导入期初余额</b>，重复导入会使期初翻倍，因此默认拒绝。<ul>"
+        f"{rows}</ul>"
+        "如需修正，请在下方勾选「覆盖」后重新提交 —— "
+        "系统会先<b>红字冲销</b>上述期初（余额归零、审计留痕），再导入新数据。"
+        "</div>"
+        f'<form method=post action="/ledger/{ls_id}/opening">'
+        "重新导入（每行一条 <code>科目编码,借方,贷方</code>）：<br>"
+        f"{textarea}<br>"
+        '<label><input type=checkbox name=force> 覆盖：红字冲销旧期初后重新导入</label><br>'
+        '<button type=submit>覆盖导入</button></form>'
+    )
 
 
 def build_app(db_url: str | None = None) -> FastAPI:
@@ -64,10 +121,125 @@ def build_app(db_url: str | None = None) -> FastAPI:
     def session() -> Session:
         return Session(engine)
 
+    # ---------- 认证（P0-4/P0-5 止血） ----------
+    # 修复前 actor 恒为「数据库里第一个主体」，NO_SELF_APPROVAL 在 Web 端形同虚设。
+    # 现在：所有页面/API 必须携带已签名会话，actor 取自会话中显式选择的身份。
+
+    from kernel import webauth
+
+    # 无需登录即可访问的路径（企微回调由签名校验保护，不能走会话）
+    PUBLIC_PATHS = ("/login", "/logout", "/wecom/callback")
+
+    def _is_fresh_install(s: Session) -> bool:
+        """库中尚无任何操作身份 —— 即全新安装、从未建账。"""
+        return s.scalars(select(Subject.id).limit(1)).first() is None
+
+    @app.middleware("http")
+    async def _auth_middleware(request: Request, call_next):
+        # 先置默认值：公开路径下的页面模板同样会读 request.state.subject_name
+        request.state.subject_id = ""
+        request.state.subject_name = ""
+        path = request.url.path
+        public = any(path.startswith(p) for p in PUBLIC_PATHS)
+        if not public and path.startswith("/init"):
+            # 全新安装时放行建账向导。建账是创建第一个身份的唯一途径，
+            # 若在此处拦截会形成「无身份 → 不能登录 → 不能建账 → 无身份」死锁，
+            # 全新安装的客户将彻底进不去系统。口令防护下沉到 /init 表单内。
+            with session() as s:
+                public = _is_fresh_install(s)
+        if not public:
+            payload = webauth.parse_token(request.cookies.get(webauth.COOKIE_NAME))
+            if payload is None:
+                from urllib.parse import quote
+
+                return RedirectResponse(
+                    f"/login?next={quote(path, safe='')}", status_code=303
+                )
+            # 身份可能已被删除，这里不做 DB 校验（避免每个请求多一次查询），
+            # 由各写入点在需要时用内核侧校验兜底
+            request.state.subject_id = payload.get("sub") or ""
+            request.state.subject_name = payload.get("name") or ""
+        return await call_next(request)
+
+    def _safe_next(nxt: str) -> str:
+        """防开放重定向：只允许站内相对路径。"""
+        if nxt and nxt.startswith("/") and not nxt.startswith("//"):
+            return nxt
+        return "/"
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_form(next: str = "", error: str = ""):
+        with session() as s:
+            subjects = s.scalars(
+                select(Subject).order_by(Subject.display_name)
+            ).all()
+            fresh = _is_fresh_install(s)
+            opts = "".join(
+                f'<option value="{sub.id}">{html.escape(sub.display_name)}'
+                f"（{'人员' if sub.type == 'user' else 'Agent'} · L{sub.autonomy_level}）</option>"
+                for sub in subjects
+            )
+        err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+        if fresh:
+            # 全新安装：给出去路，而不是让用户对着空下拉框干瞪眼
+            return _page(
+                "首次建账",
+                f"{err}<h2>欢迎使用 XErp</h2>"
+                '<div class="warn">系统中还没有任何操作身份 —— 这是全新安装。'
+                "请先通过<b>建账向导</b>创建账套，届时会自动创建第一个（管理员）身份，"
+                "建账完成后直接进入系统，无需再登录一次。</div>"
+                '<p><a href="/init">→ 建账向导（创建账套与第一个身份）</a></p>',
+            )
+        mode_note = (
+            '<div class="warn"><b>单机开放模式</b>：未设置 <code>XERP_WEB_PASSWORD</code>，'
+            "口令栏留空即可登录。生产部署请在环境变量中设置口令。</div>"
+            if webauth.is_open_mode()
+            else ""
+        )
+        body = (
+            "<h2>登录 · 选择操作身份</h2>"
+            f"{err}{mode_note}"
+            '<form method=post action="/login">'
+            f'<input type=hidden name=next value="{html.escape(_safe_next(next))}">'
+            "<label>身份（决定凭证记在谁名下，影响审批与审计链）</label>"
+            f'<select name=subject_id>{opts}</select>'
+            "<label>口令</label>"
+            '<input type=password name=password placeholder="开放模式下留空">'
+            '<br><button type=submit>登录</button></form>'
+        )
+        return _page("登录", body)
+
+    @app.post("/login")
+    def login_submit(
+        subject_id: str = Form(""), password: str = Form(""), next: str = Form("")
+    ):
+        if not webauth.check_password(password):
+            return RedirectResponse("/login?error=口令错误", status_code=303)
+        with session() as s:
+            sub = s.get(Subject, subject_id)
+            if sub is None:
+                return RedirectResponse("/login?error=请选择有效身份", status_code=303)
+            name = sub.display_name
+        resp = RedirectResponse(_safe_next(next), status_code=303)
+        resp.set_cookie(
+            webauth.COOKIE_NAME,
+            webauth.issue_token(subject_id, name),
+            httponly=True,
+            samesite="lax",
+            max_age=webauth.SESSION_TTL_SECONDS,
+        )
+        return resp
+
+    @app.get("/logout")
+    def logout():
+        resp = RedirectResponse("/login", status_code=303)
+        resp.delete_cookie(webauth.COOKIE_NAME)
+        return resp
+
     # ---------- 工作区 ----------
 
     @app.get("/", response_class=HTMLResponse)
-    def index():
+    def index(request: Request):
         with session() as s:
             ledgers = s.scalars(select(LedgerSet)).all()
             rows = ""
@@ -88,28 +260,57 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + "</table>"
                 + '<p><a href="/init">＋ 建账向导（新建账套并录入期初）</a></p>'
             )
-            return _page("工作区", body)
+            return _page("工作区", body, request.state.subject_name)
 
     # ---------- 建账向导 ----------
 
     @app.get("/init", response_class=HTMLResponse)
-    def init_form(error: str = ""):
+    def init_form(request: Request, error: str = ""):
+        with session() as s:
+            fresh = _is_fresh_install(s)
         err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+        # 全新安装时 /init 免登录（否则无身份→不能登录→不能建账→死锁）。
+        # 为免被他人抢先建账，此时要求输入管理员口令（开放模式下无需）。
+        boot_note = (
+            '<div class="warn"><b>首次使用</b>：本次建账会同时创建第一个（管理员）身份，'
+            "完成后自动以该身份登录。请在受信任的网络环境下操作；"
+            "建账完成后 Web 端即刻上锁，后续访问均需登录。</div>"
+            if fresh
+            else ""
+        )
+        pwd_field = (
+            "<label>管理员口令</label>"
+            '<input type=password name=password required '
+            'placeholder="环境变量 XERP_WEB_PASSWORD"><br>'
+            if fresh and not webauth.is_open_mode()
+            else ""
+        )
         body = (
             err
+            + boot_note
             + "<h2>建账向导</h2><form method=post action=/init>"
             + "账套名称<br><input name=name required><br>"
             + "所有者姓名（制单人身份）<br><input name=owner_name required><br>"
+            + pwd_field
             + "<br><button type=submit>创建（自动导入小企业会计准则科目）</button></form>"
             + "<p>创建后请在账套页录入期初余额（试算平衡自动校验）。</p>"
         )
-        return _page("建账", body)
+        return _page("建账", body, request.state.subject_name)
 
     @app.post("/init")
-    def init_submit(name: str = Form(""), owner_name: str = Form("")):
+    def init_submit(
+        request: Request,
+        name: str = Form(""),
+        owner_name: str = Form(""),
+        password: str = Form(""),
+    ):
         name, owner_name = name.strip(), owner_name.strip()
         if not name or not owner_name:
             return RedirectResponse("/init?error=账套名与所有者姓名必填", status_code=303)
+        # 未登录（全新安装）时校验管理员口令，防止他人抢先建账占下管理员身份
+        anonymous = not getattr(request.state, "subject_id", "")
+        if anonymous and not webauth.check_password(password):
+            return RedirectResponse("/init?error=口令错误", status_code=303)
         with session() as s:
             exists = s.scalars(select(LedgerSet).where(LedgerSet.name == name)).first()
             if exists is not None:
@@ -124,18 +325,30 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 return RedirectResponse(f"/init?error={e}", status_code=303)
             today = date.today()
             s.add(Period(ledger_set_id=ls.id, year=today.year, month=today.month, status="OPEN"))
-            s.add(Subject(type="user", display_name=owner_name, autonomy_level=3))
+            owner = Subject(type="user", display_name=owner_name, autonomy_level=3)
+            s.add(owner)
             s.commit()
-            return RedirectResponse(f"/ledger/{ls.id}", status_code=303)
+            resp = RedirectResponse(f"/ledger/{ls.id}", status_code=303)
+            if anonymous:
+                # 建账即登录：全新安装时不必建完再去登录页选一次身份
+                resp.set_cookie(
+                    webauth.COOKIE_NAME,
+                    webauth.issue_token(owner.id, owner_name),
+                    httponly=True,
+                    samesite="lax",
+                    max_age=webauth.SESSION_TTL_SECONDS,
+                )
+            return resp
 
     # ---------- 账套仪表盘 ----------
 
     @app.get("/ledger/{ls_id}", response_class=HTMLResponse)
-    def ledger_dashboard(ls_id: str, year: int = 0, month: int = 0, error: str = ""):
+    def ledger_dashboard(request: Request, ls_id: str, year: int = 0,
+                        month: int = 0, error: str = ""):
         with session() as s:
             ls = s.get(LedgerSet, ls_id)
             if ls is None:
-                return _page("错误", "<p class=err>账套不存在</p>")
+                return _page("错误", "<p class=err>账套不存在</p>", request.state.subject_name)
             periods = s.scalars(
                 select(Period).where(Period.ledger_set_id == ls_id).order_by(
                     Period.year.desc(), Period.month.desc()
@@ -151,6 +364,11 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 .order_by(Voucher.voucher_no.desc())
                 .limit(50)
             ).all()
+            # 只列「生效中」的期初：已冲销的旧期初仍在库（append-only 审计需要），
+            # 但展示给会计时必须排除，否则会显示两份期初让人以为翻倍。
+            from kernel.opening import _active_opening_vouchers
+
+            opening_vouchers = _active_opening_vouchers(s, ls_id)
 
             vrows = ""
             for v in vouchers:
@@ -160,18 +378,50 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"<td>{html.escape(v.summary or '')}</td></tr>"
                 )
 
+            # 科目余额表：期初 / 本期发生额 / 期末余额 三栏分列。
+            # 不能只丢一张「发生额投影」给会计 —— 期初余额不是本期发生额，
+            # 混在一起会让本期发生额凭空虚增（force 重导时还会翻倍），
+            # 会计拿去对账会立刻对不上，直接不信任系统。
             brows = ""
             if period is not None:
-                for b in s.scalars(
-                    select(Balance).where(Balance.period_id == period.id)
+                from kernel.opening import is_opening_voucher
+                from kernel.reporting.statements import ending_balance
+
+                accs = {a.id: a for a in s.scalars(select(Account)).all()}
+                opening_agg: dict[str, list] = {}
+                current_agg: dict[str, list] = {}
+                for v in s.scalars(
+                    select(Voucher).where(
+                        Voucher.ledger_set_id == ls_id,
+                        Voucher.period_id == period.id,
+                        Voucher.status == "POSTED",
+                    )
                 ):
-                    acc = s.get(Account, b.account_id)
+                    # 期初口径 = 期初凭证 + 其红字冲销（冲销是对期初的调整，
+                    # 不属本期业务）；两者相抵后的净额才是真实期初。
+                    tgt = (
+                        opening_agg if is_opening_voucher(v.voucher_no) else current_agg
+                    )
+                    for ln in s.scalars(
+                        select(VoucherLine).where(VoucherLine.voucher_id == v.id)
+                    ):
+                        d, c = tgt.get(ln.account_id, (Decimal("0"), Decimal("0")))
+                        tgt[ln.account_id] = (d + ln.debit, c + ln.credit)
+                for aid in sorted(set(opening_agg) | set(current_agg)):
+                    acc = accs.get(aid)
+                    if acc is None:
+                        continue
+                    od, oc = opening_agg.get(aid, (Decimal("0"), Decimal("0")))
+                    cd, cc = current_agg.get(aid, (Decimal("0"), Decimal("0")))
+                    ob = ending_balance(acc.code, od, oc)
+                    cb = ending_balance(acc.code, od + cd, oc + cc)
                     brows += (
-                        f"<tr><td>{acc.code if acc else '?'}</td>"
-                        f"<td>{html.escape(acc.name if acc else '?')}</td>"
-                        f"<td>{b.dims_key}</td>"
-                        f"<td style=text-align:right>{_fmt(b.debit_total)}</td>"
-                        f"<td style=text-align:right>{_fmt(b.credit_total)}</td></tr>"
+                        f"<tr><td>{acc.code}</td>"
+                        f"<td>{html.escape(acc.name)}</td>"
+                        f'<td style=text-align:right>{_fmt(ob)}</td>'
+                        f'<td style=text-align:right>{_fmt(cd)}</td>'
+                        f'<td style=text-align:right>{_fmt(cc)}</td>'
+                        f'<td style=text-align:right><b>{_fmt(cb)}</b></td></tr>'
                     )
 
             ptabs = "".join(
@@ -188,27 +438,28 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 "<table><tr><th>凭证号</th><th>日期</th><th>状态</th><th>摘要</th></tr>"
                 + (vrows or "<tr><td colspan=4>暂无凭证</td></tr>")
                 + "</table>"
-                f"<h3>发生额投影 {period.year}-{period.month:02d}</h3>"
-                "<table><tr><th>编码</th><th>科目</th><th>维度</th>"
-                "<th>借方合计</th><th>贷方合计</th></tr>"
-                + (brows or "<tr><td colspan=5>本期间尚无过账数据</td></tr>")
+                f"<h3>科目余额表 {period.year}-{period.month:02d}</h3>"
+                "<table><tr><th rowspan=2>编码</th><th rowspan=2>科目</th>"
+                "<th rowspan=2>期初余额</th><th colspan=2>本期发生额</th>"
+                "<th rowspan=2>期末余额</th></tr>"
+                "<tr><th>借方</th><th>贷方</th></tr>"
+                + (brows or "<tr><td colspan=6>本期间尚无过账数据</td></tr>")
                 + "</table>"
                 f"""
 <h3>导入期初余额</h3>
-<form method=post action="/ledger/{ls_id}/opening">
-每行一条：<code>科目编码,借方,贷方</code>（留空填 0 亦可省略为空段）<br>
-<textarea name=lines_text rows=6 placeholder="1002,200000,&#10;3001,,200000"></textarea><br>
-<button type=submit>导入（试算平衡校验）</button></form>"""
+{_opening_form(ls_id, opening_vouchers)}
+"""
             )
-            return _page(f"{ls.name}", body)
+            return _page(f"{ls.name}", body, request.state.subject_name)
 
     @app.post("/ledger/{ls_id}/opening")
-    def opening_import(ls_id: str, lines_text: str = Form("")):
+    def opening_import(
+        request: Request, ls_id: str, lines_text: str = Form(""), force: str = Form("")
+    ):
         from kernel.opening import import_opening_balances
         from kernel.posting import PostingError
         back = f"/ledger/{ls_id}"
-        subject = s_first_subject()
-        actor = {"type": "user", "id": subject}
+        actor = {"type": "user", "id": request.state.subject_id}
         parsed = []
         for raw in (lines_text or "").splitlines():
             parts = [x.strip() for x in raw.split(",")]
@@ -217,27 +468,34 @@ def build_app(db_url: str | None = None) -> FastAPI:
             parsed.append(
                 {"account_code": parts[0], "debit": parts[1], "credit": parts[2]}
             )
+        if not parsed:
+            return RedirectResponse(
+                f"{back}?error=未识别到任何有效行，格式：科目编码,借方,贷方",
+                status_code=303,
+            )
         try:
             with session() as s:
-                import_opening_balances(s, ledger_set_id=ls_id, actor=actor, lines=parsed)
+                import_opening_balances(
+                    s,
+                    ledger_set_id=ls_id,
+                    actor=actor,
+                    lines=parsed,
+                    force=(force == "on"),
+                )
                 s.commit()
         except PostingError as e:
             return RedirectResponse(f"{back}?error={e.message_zh}", status_code=303)
         return RedirectResponse(back, status_code=303)
 
-    def s_first_subject() -> str:
-        with session() as s:
-            sub = s.scalars(select(Subject)).first()
-            return sub.id if sub else ""
-
     # ---------- 凭证详情 ----------
 
     @app.get("/ledger/{ls_id}/reports", response_class=HTMLResponse)
-    def reports(ls_id: str, year: int = 0, month: int = 0, error: str = ""):
+    def reports(request: Request, ls_id: str, year: int = 0, month: int = 0,
+             error: str = ""):
         with session() as s:
             ls = s.get(LedgerSet, ls_id)
             if ls is None:
-                return _page("错误", "<p class=err>账套不存在</p>")
+                return _page("错误", "<p class=err>账套不存在</p>", request.state.subject_name)
             periods = s.scalars(
                 select(Period).where(Period.ledger_set_id == ls_id).order_by(
                     Period.year.desc(), Period.month.desc()
@@ -247,7 +505,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 periods[0] if periods else None
             )
             if period is None:
-                return _page(f"{ls.name}", "<p class=err>尚无期间</p>")
+                return _page(f"{ls.name}", "<p class=err>尚无期间</p>",
+                            request.state.subject_name)
             yr, mo = period.year, period.month
             try:
                 from kernel.reporting.statements import (
@@ -260,7 +519,9 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 inc = income_statement(s, ls_id, yr, mo, ls.accounting_standard)
                 cf = cash_flow(s, ls_id, yr, mo, ls.accounting_standard)
             except Exception as e:  # noqa: BLE001
-                return _page(f"{ls.name}", f'<p class=err>报表生成失败: {html.escape(str(e))}</p>')
+                return _page(f"{ls.name}",
+                            f'<p class=err>报表生成失败: {html.escape(str(e))}</p>',
+                            request.state.subject_name)
 
             def table(rows, head1, head2):
                 out = f"<table><tr><th>{head1}</th><th style=text-align:right>{head2}</th></tr>"
@@ -324,18 +585,19 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"{cf['reconcile']['net_increase']:,.2f} = 期末现金 "
                 f"{cf['reconcile']['closing_cash']:,.2f}</p>"
             )
-            return _page(f"{ls.name} 报表", body)
+            return _page(f"{ls.name} 报表", body, request.state.subject_name)
 
     @app.post("/ledger/{ls_id}/close")
-    def do_close(ls_id: str, year: int = Form(0), month: int = Form(0)):
+    def do_close(
+        request: Request, ls_id: str, year: int = Form(0), month: int = Form(0)
+    ):
         from kernel.closing import close_period
         from kernel.posting import PostingError
 
-        subject = s_first_subject()
+        actor = {"type": "user", "id": request.state.subject_id}
         try:
             with session() as s:
-                close_period(s, ledger_set_id=ls_id, year=year, month=month,
-                             actor={"type": "user", "id": subject})
+                close_period(s, ledger_set_id=ls_id, year=year, month=month, actor=actor)
                 s.commit()
         except PostingError as e:
             return RedirectResponse(
@@ -347,11 +609,11 @@ def build_app(db_url: str | None = None) -> FastAPI:
                                 status_code=303)
 
     @app.get("/voucher/{vid}", response_class=HTMLResponse)
-    def voucher_detail(vid: str):
+    def voucher_detail(request: Request, vid: str):
         with session() as s:
             v = s.get(Voucher, vid)
             if v is None:
-                return _page("错误", "<p class=err>凭证不存在</p>")
+                return _page("错误", "<p class=err>凭证不存在</p>", request.state.subject_name)
             lrows = ""
             for ln in v.lines:
                 acc = s.get(Account, ln.account_id)
@@ -371,7 +633,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + v.ledger_set_id
                 + ">← 返回账套</a></p>"
             )
-            return _page(v.voucher_no, body)
+            return _page(v.voucher_no, body, request.state.subject_name)
 
     # ---------- JSON API（React 前端 / A2UI 渲染器数据底座，P1-05） ----------
 

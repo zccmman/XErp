@@ -5,6 +5,8 @@
 .env
 ledgeros_dev.db
 *.db
+# 运行时产物，含本机绝对路径，禁止进镜像
+deploy/demo_state.json
 .coverage
 .pytest_cache
 .ruff_cache

@@ -185,8 +185,9 @@ def _load_book_entries(
             Voucher.ledger_set_id == ledger_set_id,
             Voucher.status.in_(("PUSHED", "APPROVED", "POSTED")),
             VoucherLine.account_id == acc.id,
-            # 期初导入/期末结转是系统规则凭证，不是银行交易，不参与勾对
+            # 期初导入/期初红字冲销/期末结转是系统规则凭证，不是银行交易，不参与勾对
             ~Voucher.voucher_no.like("期初-%"),
+            ~Voucher.voucher_no.like("冲销-%"),
             ~Voucher.voucher_no.like("结转-%"),
         )
         .order_by(Voucher.voucher_date)
