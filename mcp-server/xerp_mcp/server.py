@@ -120,20 +120,50 @@ def build_server(db_url: str | None = None) -> FastMCP:
         "DRAFT": "voucher:cancel",
     }
 
-    def guarded(voucher_id: str, actor_id: str, target: str) -> dict:
+    def _action_for(status: str, target: str, is_maker: bool) -> str:
+        """PUSHED→DRAFT 的权限按执行人区分：撤回是制单人的动作，驳回是审批人的动作。"""
+        if (status, target) == ("PUSHED", "DRAFT"):
+            return "voucher:push" if is_maker else "voucher:approve"
+        return _ACTION_BY_TARGET[target]
+
+    def guarded(voucher_id: str, actor_id: str, target: str, reason: str = "",
+                require_maker: bool | None = None) -> dict:
+        """状态跃迁统一入口。
+
+        require_maker：None=不校验身份关系；True=必须是制单人本人（撤回）；
+        False=必须不是制单人（驳回/审批）。内核 transition 也会兜底判定，
+        这里提前校验只为给出更准确的错误信息。
+        """
         try:
             with repo.session() as s:
                 from kernel.authz import AuthzError, enforce
 
                 v0 = s.get(Voucher, voucher_id)
                 if v0 is not None:
+                    is_maker = str(v0.created_by) == str(actor_id)
+                    # 先查身份关系再鉴权：身份类错误对操作人更具可操作性——
+                    # 「只有制单人本人可以撤回」比「无 voucher:approve 权限」
+                    # 更能直接指导下一步该做什么。
+                    if require_maker is True and not is_maker:
+                        raise PostingError(
+                            "NOT_VOUCHER_MAKER",
+                            "只有制单人本人可以撤回该凭证",
+                            {"voucher_id": voucher_id, "actor_id": actor_id},
+                        )
+                    if require_maker is False and is_maker:
+                        raise PostingError(
+                            "NO_SELF_APPROVAL",
+                            "制单人不能驳回自己的凭证；如需收回请改用 withdraw_voucher 撤回",
+                            {"voucher_id": voucher_id},
+                        )
                     enforce(s, actor_id=actor_id, ledger_set_id=v0.ledger_set_id,
-                            action=_ACTION_BY_TARGET[target])
+                            action=_action_for(v0.status, target, is_maker))
                 v = transition(
                     s,
                     voucher_id=voucher_id,
                     actor={"type": "user", "id": actor_id},
                     target=target,
+                    reason=reason,
                 )
                 s.flush()
                 return _ok(voucher=_brief(v))
@@ -147,6 +177,8 @@ def build_server(db_url: str | None = None) -> FastMCP:
         instructions=(
             "XErp 智能体 ERP 内核。记账顺序：create_voucher → push_voucher → "
             "approve_voucher（须非制单人审批）→ post_voucher。金额一律字符串十进制。"
+            "审批不通过用 reject_voucher 驳回（原因必填，退回制单人修改）；"
+            "制单人在审批前反悔用 withdraw_voucher 撤回。"
         ),
     )
 
@@ -318,103 +350,26 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except AuthzError as e:
             return _err("FORBIDDEN", str(e))
         actor = {"type": "user", "id": actor_id}
+        # 与 Web 制单共用内核唯一实现，避免两条路径两套校验
+        from kernel.voucher_wizard import (
+            create_draft_voucher,
+            record_voucher_created,
+        )
+
         try:
             with repo.session() as s:
-                try:
-                    d = date.fromisoformat(voucher_date)
-                except ValueError:
-                    return _err("DATE_INVALID", f"日期格式应为 YYYY-MM-DD: {voucher_date!r}")
-
-                period = s.scalars(
-                    select(Period).where(
-                        Period.ledger_set_id == ledger_set_id,
-                        Period.year == d.year,
-                        Period.month == d.month,
-                    )
-                ).first()
-                accounts = {
-                    a.code: a
-                    for a in s.scalars(
-                        select(Account).where(Account.ledger_set_id == ledger_set_id)
-                    ).all()
-                }
-
-                posting_lines: list[PostingLine] = []
-                orm_lines: list[VoucherLine] = []
-                for i, ln in enumerate(lines or [], start=1):
-                    code = (ln.get("account_code") or "").strip()
-                    acc = accounts.get(code)
-                    if acc is None:
-                        return _err("ACCOUNT_NOT_FOUND", f"第 {i} 行科目不存在: {code!r}")
-                    dr = _amount(ln.get("debit"), f"第{i}行借方")
-                    cr = _amount(ln.get("credit"), f"第{i}行贷方")
-                    dims = ln.get("aux_dims") or {}
-                    posting_lines.append(PostingLine(acc.id, dr, cr, dims))
-                    orm_lines.append(
-                        VoucherLine(
-                            line_no=i,
-                            account_id=acc.id,
-                            debit=dr,
-                            credit=cr,
-                            aux_dims=dims or None,
-                        )
-                    )
-
-                _validate_voucher(
-                    lines=posting_lines,
-                    accounts_by_id={a.id: a for a in accounts.values()},
-                    period_status=period.status if period else "MISSING",
-                    period_year=d.year,
-                    period_month=d.month,
-                    voucher_date=d,
-                )
-                if period is None:
-                    return _err(
-                        "PERIOD_NOT_FOUND", f"{d.year}-{d.month:02d} 期间不存在，请先初始化"
-                    )
-
-                seq = (
-                    len(
-                        s.scalars(
-                            select(Voucher.id).where(
-                                Voucher.ledger_set_id == ledger_set_id
-                            )
-                        ).all()
-                    )
-                    + 1
-                )
-                v = Voucher(
-                    ledger_set_id=ledger_set_id,
-                    period_id=period.id,
-                    voucher_no=f"记-{seq:04d}",
-                    voucher_date=d,
-                    status="DRAFT",
-                    summary=summary,
-                    created_by=actor_id,
-                    idempotency_key=idempotency_key,
-                    lines=orm_lines,
-                )
-                s.add(v)
-                try:
-                    s.flush()
-                except IntegrityError:
-                    s.rollback()
-                    prior = s.scalars(
-                        select(Voucher).where(Voucher.idempotency_key == idempotency_key)
-                    ).first()
-                    return _ok(voucher=_brief(prior), replayed=True)
-
-                from kernel.ledger import append_event
-
-                append_event(
+                v, replayed = create_draft_voucher(
                     s,
-                    ledger_set_id=v.ledger_set_id,
-                    event_type=E.VOUCHER_CREATED,
-                    aggregate_id=v.id,
-                    payload=_snapshot(s, v),
+                    ledger_set_id=ledger_set_id,
                     actor=actor,
+                    voucher_date=voucher_date,
+                    summary=summary,
+                    lines=lines,
+                    idempotency_key=idempotency_key,
                 )
-                s.flush()
+                if replayed:
+                    return _ok(voucher=_brief(v), replayed=True)
+                record_voucher_created(s, v, actor)
                 return _ok(voucher=_brief(v))
         except PostingError as e:
             return _err(e.code, e.message_zh, e.details)
@@ -428,6 +383,24 @@ def build_server(db_url: str | None = None) -> FastMCP:
     def approve_voucher(voucher_id: str, actor_id: str) -> dict:
         """审批通过：PUSHED → APPROVED。制单人与审批人不能相同（NO_SELF_APPROVAL）。"""
         return guarded(voucher_id, actor_id, "APPROVED")
+
+    @mcp.tool()
+    def reject_voucher(voucher_id: str, actor_id: str, reason: str) -> dict:
+        """审批驳回：PUSHED → DRAFT，退回制单人修改后可重新提交。
+
+        reason 必填——制单人必须知道单据为什么被退回，否则只能靠猜。
+        制单人本人不能驳回自己的凭证，请改用 withdraw_voucher。
+        Agent 主体不能处置审批队列。
+        """
+        return guarded(voucher_id, actor_id, "DRAFT", reason=reason, require_maker=False)
+
+    @mcp.tool()
+    def withdraw_voucher(voucher_id: str, actor_id: str, reason: str = "") -> dict:
+        """制单人撤回：PUSHED → DRAFT，在审批前自行收回修改（reason 选填）。
+
+        仅制单人本人可用。已通过审批或已在审批中被他人驳回的单据不能再撤回。
+        """
+        return guarded(voucher_id, actor_id, "DRAFT", reason=reason, require_maker=True)
 
     @mcp.tool()
     def post_voucher(voucher_id: str, actor_id: str) -> dict:

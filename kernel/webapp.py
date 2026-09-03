@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -46,6 +47,11 @@ th{background:#f5f5f0}
       padding:10px 14px;border-radius:6px;margin:8px 0;font-size:14px;line-height:1.7}
 .warn ul{margin:6px 0 6px 20px;padding:0}
 a{color:#185fa5;text-decoration:none}a:hover{text-decoration:underline}
+.nav{font-size:14px;margin:-8px 0 20px}
+.ops{background:#f8f9fb;border:1px solid #e3e6ec;border-radius:8px;
+     padding:12px 16px;margin:14px 0}
+.ops form{margin:6px 0}
+button.danger{background:#a32d2d}
 input,textarea{width:100%;padding:6px;margin:4px 0;box-sizing:border-box}
 input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}
 label{font-size:14px;cursor:pointer;user-select:none}
@@ -65,10 +71,11 @@ def _page(title: str, body: str, user: str | None = None) -> HTMLResponse:
             f'<div class="userbar">当前身份：<b>{html.escape(user)}</b>'
             f'　<a href="/logout">退出</a></div>'
         )
+    nav = '<p class=nav><a href="/">工作区</a> · <a href="/todo">审批待办</a></p>'
     return HTMLResponse(
         f"<!doctype html><html lang=zh><head><meta charset=utf-8>"
         f"<title>{html.escape(title)} · XErp</title>{_CSS}</head>"
-        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{userbar}{body}</body></html>"
+        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{userbar}{nav}{body}</body></html>"
     )
 
 
@@ -107,6 +114,180 @@ def _opening_form(ls_id: str, existing: list) -> str:
         '<label><input type=checkbox name=force> 覆盖：红字冲销旧期初后重新导入</label><br>'
         '<button type=submit>覆盖导入</button></form>'
     )
+
+
+# ---------- 制单表单（G1 制单闭环） ----------
+#
+# 会计一天要在这一屏上花掉最多时间，三件事决定它好不好用：
+#   1. 科目能快速定位——144 个科目纯下拉没法用，加一个过滤框按「编码或名称」子串筛；
+#   2. 借贷是否平衡当场可见——提交后被内核拒回来重填是最差体验；
+#   3. 提交失败必须保留已填内容——一行分录手打完再丢一次，没人愿意用第二次。
+# 因此本页不走「redirect + ?error=」的既有模式，而是失败时原地重渲染并回填。
+
+_FORM_JS = """<script>
+function filterAccounts(q){
+  q = (q||'').trim().toLowerCase();
+  document.querySelectorAll('select.acct').forEach(function(sel){
+    for (var i=0;i<sel.options.length;i++){
+      var opt = sel.options[i];
+      // 永不隐藏当前选中项：否则用户筛完看到空框，以为自己没选过
+      if (opt.selected) { opt.hidden = false; continue; }
+      opt.hidden = !!q && opt.textContent.toLowerCase().indexOf(q) < 0;
+    }
+  });
+}
+function recalc(){
+  var d=0, c=0;
+  document.querySelectorAll('input.amt-debit').forEach(function(i){
+    d += parseFloat(i.value)||0; });
+  document.querySelectorAll('input.amt-credit').forEach(function(i){
+    c += parseFloat(i.value)||0; });
+  var diff = d - c, ok = Math.abs(diff) < 0.005;
+  var sd=document.getElementById('sumDebit'), sc=document.getElementById('sumCredit'),
+      sf=document.getElementById('sumDiff'), hint=document.getElementById('balanceHint');
+  if(sd) sd.textContent = d.toFixed(2);
+  if(sc) sc.textContent = c.toFixed(2);
+  if(sf){ sf.textContent = diff.toFixed(2); sf.style.color = ok?'#3b6d11':'#a32d2d'; }
+  if(hint){
+    hint.textContent = ok ? '借贷已平衡，可以提交'
+                          : '借贷不等，差额 ' + diff.toFixed(2) + '（提交会被拒绝）';
+    hint.style.color = ok?'#3b6d11':'#a32d2d';
+  }
+}
+function addLine(){
+  var tb = document.getElementById('lines');
+  var rows = tb.querySelectorAll('tr');
+  var row = rows[rows.length-1].cloneNode(true);
+  row.querySelectorAll('input').forEach(function(i){ i.value=''; });
+  var sel = row.querySelector('select.acct');
+  if (sel) sel.selectedIndex = 0;
+  tb.appendChild(row);
+  recalc();
+}
+function delLine(btn){
+  var tb = document.getElementById('lines');
+  if (tb.querySelectorAll('tr').length <= 1) { return; }  // 至少留一行
+  btn.closest('tr').remove();
+  recalc();
+}
+document.addEventListener('DOMContentLoaded', function(){
+  var tb = document.getElementById('lines');
+  if (tb) {
+    // 事件委托：新增/克隆的行自动获得监听，无需逐个绑定
+    tb.addEventListener('input', recalc);
+    tb.addEventListener('click', function(e){
+      if (e.target && e.target.classList.contains('del')) delLine(e.target);
+    });
+  }
+  recalc();
+});
+</script>"""
+
+
+def _default_voucher_date(period) -> date:
+    """默认制单日期：今天落在开放期间内就用今天，否则钳到期间边界。
+
+    钳到**期末**而非期初——会计在 9 月初补录 8 月凭证是常态，
+    给 8-01 反而要再改一次日期。
+    """
+    from calendar import monthrange
+
+    today = date.today()
+    if period is None:
+        return today
+    start = date(period.year, period.month, 1)
+    end = date(period.year, period.month, monthrange(period.year, period.month)[1])
+    if today < start:
+        return start
+    if today > end:
+        return end
+    return today
+
+
+def _account_options(accounts: list, selected: str = "") -> str:
+    opts = ['<option value="">（选择科目）</option>']
+    for a in accounts:
+        sel = " selected" if a.code == selected else ""
+        # 文本带编码：浏览器原生键盘搜索可直接敲「1002」跳到银行存款
+        opts.append(
+            f'<option value="{html.escape(a.code)}"{sel}>'
+            f"{html.escape(a.code)} {html.escape(a.name)}</option>"
+        )
+    return "".join(opts)
+
+
+def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None) -> str:
+    """渲染制单表单。values 非空表示提交失败后的回填。"""
+    v = values or {}
+    vdate = v.get("voucher_date") or _default_voucher_date(period)
+    summary = v.get("summary") or ""
+    rows = list(v.get("rows") or [])
+    while len(rows) < 4:  # 至少 4 行：一借一贷是常态，留两行给复杂分录
+        rows.append({"account_code": "", "debit": "", "credit": ""})
+
+    if period is None:
+        head = "<p class=err>本账套尚无会计期间，无法制单。请先初始化期间。</p>"
+    else:
+        from calendar import monthrange
+
+        last = monthrange(period.year, period.month)[1]
+        head = (
+            f"<p>记账期间：<b>{period.year}-{period.month:02d}</b>"
+            f"（{period.status}）　日期须落在 "
+            f"{period.year}-{period.month:02d}-01 ～ {period.year}-{period.month:02d}-{last:02d}</p>"
+        )
+
+    trows = ""
+    for r in rows:
+        trows += (
+            "<tr><td>"
+            f'<select class=acct name=account_code>{_account_options(accounts, r.get("account_code") or "")}'
+            "</select></td>"
+            f'<td><input class="amt-debit" name=debit inputmode=decimal '
+            f'placeholder="0.00" value="{html.escape(str(r.get("debit") or ""))}"></td>'
+            f'<td><input class="amt-credit" name=credit inputmode=decimal '
+            f'placeholder="0.00" value="{html.escape(str(r.get("credit") or ""))}"></td>'
+            '<td><button type=button class="del" '
+            'style="padding:2px 8px;background:#fff;color:#a32d2d;border:1px solid #ddd">'
+            "删除</button></td></tr>"
+        )
+
+    return f"""
+{_FORM_JS}
+<h2>新建凭证</h2>
+{head}
+<form method=post action="/ledger/{ls_id}/voucher/new">
+<p>科目过滤：<input id=acctFilter oninput="filterAccounts(this.value)"
+   placeholder="输入编码或名称，如 1002 或 银行"
+   style="max-width:320px;display:inline-block"></p>
+<table>
+<thead><tr><th style="width:52%">科目</th><th>借方</th><th>贷方</th><th style="width:70px"></th></tr></thead>
+<tbody id=lines>{trows}</tbody>
+<tfoot><tr>
+  <th style="text-align:right">合计</th>
+  <th id=sumDebit style="text-align:right">0.00</th>
+  <th id=sumCredit style="text-align:right">0.00</th>
+  <th></th>
+</tr><tr>
+  <th style="text-align:right">差额</th>
+  <th id=sumDiff colspan=2 style="text-align:right">0.00</th>
+  <th></th>
+</tr></tfoot>
+</table>
+<p><button type=button onclick="addLine()" style="background:#fff;color:#185fa5;
+   border:1px solid #185fa5">+ 增加一行</button>
+   <span id=balanceHint style="margin-left:12px;font-size:14px"></span></p>
+<p>日期：<input type=date name=voucher_date value="{vdate}"
+   style="max-width:200px;display:inline-block"></p>
+<p>摘要：<input name=summary value="{html.escape(str(summary))}"
+   placeholder="如：报销差旅费"></p>
+<p>
+<button type=submit name=action value=draft>保存为草稿</button>
+<button type=submit name=action value=submit style="margin-left:8px">保存并提交审批</button>
+<a href="/ledger/{ls_id}" style="margin-left:12px">取消</a>
+</p>
+</form>
+"""
 
 
 def build_app(db_url: str | None = None) -> FastAPI:
@@ -150,8 +331,6 @@ def build_app(db_url: str | None = None) -> FastAPI:
         if not public:
             payload = webauth.parse_token(request.cookies.get(webauth.COOKIE_NAME))
             if payload is None:
-                from urllib.parse import quote
-
                 return RedirectResponse(
                     f"/login?next={quote(path, safe='')}", status_code=303
                 )
@@ -434,7 +613,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"<h2>账套：{html.escape(ls.name)}　"
                 f"<a href='/ledger/{ls_id}/reports'>三大报表 →</a></h2>"
                 f"<p>期间切换：{ptabs}</p>{err}"
-                "<h3>凭证（最近 50 张）</h3>"
+                '<h3>凭证（最近 50 张）　'
+                f"<a href='/ledger/{ls_id}/voucher/new'>+ 新建凭证</a></h3>"
                 "<table><tr><th>凭证号</th><th>日期</th><th>状态</th><th>摘要</th></tr>"
                 + (vrows or "<tr><td colspan=4>暂无凭证</td></tr>")
                 + "</table>"
@@ -486,6 +666,98 @@ def build_app(db_url: str | None = None) -> FastAPI:
         except PostingError as e:
             return RedirectResponse(f"{back}?error={e.message_zh}", status_code=303)
         return RedirectResponse(back, status_code=303)
+
+    # ---------- 制单（G1 制单闭环） ----------
+
+    def _render_voucher_form(request, ls_id: str, error: str = "",
+                             values: dict | None = None) -> HTMLResponse:
+        """制单页渲染。建单走内核原语 create_draft_voucher——与 MCP 同一实现，
+        避免「对话里进得来、界面上进不去」的两套校验。"""
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>",
+                             request.state.subject_name)
+            period = s.scalars(
+                select(Period)
+                .where(Period.ledger_set_id == ls_id, Period.status == "OPEN")
+                .order_by(Period.year.desc(), Period.month.desc())
+            ).first()
+            all_acc = list(
+                s.scalars(
+                    select(Account).where(
+                        Account.ledger_set_id == ls_id
+                    ).order_by(Account.code)
+                ).all()
+            )
+            # 只给末级科目：非末级科目过账会被内核拒绝（父科目余额由子科目汇总），
+            # 放进下拉等于埋一个「选了必然报错」的坑。
+            leaf = [a for a in all_acc if a.is_leaf] or all_acc
+            err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            body = (
+                f"<p><a href='/ledger/{ls_id}'>← 返回账套</a></p>{err}"
+                + _voucher_form(ls_id, leaf, period, values)
+            )
+            return _page(f"{ls.name} · 新建凭证", body,
+                         request.state.subject_name)
+
+    @app.get("/ledger/{ls_id}/voucher/new", response_class=HTMLResponse)
+    def voucher_new(request: Request, ls_id: str, error: str = ""):
+        return _render_voucher_form(request, ls_id, error)
+
+    @app.post("/ledger/{ls_id}/voucher/new")
+    def voucher_create(
+        request: Request,
+        ls_id: str,
+        voucher_date: str = Form(""),
+        summary: str = Form(""),
+        account_code: list[str] = Form([]),
+        debit: list[str] = Form([]),
+        credit: list[str] = Form([]),
+        action: str = Form("draft"),
+    ):
+        from kernel.posting import PostingError
+        from kernel.state import transition
+        from kernel.voucher_wizard import create_draft_voucher, record_voucher_created
+
+        actor = {"type": "user", "id": request.state.subject_id}
+        rows = []
+        for code, dr, cr in zip(account_code, debit, credit):
+            if not (code or "").strip():
+                continue  # 未选科目的空行直接丢弃，不算分录
+            rows.append(
+                {
+                    "account_code": code.strip(),
+                    "debit": dr or "",
+                    "credit": cr or "",
+                }
+            )
+        values = {
+            "voucher_date": voucher_date,
+            "summary": summary,
+            "rows": rows or [{"account_code": "", "debit": "", "credit": ""}] * 4,
+        }
+        try:
+            with session() as s:
+                v, replayed = create_draft_voucher(
+                    s,
+                    ledger_set_id=ls_id,
+                    actor=actor,
+                    voucher_date=voucher_date,
+                    summary=summary,
+                    lines=rows,
+                )
+                if not replayed:
+                    record_voucher_created(s, v, actor)
+                if action == "submit":
+                    transition(s, voucher_id=v.id, actor=actor, target="PUSHED")
+                s.commit()
+                vid = v.id
+        except PostingError as e:
+            # 原地重渲染并回填：重定向回空表会让会计把整张凭证重打一遍
+            return _render_voucher_form(request, ls_id, error=e.message_zh,
+                                        values=values)
+        return RedirectResponse(f"/voucher/{vid}", status_code=303)
 
     # ---------- 凭证详情 ----------
 
@@ -609,7 +881,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                                 status_code=303)
 
     @app.get("/voucher/{vid}", response_class=HTMLResponse)
-    def voucher_detail(request: Request, vid: str):
+    def voucher_detail(request: Request, vid: str, error: str = ""):
         with session() as s:
             v = s.get(Voucher, vid)
             if v is None:
@@ -624,16 +896,208 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"<td style=text-align:right>{_fmt(ln.debit)}</td>"
                     f"<td style=text-align:right>{_fmt(ln.credit)}</td></tr>"
                 )
+            # 操作区：按「当前身份 × 凭证状态」决定能做什么。与 MCP guarded
+            # 同一内核语义（NO_SELF_APPROVAL / AGENT_APPROVAL_FORBIDDEN），
+            # 这里只是把门禁翻译成按钮显隐，最终裁决仍在 transition。
+            actor_id = request.state.subject_id
+            is_maker = str(v.created_by) == str(actor_id)
+            me = s.get(Subject, actor_id)
+            i_am_agent = (me.type if me else "user") == "agent"
+            ops = ""
+            if v.status == "PUSHED":
+                if is_maker:
+                    ops = (
+                        f'<div class=ops><form method=post action="/voucher/{vid}/withdraw">'
+                        "<button>撤回（收回修改）</button></form></div>"
+                    )
+                elif i_am_agent:
+                    ops = (
+                        '<div class=ops><p class=warn>当前身份是 Agent，不能审批或驳回；'
+                        "请用人员身份登录处理。</p></div>"
+                    )
+                else:
+                    ops = (
+                        f'<div class=ops><form method=post action="/voucher/{vid}/approve">'
+                        "<button>同意（批准）</button></form>"
+                        f'<form method=post action="/voucher/{vid}/reject">'
+                        "<label>驳回原因（必填，将退回制单人修改）</label>"
+                        '<textarea name=reason rows=2 '
+                        'placeholder="例如：金额与发票不符，请核对后重新提交"></textarea>'
+                        '<button class=danger>驳回</button></form></div>'
+                    )
+            elif v.status == "APPROVED" and not i_am_agent:
+                ops = (
+                    f'<div class=ops><form method=post action="/voucher/{vid}/post">'
+                    "<button>过账（记入总账）</button></form></div>"
+                )
+            elif v.status == "APPROVED":
+                ops = '<div class=ops><p class=warn>Agent 不能执行过账，请由人员操作。</p></div>'
+            err = f'<p class="err">{html.escape(error)}</p>' if error else ""
             body = (
                 f"<h2>凭证 {v.voucher_no} <span class=badge>{v.status}</span></h2>"
                 f"<p>日期 {v.voucher_date}　摘要 {html.escape(v.summary or '')}</p>"
-                "<table><tr><th>#</th><th>编码</th><th>科目</th><th>借方</th><th>贷方</th></tr>"
+                + err
+                + "<table><tr><th>#</th><th>编码</th><th>科目</th><th>借方</th><th>贷方</th></tr>"
                 + lrows
-                + "</table><p><a href=/ledger/"
+                + "</table>"
+                + ops
+                + "<p><a href=/ledger/"
                 + v.ledger_set_id
-                + ">← 返回账套</a></p>"
+                + ">← 返回账套</a>　<a href=/todo>→ 审批待办</a></p>"
             )
             return _page(v.voucher_no, body, request.state.subject_name)
+
+    # ---------- 审批闭环（P1-G1：待办列表 + 同意/驳回/撤回/过账） ----------
+
+    def _apply_transition(request: Request, vid: str, target: str,
+                          reason: str = "",
+                          require_maker: bool | None = None) -> tuple[str | None, Voucher | None]:
+        """Web 端状态跃迁统一入口。与 MCP guarded 同一内核语义：
+        require_maker 预校验 → casbin enforce 鉴权 → transition / post_voucher。
+        返回 (error_message | None, voucher | None)。"""
+        from kernel.authz import AuthzError, enforce
+        from kernel.posting import PostingError, post_voucher
+        from kernel.state import transition
+
+        actor_id = request.state.subject_id
+        try:
+            with session() as s:
+                v = s.get(Voucher, vid)
+                if v is None:
+                    return "凭证不存在", None
+                me = s.get(Subject, actor_id)
+                actor = {"type": (me.type if me else "user"), "id": actor_id}
+                is_maker = str(v.created_by) == str(actor_id)
+                # 与 MCP guarded 一致：先查身份关系再鉴权，错误信息更有操作性
+                if require_maker is True and not is_maker:
+                    return "只有制单人本人可以撤回该凭证", None
+                if require_maker is False and is_maker:
+                    return "制单人不能审批自己的凭证；如需收回请改用撤回", None
+                # 权限动作映射（与 MCP _action_for 一致）：PUSHED→DRAFT
+                # 按执行人区分 —— 撤回是制单人动作，驳回是审批人动作。
+                if (v.status, target) == ("PUSHED", "APPROVED"):
+                    action = "voucher:approve"
+                elif (v.status, target) == ("PUSHED", "DRAFT"):
+                    action = "voucher:push" if is_maker else "voucher:approve"
+                elif target == "POSTED":
+                    action = "voucher:post"
+                else:
+                    action = "voucher:cancel"
+                enforce(s, actor_id=actor_id,
+                        ledger_set_id=v.ledger_set_id, action=action)
+                if target == "POSTED":
+                    # 过账必须走 post_voucher：它还要累计 balances 投影，
+                    # 走裸 transition 会跳过余额更新（账账核对必然炸）。
+                    post_voucher(s, voucher_id=vid, actor=actor)
+                    v2 = s.get(Voucher, vid)
+                else:
+                    v2 = transition(s, voucher_id=vid, actor=actor,
+                                    target=target, reason=reason)
+                s.commit()
+                return None, v2
+        except (PostingError, AuthzError) as e:
+            msg = str(e) if isinstance(e, AuthzError) else e.message_zh
+            return msg, None
+
+    @app.get("/todo", response_class=HTMLResponse)
+    def todo_list(request: Request, error: str = ""):
+        """审批待办：审批人看到待我审批的队列，制单人看到自己推送的待审单。"""
+        actor_id = request.state.subject_id
+        with session() as s:
+            me = s.get(Subject, actor_id)
+            i_am_agent = (me.type if me else "user") == "agent"
+            pending = s.scalars(
+                select(Voucher).where(Voucher.status == "PUSHED").order_by(
+                    Voucher.voucher_date, Voucher.voucher_no
+                )
+            ).all()
+            makers = {
+                sub.id: sub
+                for sub in s.scalars(
+                    select(Subject).where(
+                        Subject.id.in_({v.created_by for v in pending} or {""})
+                    )
+                ).all()
+            }
+            to_approve = ""
+            mine = ""
+            for v in pending:
+                maker = makers.get(v.created_by)
+                maker_name = maker.display_name if maker else (v.created_by or "?")
+                ls = s.get(LedgerSet, v.ledger_set_id)
+                ls_name = ls.name if ls else "?"
+                row = (
+                    f"<tr><td>{html.escape(ls_name)}</td>"
+                    f"<td><a href=/voucher/{v.id}>{v.voucher_no}</a></td>"
+                    f"<td>{v.voucher_date}</td>"
+                    f"<td>{html.escape(maker_name)}</td>"
+                    f"<td>{html.escape(v.summary or '')}</td>"
+                )
+                if str(v.created_by) == str(actor_id):
+                    mine += (
+                        row
+                        + f"<td><form method=post action=/voucher/{v.id}/withdraw "
+                        + 'style=margin:0><button>撤回</button></form></td></tr>'
+                    )
+                else:
+                    to_approve += (
+                        row
+                        + f"<td><a href=/voucher/{v.id}>去处理 →</a></td></tr>"
+                    )
+            if i_am_agent:
+                tip = (
+                    '<p class=warn>当前身份是 Agent：审批与驳回必须由人执行，'
+                    "以下队列仅供查看。</p>"
+                )
+            else:
+                tip = ""
+            err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            body = (
+                "<h2>审批待办</h2>" + err + tip
+                + "<h3>待我审批（非本人制单）</h3>"
+                + '<table><tr><th>账套</th><th>凭证号</th><th>日期</th>'
+                + "<th>制单人</th><th>摘要</th><th>操作</th></tr>"
+                + (to_approve or "<tr><td colspan=6>队列已清空 🎉</td></tr>")
+                + "</table>"
+                + "<h3>我推送的（可撤回）</h3>"
+                + '<table><tr><th>账套</th><th>凭证号</th><th>日期</th>'
+                + "<th>制单人</th><th>摘要</th><th>操作</th></tr>"
+                + (mine or "<tr><td colspan=6>暂无待审单</td></tr>")
+                + "</table>"
+            )
+            return _page("审批待办", body, request.state.subject_name)
+
+    @app.post("/voucher/{vid}/approve")
+    def voucher_approve_web(request: Request, vid: str):
+        err, _v = _apply_transition(request, vid, "APPROVED", require_maker=False)
+        if err:
+            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
+        return RedirectResponse(f"/voucher/{vid}", 303)
+
+    @app.post("/voucher/{vid}/reject")
+    def voucher_reject_web(request: Request, vid: str, reason: str = Form("")):
+        if not (reason or "").strip():
+            err = "驳回必须填写原因，否则制单人不知道要改什么"
+            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
+        err, _v = _apply_transition(request, vid, "DRAFT", reason=reason.strip(),
+                                    require_maker=False)
+        if err:
+            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
+        return RedirectResponse(f"/voucher/{vid}", 303)
+
+    @app.post("/voucher/{vid}/withdraw")
+    def voucher_withdraw_web(request: Request, vid: str):
+        err, _v = _apply_transition(request, vid, "DRAFT", require_maker=True)
+        if err:
+            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
+        return RedirectResponse(f"/voucher/{vid}", 303)
+
+    @app.post("/voucher/{vid}/post")
+    def voucher_post_web(request: Request, vid: str):
+        err, _v = _apply_transition(request, vid, "POSTED")
+        if err:
+            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
+        return RedirectResponse(f"/voucher/{vid}", 303)
 
     # ---------- JSON API（React 前端 / A2UI 渲染器数据底座，P1-05） ----------
 

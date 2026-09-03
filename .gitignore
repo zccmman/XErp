@@ -31,3 +31,9 @@ web/dist2/
 
 # 本地工具/隧道二进制（cloudflared 等）
 .tools/
+
+# 本地测试/调试临时产物（全量回归 runner 与探针脚本，根目录 _ 前缀）
+/_*.py
+/_*.txt
+/_*.log
+/_junit.xml

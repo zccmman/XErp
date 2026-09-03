@@ -4,7 +4,7 @@
 丢弃（ws/client.py: `elif message_type == MessageType.CARD: return`，1.7.3 亦然），
 因此审批采用「回复指令」模式：
     同意 记-0001            → PUSHED→APPROVED
-    驳回 记-0001 差旅超标    → PUSHED→DRAFT，意见入 voucher.rejected 事件
+    驳回 记-0001 差旅超标    → PUSHED→DRAFT，意见入 VOUCHER_REJECTED 事件（意见必填）
     绑定                    → 记录 open_id 到 .env
 
 运行: python scripts/feishu_ws.py （常驻；Ctrl+C 退出）

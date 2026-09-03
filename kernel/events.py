@@ -24,6 +24,12 @@ class E(StrEnum):
     VOUCHER_APPROVED = "VOUCHER_APPROVED"
     VOUCHER_POSTED = "VOUCHER_POSTED"
     VOUCHER_CANCELLED = "VOUCHER_CANCELLED"
+    # PUSHED → DRAFT 有两个业务语义，按执行人区分（G1 制单闭环）：
+    # - VOUCHER_REJECTED：审批人驳回（他人执行，须填原因）
+    # - VOUCHER_WITHDRAWN：制单人主动撤回（本人执行，原因可选）
+    # 二者审计含义不同：驳回说明单据有问题被退回；撤回只是制单人反悔。
+    VOUCHER_REJECTED = "VOUCHER_REJECTED"
+    VOUCHER_WITHDRAWN = "VOUCHER_WITHDRAWN"
 
     # ---------- 账务规则执行 ----------
     OPENING_BALANCE_IMPORTED = "OPENING_BALANCE_IMPORTED"
@@ -58,6 +64,8 @@ DESCRIPTIONS: dict[E, str] = {
     E.VOUCHER_APPROVED: "凭证审批通过",
     E.VOUCHER_POSTED: "凭证过账",
     E.VOUCHER_CANCELLED: "过账凭证撤销（窗口内）",
+    E.VOUCHER_REJECTED: "凭证审批驳回（退回制单人修改）",
+    E.VOUCHER_WITHDRAWN: "凭证制单人撤回（审批前自行收回）",
     E.OPENING_BALANCE_IMPORTED: "期初余额导入",
     E.OPENING_BALANCE_REVERSED: "期初余额红字冲销（force 重导前置）",
     E.CLOSING_EXECUTED: "期末损益结转执行",

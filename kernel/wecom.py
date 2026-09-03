@@ -371,7 +371,6 @@ def handle_card_event(s, event_key: str, from_user: str) -> str:
     状态机驱动与文本指令同一红线：仅 PUSHED 可批/驳，审批人身份入审计链。
     """
     from kernel.db.models import Voucher
-    from kernel.ledger import append_event
     from kernel.state import transition
 
     if event_key.startswith("noop:"):
@@ -389,19 +388,11 @@ def handle_card_event(s, event_key: str, from_user: str) -> str:
         transition(s, voucher_id=v.id, actor=actor, target="APPROVED")
         s.commit()
         return f"approved:{v.voucher_no}"
-    # reject（卡片按钮无意见输入，意见固定入审计链，可随后用文本指令补充）
+    # reject（卡片按钮无意见输入，原因以占位文本入审计链，
+    # 审批人可随后用文本指令「驳回 凭证号 意见」补充具体说明）
     if v.status != "PUSHED":
         return f"❌ 仅待审（PUSHED）凭证可驳回，当前 {v.status}"
-    reason = "（企微卡片驳回，可用文本指令「驳回 凭证号 意见」补充）"
-    v.status = "DRAFT"
-    append_event(
-        s,
-        ledger_set_id=v.ledger_set_id,
-        event_type="voucher.rejected",
-        aggregate_id=v.id,
-        payload={"voucher_no": v.voucher_no, "from": "PUSHED", "to": "DRAFT",
-                 "reason": reason},
-        actor=actor,
-    )
+    reason = "（企微卡片驳回，未填意见）"
+    transition(s, voucher_id=v.id, actor=actor, target="DRAFT", reason=reason)
     s.commit()
     return f"rejected:{v.voucher_no}"

@@ -1,12 +1,21 @@
 """凭证状态跃迁原语与 HITL 门禁（ADR-004）。
 
 正向：DRAFT → PUSHED → APPROVED（post 由 posting 负责，APPROVED→POSTED）
+退回：PUSHED → DRAFT（G1 制单闭环）
+      - 审批人执行 = 驳回（VOUCHER_REJECTED，原因必填）
+      - 制单人本人执行 = 撤回（VOUCHER_WITHDRAWN，原因选填）
 补偿：POSTED → DRAFT（cancel_post_voucher，仅未结账期间；追加事件不改历史）
 
 门禁：
 - Agent 不能审批凭证（AGENT_APPROVAL_FORBIDDEN）——审批必须由人执行
+- Agent 也不能驳回/撤回待审凭证（同上，处置权在人）
 - Agent 撤销记账须 L3 自治等级（AUTONOMY_DENIED），人不受限
 - 制单人与审批人不能是同一主体（NO_SELF_APPROVAL）
+
+为什么「驳回」和「撤回」要分开两个事件类型：
+二者都是 PUSHED→DRAFT，但审计含义相反——驳回说明单据被查出问题，
+撤回只是制单人自己反悔。混在一个事件里，事后复盘无法区分「这张单被退过」
+和「这张单没人动过」。财务上这是要追责的区别。
 """
 
 from __future__ import annotations
@@ -31,6 +40,8 @@ from kernel.posting import PostingError, _dims_key
 ALLOWED: dict[tuple[str, str], str] = {
     ("DRAFT", "PUSHED"): E.VOUCHER_PUSHED,
     ("PUSHED", "APPROVED"): E.VOUCHER_APPROVED,
+    # PUSHED→DRAFT 的事件类型在运行时按执行人判定，这里的取值是审批人（驳回）的默认。
+    ("PUSHED", "DRAFT"): E.VOUCHER_REJECTED,
 }
 
 
@@ -42,7 +53,21 @@ def _subject_type(session: Session, actor: dict) -> tuple[str, Subject | None]:
     return (actor.get("type") or "user"), subject
 
 
-def transition(session: Session, *, voucher_id: str, actor: dict, target: str) -> Voucher:
+def transition(
+    session: Session,
+    *,
+    voucher_id: str,
+    actor: dict,
+    target: str,
+    reason: str = "",
+) -> Voucher:
+    """执行一次状态跃迁并落事件。
+
+    reason：退回原因。仅 PUSHED→DRAFT 使用——
+    - 驳回（他人执行）必填，否则 REJECT_REASON_REQUIRED：
+      制单人必须知道单据为什么被退回，否则只能靠猜，来回几轮才能改对。
+    - 撤回（制单人本人执行）选填。
+    """
     voucher = session.get(Voucher, voucher_id)
     if voucher is None:
         raise PostingError("VOUCHER_NOT_FOUND", f"凭证 {voucher_id} 不存在")
@@ -53,6 +78,10 @@ def transition(session: Session, *, voucher_id: str, actor: dict, target: str) -
             f"不允许从 {voucher.status} 跃迁到 {target}",
             {"from": voucher.status, "to": target},
         )
+
+    event_type = allowed_type
+    reason = (reason or "").strip()
+
     if target == "APPROVED":
         if str(actor.get("id")) == str(voucher.created_by):
             raise PostingError("NO_SELF_APPROVAL", "制单人与审批人不能是同一主体")
@@ -63,18 +92,38 @@ def transition(session: Session, *, voucher_id: str, actor: dict, target: str) -
                 "审批必须由人执行，Agent 不能审批凭证",
                 {"agent_id": actor.get("id")},
             )
+    elif (voucher.status, target) == ("PUSHED", "DRAFT"):
+        is_maker = str(actor.get("id")) == str(voucher.created_by)
+        if is_maker:
+            # 制单人在审批前自行收回，不属审批动作
+            event_type = E.VOUCHER_WITHDRAWN
+        else:
+            actor_type, _ = _subject_type(session, actor)
+            if actor_type == "agent":
+                raise PostingError(
+                    "AGENT_APPROVAL_FORBIDDEN",
+                    "驳回待审凭证必须由人执行，Agent 不能处置审批队列",
+                    {"agent_id": actor.get("id")},
+                )
+            if not reason:
+                raise PostingError(
+                    "REJECT_REASON_REQUIRED",
+                    "驳回必须填写原因，否则制单人不知道要改什么",
+                    {"voucher_no": voucher.voucher_no},
+                )
 
     from_status = voucher.status
     voucher.status = target
     append_event(
         session,
         ledger_set_id=voucher.ledger_set_id,
-        event_type=allowed_type,
+        event_type=event_type,
         aggregate_id=voucher.id,
         payload={
             "voucher_no": voucher.voucher_no,
             "from": from_status,
             "to": target,
+            "reason": reason,
             "occurred_at_hint": utcnow().isoformat(),
         },
         actor=actor,

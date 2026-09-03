@@ -2,7 +2,7 @@
 
 从 scripts/feishu_ws.py 抽取状态机驱动逻辑，使审批意图不绑定任何 IM 渠道：
     同意|批准 <凭证号>      → PUSHED→APPROVED
-    驳回 <凭证号> [意见]    → PUSHED→DRAFT，意见入 voucher.rejected 事件
+    驳回 <凭证号> <意见>    → PUSHED→DRAFT，意见入 VOUCHER_REJECTED 事件（意见必填）
     绑定                    → 回调 on_bind 记录接收人（各通道自行落库）
     帮助|help               → 指令说明
 
@@ -17,7 +17,6 @@ import re
 from sqlalchemy.orm import Session
 
 from kernel.db.models import Voucher  # noqa: F401  (类型标注)
-from kernel.ledger import append_event
 from kernel.state import transition
 
 _RE_OK = re.compile(r"^(同意|批准)\s+(\S+)\s*$")
@@ -68,27 +67,20 @@ def handle_approval_command(
 
     m = _RE_REJECT.match(text)
     if m:
-        voucher_no, reason = m.group(1), (m.group(2) or "（未填意见）").strip()
+        voucher_no, reason = m.group(1), (m.group(2) or "").strip()
+        if not reason:
+            return (
+                "❌ 驳回需说明原因，制单人才知道要改什么。\n"
+                f"示例：驳回 {voucher_no} 金额与合同不符"
+            )
         v = find_by_no(s, voucher_no)
         if v is None:
             return f"❌ 未找到凭证 {voucher_no}"
         if v.status != "PUSHED":
             return f"❌ 仅待审（PUSHED）凭证可驳回，当前 {v.status}"
-        from_status = v.status
-        v.status = "DRAFT"
-        append_event(
-            s,
-            ledger_set_id=v.ledger_set_id,
-            event_type="voucher.rejected",
-            aggregate_id=v.id,
-            payload={
-                "voucher_no": v.voucher_no,
-                "from": from_status,
-                "to": "DRAFT",
-                "reason": reason,
-            },
-            actor=actor,
-        )
+        # 统一走内核跃迁：事件类型/门禁/原因留痕只有一份实现。
+        # 若执行人恰是制单人本人，内核会记为 VOUCHER_WITHDRAWN（撤回）而非驳回。
+        transition(s, voucher_id=v.id, actor=actor, target="DRAFT", reason=reason)
         s.commit()
         return f"↩️ 已驳回 {voucher_no} 并退回草稿。意见：{reason}（已入审计链）"
 
