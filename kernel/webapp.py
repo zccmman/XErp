@@ -742,6 +742,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + _toolbar(
                     f"<a href='/ledger/{ls_id}/voucher/new'>填制凭证</a>",
                     f"<a href='/ledger/{ls_id}/reports'>账簿报表</a>",
+                    f"<a href='/ledger/{ls_id}/forecast'>三表预测</a>",
                     f"<a href='/ledger/{ls_id}/close'>月末结账</a>",
                 )
                 + f"<p>期间切换：{ptabs}</p>{err}"
@@ -993,7 +994,9 @@ def build_app(db_url: str | None = None) -> FastAPI:
             )
             body = (
                 f"<h2>{html.escape(ls.name)} · {yr}-{mo:02d} 三大报表</h2>"
-                f"<p><a href=/ledger/{ls_id}>← 返回账套</a></p>{err}<p>{close_ui}</p>"
+                f"<p><a href=/ledger/{ls_id}>← 返回账套</a> · "
+                f"<a href='/ledger/{ls_id}/forecast?year={yr}&month={mo}'>"
+                f"三表预测</a></p>{err}<p>{close_ui}</p>"
                 f"<h3>利润表</h3>{table(inc_rows, '项目', '金额')}"
                 f"<h3>资产负债表 <span class=badge>{badge}</span></h3>"
                 f"{table(bs_rows, '项目', '金额')}"
@@ -1004,6 +1007,196 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"{cf['reconcile']['closing_cash']:,.2f}</p>"
             )
             return _page(f"{ls.name} 报表", body, request.state.subject_name)
+
+    # ---------- 三表预测（P1-01 Web 入口） ----------
+
+    _FORECAST_SCN_ZH = {"base": "基准", "best": "乐观", "worst": "悲观"}
+
+    @app.get("/ledger/{ls_id}/forecast", response_class=HTMLResponse)
+    def forecast_page(request: Request, ls_id: str, year: int = 0,
+                      month: int = 0, horizon: int = 6, scenario: str = "base"):
+        """三表前向预测页——从实际三表外推未来 N 期。
+
+        服务端直调内核 forecast 引擎（不经 MCP）。基准期默认取最近 OPEN 期；
+        情景 base/best/worst 渲染三表明细（期间为列），all 渲染三情景对比表。
+        """
+        from kernel.forecast import forecast_from_actuals
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>",
+                             request.state.subject_name)
+            periods = list(
+                s.scalars(
+                    select(Period)
+                    .where(Period.ledger_set_id == ls_id)
+                    .order_by(Period.year.desc(), Period.month.desc())
+                ).all()
+            )
+            if year and month:
+                base = next(
+                    (p for p in periods if p.year == year and p.month == month), None
+                )
+            else:
+                base = next((p for p in periods if p.status == "OPEN"), None)
+            base = base or (periods[0] if periods else None)
+            if base is None:
+                return _page("三表预测", "<p class=err>本账套尚无会计期间</p>",
+                             request.state.subject_name)
+
+            if scenario not in ("best", "base", "worst", "all"):
+                scenario = "base"
+            horizon = max(1, min(horizon, 36))
+
+            def _nav() -> str:
+                return (
+                    f"<p><a href='/ledger/{ls_id}'>← 返回账套</a> · "
+                    f"<a href='/ledger/{ls_id}/reports'>账簿报表</a></p>"
+                )
+
+            try:
+                result = forecast_from_actuals(
+                    s, ls_id, base.year, base.month,
+                    horizon=horizon, scenario=scenario,
+                    standard=ls.accounting_standard,
+                )
+            except Exception as e:  # noqa: BLE001
+                return _page(
+                    f"{ls.name} 三表预测",
+                    f"{_nav()}<p class=err>预测生成失败: {html.escape(str(e))}</p>",
+                    request.state.subject_name,
+                )
+
+            ptabs = "".join(
+                f'<a href="/ledger/{ls_id}/forecast?year={p.year}&month={p.month}'
+                f'&horizon={horizon}&scenario={scenario}">'
+                f"{p.year}-{p.month:02d}({period_zh(p.status)})</a>&nbsp;"
+                for p in periods
+            )
+            stabs = "&nbsp;".join(
+                f'<a href="/ledger/{ls_id}/forecast?year={base.year}&month={base.month}'
+                f'&horizon={horizon}&scenario={sc}">{zh}</a>'
+                for sc, zh in (("base", "基准"), ("best", "乐观"),
+                               ("worst", "悲观"), ("all", "三情景对比"))
+                if sc != scenario
+            )
+            form = (
+                f'<form method=get action="/ledger/{ls_id}/forecast" class=ops>'
+                f'<input type=hidden name=year value="{base.year}">'
+                f'<input type=hidden name=month value="{base.month}">'
+                f'<input type=hidden name=scenario value="{scenario}">'
+                f'预测期数 <input type=number name=horizon min=1 max=36 '
+                f'value="{horizon}" style="width:5em"> 个月 '
+                "<button type=submit>重新预测</button></form>"
+            )
+
+            def _m(v) -> str:
+                return f"{v:,.2f}"
+
+            def _grid(labels: list[str], rows: list[tuple[str, list]]) -> str:
+                """期间为列的矩阵表：labels 是各期标签，rows 是 (行名, 各期值)。"""
+                head = "".join(f"<th style=text-align:right>{html.escape(l)}</th>"
+                               for l in labels)
+                body_rows = "".join(
+                    f"<tr><td>{html.escape(name)}</td>"
+                    + "".join(
+                        f"<td style=text-align:right>"
+                        f"{'　' if v is None else _m(v)}</td>"
+                        for v in vals
+                    )
+                    + "</tr>"
+                    for name, vals in rows
+                )
+                return (f"<table><tr><th>项目</th>{head}</tr>{body_rows}</table>")
+
+            if scenario == "all":
+                # 对比表：行=情景×指标，列=期间（期间标签取基准情景）
+                per = result["scenarios"]["base"]["periods"]
+                labels = [f"{p['year']}-{p['month']:02d}" for p in per]
+                cmp_rows = []
+                for sc in ("best", "base", "worst"):
+                    per = result["scenarios"][sc]["periods"]
+                    revs = [p["income_statement"]["revenue"] for p in per]
+                    nis = [p["income_statement"]["net_profit"] for p in per]
+                    cashes = [p["cash_flow"]["closing_cash"] for p in per]
+                    cmp_rows.append((f"{_FORECAST_SCN_ZH[sc]} · 营业收入", revs))
+                    cmp_rows.append((f"{_FORECAST_SCN_ZH[sc]} · 净利润", nis))
+                    cmp_rows.append((f"{_FORECAST_SCN_ZH[sc]} · 期末现金", cashes))
+                all_ok = all(
+                    p["balance_sheet"]["balanced"]
+                    for sc in ("best", "base", "worst")
+                    for p in result["scenarios"][sc]["periods"]
+                )
+                badge = "✅ 三情景全期平衡" if all_ok else "❌ 存在不平衡期间"
+                body = (
+                    f"{_nav()}<h2>{html.escape(ls.name)} · 三表预测"
+                    f"（三情景对比，自 {base.year}-{base.month:02d} 起 "
+                    f"{horizon} 期）</h2>"
+                    f"<p>基准期切换：{ptabs}</p>"
+                    f"<p>情景切换：{stabs}</p>{form}"
+                    f"<h3>对比 <span class=badge>{badge}</span></h3>"
+                    f"{_grid(labels, cmp_rows)}"
+                    "<p class=hint>假设由实际三表自动推导；调整假设请走 MCP "
+                    "forecast_statements 工具（assumptions_json）。</p>"
+                )
+            else:
+                zh = _FORECAST_SCN_ZH[scenario]
+                per = result["periods"]
+                labels = [f"{p['year']}-{p['month']:02d}" for p in per]
+                inc_labels = [i["item"] for i in per[0]["income_statement"]["items"]]
+                inc_rows = [
+                    (lb, [p["income_statement"]["items"][i]["amount"]
+                          for p in per])
+                    for i, lb in enumerate(inc_labels)
+                ]
+                b0 = per[0]["balance_sheet"]
+                paid_in = b0["total_equity"] - b0["retained_earnings"]
+                bs_keys = (
+                    ("货币资金", "cash"), ("应收账款", "ar"), ("存货", "inventory"),
+                    ("固定资产净额", "fa_net"), ("资产合计", "total_assets"),
+                    ("应付账款", "ap"), ("负债合计", "total_liabilities"),
+                    ("实收资本", None), ("留存收益", "retained_earnings"),
+                    ("权益合计", "total_equity"),
+                )
+                bs_rows = []
+                for zh2, k in bs_keys:
+                    if k is None:
+                        bs_rows.append((zh2, [paid_in] * len(per)))
+                    else:
+                        bs_rows.append((zh2, [p["balance_sheet"][k] for p in per]))
+                cf_rows = [
+                    ("经营活动净额", [p["cash_flow"]["operating"] for p in per]),
+                    ("投资活动净额", [p["cash_flow"]["investing"] for p in per]),
+                    ("筹资活动净额", [p["cash_flow"]["financing"] for p in per]),
+                    ("现金净增加额", [p["cash_flow"]["net_increase"] for p in per]),
+                    ("期末现金", [p["cash_flow"]["closing_cash"] for p in per]),
+                ]
+                all_ok = all(p["balance_sheet"]["balanced"] for p in per)
+                badge = "✅ 全期平衡" if all_ok else "❌ 存在不平衡期间"
+                a = result["assumptions"]
+                asm_line = (
+                    f"假设：收入增速 {a['rev_growth']} · 毛利率 {a['gross_margin']} · "
+                    f"费用率 {a['opex_ratio']} · 税率 {a['tax_rate']} · "
+                    f"应收 {a['ar_days']} 天 · 应付 {a['ap_days']} 天 · "
+                    f"存货 {a['inv_days']} 天 · 资本开支率 {a['capex_pct']} · "
+                    f"年折旧率 {a['dep_rate']}"
+                )
+                body = (
+                    f"{_nav()}<h2>{html.escape(ls.name)} · {zh}情景三表预测"
+                    f"（自 {base.year}-{base.month:02d} 起 {horizon} 期）</h2>"
+                    f"<p>基准期切换：{ptabs}</p>"
+                    f"<p>情景切换：{stabs}</p>{form}"
+                    f"<p class=hint>{asm_line}</p>"
+                    f"<h3>利润表</h3>{_grid(labels, inc_rows)}"
+                    f"<h3>资产负债表 <span class=badge>{badge}</span></h3>"
+                    f"{_grid(labels, bs_rows)}"
+                    f"<h3>现金流量表</h3>{_grid(labels, cf_rows)}"
+                    "<p class=hint>勾稽：净利润→留存收益→权益；折旧加回经营现金流；"
+                    "营运资本变动连接权责与收付。假设调整请走 MCP "
+                    "forecast_statements 工具（assumptions_json）。</p>"
+                )
+            return _page(f"{ls.name} 三表预测", body, request.state.subject_name)
 
     @app.get("/ledger/{ls_id}/close", response_class=HTMLResponse)
     def close_page(request: Request, ls_id: str, year: int = 0, month: int = 0):
