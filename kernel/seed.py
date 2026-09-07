@@ -25,6 +25,14 @@ def seed_demo_ledger(session: Session) -> dict[str, str]:
         session.add(ls)
         session.flush()
 
+    # 演示科目的辅助核算维度声明（与本体一致：往来挂客户/供应商、费用按部门）。
+    # upsert 语义：新建或已存在的演示科目都补上声明，保证演示数据一致。
+    ACCOUNT_AUX_DIMS = {
+        "1122": ["customer"],
+        "2202": ["supplier"],
+        "6602": ["department"],
+    }
+
     acc_ids: dict[str, str] = {}
     for code, name, direction, category in DEMO_ACCOUNTS:
         acc = session.scalars(
@@ -37,6 +45,7 @@ def seed_demo_ledger(session: Session) -> dict[str, str]:
             )
             session.add(acc)
             session.flush()
+        acc.aux_dim_defs = ACCOUNT_AUX_DIMS.get(code)
         acc_ids[code] = acc.id
 
     period = session.scalars(

@@ -103,6 +103,22 @@ def validate_voucher(
                 f"第 {no} 行科目不存在：{line.account_id}",
                 {"line_no": no, "account_id": line.account_id},
             )
+        # D5：维度声明校验下沉——行提供的辅助维度 key 必须 ∈ 科目 aux_dim_defs。
+        # 与适配器 _resolve_aux_dims 语义对齐：有维度才校验匹配，不强制全提供。
+        account = accounts_by_id[line.account_id]
+        declared = set(getattr(account, "aux_dim_defs", None) or [])
+        provided = line.aux_dims or {}
+        if provided:
+            illegal = set(provided.keys()) - declared
+            if illegal:
+                raise PostingError(
+                    "AUX_DIM_UNDECLARED",
+                    f"第 {no} 行科目 {getattr(account, 'code', '?')} 的辅助维度 "
+                    f"{sorted(illegal)} 不在其声明维度内"
+                    f"（该科目支持：{sorted(declared) or '无'}）",
+                    {"line_no": no, "account": getattr(account, "code", "?"),
+                     "illegal": sorted(illegal)},
+                )
         total_debit += debit
         total_credit += credit
 

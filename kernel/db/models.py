@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     ForeignKey,
@@ -111,6 +112,32 @@ class Account(Base):
         remote_side="Account.id", back_populates="children"
     )
     children: Mapped[list["Account"]] = relationship(back_populates="parent")
+
+
+class AgentBreaker(Base):
+    """Agent 自治断路器状态（D4 修复：全局态从账套事件链剥离）。
+
+    本体正名：断路器冻结是 Subject（Agent）的属性演化，属全局态，不应寄生在
+    账套维度的事件链上。此前写死的 ``__breaker__`` 哨兵账套已废弃——状态以本表
+    为单一真源；trip/release 同时追加一条 ``ledger_set_id='*'`` 的审计事件
+    （见 :mod:`kernel.anomaly`），保留可追溯性且不污染任一账套审计链。
+    """
+
+    __tablename__ = "agent_breakers"
+
+    subject_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    is_open: Mapped[bool] = mapped_column(Boolean, default=False)
+    reasons: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    tripped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    released_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class Period(Base):

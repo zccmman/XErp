@@ -4,8 +4,9 @@
 --------
 - **断路器只冻结自治主体（type=agent）**，人类用户永不受影响——
   自动化出问题时被停机的是自动化本身，不是人的操作自由；
-- 冻结/解除都是事件（``agent.breaker.tripped`` / ``agent.breaker.released``），
-  状态 = 事件流的最终态，可回放、可审计；
+- 状态以 ``agent_breakers`` 表为单一真源；trip/release 同时追加一条
+  ``ledger_set_id='*'`` 的审计事件（``agent.breaker.tripped`` /
+  ``agent.breaker.released``），可回放、可审计，但不再寄生在账套事件链上；
 - 解除必须由人类执行（MCP anomaly_release，admin 鉴权），Agent 不能自解。
 
 双通道
@@ -28,7 +29,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kernel.db.models import Account, Event, Subject, Voucher, VoucherLine, utcnow
+from kernel.db.models import (
+    Account,
+    AgentBreaker,
+    Event,
+    Subject,
+    Voucher,
+    VoucherLine,
+    utcnow,
+)
 from kernel.events import E
 from kernel.ledger import append_event
 
@@ -57,26 +66,23 @@ class Finding:
     details: dict = field(default_factory=dict)
 
 
-# ---------- 断路器状态（事件流最终态） ----------
+# ---------- 断路器状态（全局态，从账套事件链剥离） ----------
+
+# 审计事件 ledger_set_id 哨兵：表示「全局/Subject 级」，不对应任何真实账套，
+# 从而语义上不再伪装成一个账套（修复 D4 的 __breaker__ 伪账套寄生问题）。
+GLOBAL_LEDGER_SET_ID = "*"
 
 
 def breaker_is_open(session: Session, agent_subject_id: str) -> dict | None:
-    """断路器状态：最后一次 tripped/release 谁更新。开 → 返回跳闸事件信息。"""
-    last = None
-    for e in session.scalars(
-        select(Event).where(
-            Event.event_type.in_((E.BREAKER_TRIPPED,
-                                  E.BREAKER_RELEASED))
-        ).order_by(Event.id.desc())
-    ):
-        if (e.payload or {}).get("subject_id") != agent_subject_id:
-            continue
-        last = e
-        break
-    if last is not None and last.event_type == E.BREAKER_TRIPPED:
+    """断路器状态：直接读 ``agent_breakers`` 状态表（单一真源）。
+
+    开 → 返回跳闸信息；释放或从未跳闸 → None。不再扫账套事件链。
+    """
+    row = session.get(AgentBreaker, agent_subject_id)
+    if row is not None and row.is_open:
         return {
-            "tripped_at": last.occurred_at.isoformat() if last.occurred_at else None,
-            "reasons": (last.payload or {}).get("reasons", []),
+            "tripped_at": row.tripped_at.isoformat() if row.tripped_at else None,
+            "reasons": row.reasons or [],
         }
     return None
 
@@ -99,8 +105,18 @@ def check_breaker(session: Session, actor_id: str) -> None:
 
 def trip_breaker(session: Session, *, subject_id: str, reasons: list[str],
                  actor: dict) -> None:
+    row = session.get(AgentBreaker, subject_id)
+    if row is None:
+        row = AgentBreaker(subject_id=subject_id)
+        session.add(row)
+    row.is_open = True
+    row.reasons = list(reasons)
+    row.tripped_at = utcnow()
+    row.released_at = None
+    row.released_by = None
+    row.updated_at = utcnow()
     append_event(
-        session, ledger_set_id="__breaker__",
+        session, ledger_set_id=GLOBAL_LEDGER_SET_ID,
         event_type=E.BREAKER_TRIPPED, aggregate_id=subject_id,
         payload={"subject_id": subject_id, "reasons": reasons},
         actor=actor,
@@ -109,8 +125,17 @@ def trip_breaker(session: Session, *, subject_id: str, reasons: list[str],
 
 def release_breaker(session: Session, *, subject_id: str, actor: dict,
                     note: str = "") -> None:
+    row = session.get(AgentBreaker, subject_id)
+    if row is None:
+        row = AgentBreaker(subject_id=subject_id)
+        session.add(row)
+    row.is_open = False
+    row.reasons = None
+    row.released_at = utcnow()
+    row.released_by = (actor or {}).get("id")
+    row.updated_at = utcnow()
     append_event(
-        session, ledger_set_id="__breaker__",
+        session, ledger_set_id=GLOBAL_LEDGER_SET_ID,
         event_type=E.BREAKER_RELEASED, aggregate_id=subject_id,
         payload={"subject_id": subject_id, "note": note}, actor=actor,
     )
