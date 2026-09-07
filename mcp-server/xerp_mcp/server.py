@@ -765,6 +765,61 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("REPORT_ERROR", str(e))
 
     @mcp.tool()
+    def forecast_statements(
+        ledger_set_id: str,
+        base_year: int,
+        base_month: int,
+        horizon: int = 12,
+        scenario: str = "base",
+        assumptions_json: str = "",
+        accounting_standard: str = "",
+    ) -> dict:
+        """三表前向预测（P1-01 预测）：以 base 期末实际三表为种子，按驱动假设外推未来 horizon 期。
+
+        scenario: base / best / worst / all（all 返回三情景对比，便于做区间）。
+        假设默认从上期末实际数自动推导（毛利率、费用率、应收/应付/存货周转天数等）；
+        assumptions_json 可覆盖，如 '{"rev_growth":"0.05","gross_margin":"0.55","capex_pct":"0.1"}'
+        （rev_growth 为月度收入增长率；ar_days/ap_days/inv_days 为周转天数）。
+        返回每期利润表 / 资产负债表 / 现金流量表，三表内部完全勾稽
+        （balanced 与 cash_flow.reconcile.ok 均为 true）。预测是物化视图，不写账本。
+        """
+        try:
+            import json
+            from dataclasses import replace
+            from decimal import Decimal
+
+            from kernel.forecast import (
+                extract_seed_from_actuals,
+                forecast_from_actuals,
+            )
+
+            with repo.session() as s:
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
+                override = None
+                if assumptions_json:
+                    _int_fields = {"ar_days", "ap_days", "inv_days", "periods_per_year"}
+                    raw = json.loads(assumptions_json)
+                    _, derived = extract_seed_from_actuals(
+                        s, ledger_set_id, base_year, base_month, standard
+                    )
+                    fields = {
+                        k: (int(v) if k in _int_fields else Decimal(str(v)))
+                        for k, v in raw.items()
+                    }
+                    override = replace(derived, **fields)
+                out = forecast_from_actuals(
+                    s, ledger_set_id, base_year, base_month,
+                    horizon, scenario, override, standard,
+                )
+                return _ok(forecast=out)
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+        except (ValueError, json.JSONDecodeError) as e:
+            return _err("FORECAST_BAD_ASSUMPTIONS", f"假设参数无效：{e}")
+
+    @mcp.tool()
     def close_period(
         ledger_set_id: str,
         period_year: int,

@@ -40,3 +40,9 @@ web/dist2/
 /_last_result.json
 /_perfile_report.txt
 /_wt_head/
+
+# local test artifacts
+build/
+_perfile_report.txt
+_pytest_full.xml
+_pf_*.xml

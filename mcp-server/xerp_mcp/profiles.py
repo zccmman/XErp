@@ -7,8 +7,8 @@
 三档：
 
     minimal  极简  15 个：建账 → 制单 → 审核 → 记账 → 查账 → 两张主表
-    standard 标准  29 个：+ 驳回/撤回/反记账/多级签字/月结/往来/银行/OCR
-    pro      专业  49 个：全量（自治过账、异常扫描、适配器、转账模板、双审批通道）
+    standard 标准  30 个：+ 驳回/撤回/反记账/多级签字/月结/往来/银行/OCR/三表预测
+    pro      专业  50 个：全量（自治过账、异常扫描、适配器、转账模板、双审批通道）
 
 归类铁律（由 tests/test_tool_profiles.py 钉死）：
 
@@ -76,6 +76,8 @@ STANDARD_EXTRA: tuple[str, ...] = (
     "bank_reconcile",
     # 票据
     "ocr_ingest_invoice",
+    # 三表前向预测（P1-01 预测）：以实际数为种子外推未来，best/base/worst 多情景
+    "forecast_statements",
 )
 
 
