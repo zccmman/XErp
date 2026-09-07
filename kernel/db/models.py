@@ -210,6 +210,18 @@ class Balance(Base):
     """余额投影（ADR-002）：可随时由事件流全量重建，不是事实源。
 
     维度：账套 + 期间 + 科目 + 辅助维度规范键（canonical_json，无辅助维度为空串）。
+
+    ⚠️ 语义契约（D6 钉死，禁止漂移 —— 见 tests/test_projection_contract.py）：
+    1. 每一行存的是**该期间的借/贷发生额**（gross period activity），不是跨期累计余额。
+       debit_total / credit_total 只累加 (账套, 期间, 科目, dims) 本期的凭证明细；
+       换期另起一行，绝不跨期合并。期末余额 = 本期发生额 + 期初，由调用方按期间聚合得出。
+    2. 账账核对（reconcile）的对比基准确认是**净额 = debit_total − credit_total**，
+       不是借贷合计（gross）。原因：P1-02 期末结转会把净零损益行清理掉，
+       若按借贷合计逐项比对会把被清理的净零行误报 PROJECTION_MISMATCH；
+       净额一致即投影与凭证明细一致，净额失配仍能检出篡改/丢失。
+    3. 某期间的期末余额 = Balance(该期间).net，这一不变量成立的前提是：
+       该期间的「期初」本身也是期内的一张 POSTED 凭证（期初导入/期初结转），
+       因此 Balance(期间) 已含其期初。切勿把 Balance 跨期相加当作余额。
     """
 
     __tablename__ = "balances"

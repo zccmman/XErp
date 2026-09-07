@@ -208,7 +208,12 @@ def _dims_key(aux_dims: dict | None) -> str:
 
 
 def _accumulate_balances(session: Session, *, voucher: Voucher, lines: list[PostingLine]) -> None:
-    """按（账套, 期间, 科目, dims_key）累计借/贷发生额——余额是投影不是事实。"""
+    """按（账套, 期间, 科目, dims_key）累计**本期间**的借/贷发生额——余额是投影不是事实。
+
+    语义契约见 `Balance` 模型 docstring（D6）：
+    - 每行只累加该 voucher.period_id 的发生额，换期另起一行，绝不跨期累计；
+    - 存的是 gross 借/贷发生额，净额口径的对比由账账核对（reconcile）负责。
+    """
     for line in lines:
         key = _dims_key(line.aux_dims)
         bal = session.scalars(
