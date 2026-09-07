@@ -1,7 +1,8 @@
 """XErp MCP Server — 七工具（ADR-003 契约）。
 
 启动: python mcp-server/server.py        （stdio transport）
-库引用: build_server(db_url) -> FastMCP  （测试 / 嵌入 WorkBuddy 用）
+库引用: build_server(db_url, profile=None) -> FastMCP  （测试 / 嵌入 WorkBuddy 用）
+    profile 为工具分层档位（minimal|standard|pro），仅裁剪暴露面、不改内核。
 
 要点：
 - 每次工具调用独立 Session（成功 commit / 异常 rollback）
@@ -18,6 +19,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from fastmcp import FastMCP
+from xerp_mcp.profiles import disabled_for  # 工具分层（P0-B）：改配置不改内核
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -142,7 +144,7 @@ class _Repo:
             s.close()
 
 
-def build_server(db_url: str | None = None) -> FastMCP:
+def build_server(db_url: str | None = None, profile: str | None = None) -> FastMCP:
     url = db_url or os.environ.get(
         "XERP_DB", f"sqlite:///{os.path.join(_REPO_ROOT, 'ledgeros_dev.db')}"
     )
@@ -1562,8 +1564,17 @@ def build_server(db_url: str | None = None) -> FastMCP:
             ],
         }
 
+    # ---------- 工具分层（P0-B）----------
+    # profile 来自 mcp.json 的 disabledTools / 环境变量 XERP_PROFILE；
+    # pro 或 None 不裁剪，其余档位按 profiles.py 单一真源禁用对应工具。
+    if profile:
+        off = disabled_for(profile)
+        if off:
+            mcp.disable(names=set(off))
+
     return mcp
 
 
 if __name__ == "__main__":
-    build_server().run()  # stdio transport；WorkBuddy/Claude 以此接入
+    # stdio transport；WorkBuddy/Claude 以此接入。XERP_PROFILE 可选（minimal|standard|pro）
+    build_server(profile=os.environ.get("XERP_PROFILE") or None).run()

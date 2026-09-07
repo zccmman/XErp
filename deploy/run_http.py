@@ -20,7 +20,8 @@ def main() -> None:
     url = os.environ.get("XERP_DB")
     if not url:
         raise SystemExit("XERP_DB 未配置（应为 postgresql+psycopg://…）")
-    server = build_server(url)
+    # XERP_PROFILE 可选（minimal|standard|pro）；不设置则暴露全量
+    server = build_server(url, profile=os.environ.get("XERP_PROFILE") or None)
     server.run(transport="http", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
 
 
