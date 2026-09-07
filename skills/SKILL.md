@@ -20,12 +20,17 @@ description: >
 正确做法是告知用户：「ledgeros 连接器未连接，请到 连接器管理 → 自定义连接器 →
 信任 ledgeros，然后重开会话再来记账。」
 
-## 第一步：工作区发现
+## 第一步：会话自举
 
-工具可用后，会话开始先调用 `get_workspace`：
+工具可用后，会话开始先调用 `get_session_context`：
 - 取 `ledger_set_id`（后续所有调用都要用）
 - 区分两个身份主体：**制单人**（通常是发起对话的用户）与 **审批人**
-- 确认目标月份在 `open_periods` 中（否则提示期间不存在/已结账）
+- 确认目标月份在 `open_periods` 中（否则提示期间不存在/已结账）。期间字段名为
+  `period_year` / `period_month` —— **全系统统一，所有工具都一样**。
+
+> `get_workspace` 是本工具的历史别名，行为完全一致，仅作过渡保留；新对话请直接用
+> `get_session_context`。会计口径（`accounting_standard`）以账套设置为唯一来源，
+> 报表类工具**不要主动传该参数**，传了必须与账套值一致否则报错。
 
 ## 建账向导（用户想用新账套/新公司记账时）
 
@@ -79,7 +84,7 @@ description: >
 
 | 工具 | 作用 |
 |---|---|
-| get_workspace | 会话引导：账套/身份/OPEN 期间 |
+| get_session_context | 会话自举：账套/身份/开放期间（`get_workspace` 为历史别名） |
 | list_accounts | 科目检索（keyword 过滤） |
 | create_voucher | 创建草稿（即时硬校验） |
 | push_voucher | 提交待审 DRAFT→PUSHED |

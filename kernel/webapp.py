@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kernel.coa import CoaImportError, import_chart_of_accounts, load_template_rows
+from kernel.classic import period_zh, status_zh, voucher_prefix
 from kernel.db.base import Base
 from kernel.db.models import (
     Account,
@@ -34,31 +35,66 @@ from kernel.db.models import (
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _CSS = """<style>
-body{font-family:-apple-system,'Segoe UI',Inter,sans-serif;
-     max-width:960px;margin:24px auto;padding:0 16px;color:#1a1a1a}
-h1{font-size:20px}h2{font-size:16px;margin-top:28px}
-table{border-collapse:collapse;width:100%;margin:8px 0}
-th,td{border:1px solid #ddd;padding:6px 10px;text-align:left;font-size:14px}
-th{background:#f5f5f0}
-.badge{display:inline-block;padding:1px 8px;border-radius:10px;
-       background:#eef4e6;color:#3b6d11;font-size:12px}
-.err{color:#a32d2d;background:#fcebeb;padding:8px 12px;border-radius:6px}
+/* 怀旧皮肤：复刻经典财务软件的观感——深蓝标题栏、宋体正文、密集网格、
+   印章式状态。改的是观感不是结构，语义与内核术语保持一致。 */
+body{font-family:SimSun,'宋体','NSimSun',serif;
+     max-width:1000px;margin:0 auto;padding:0 0 40px;color:#1a1a1a;font-size:14px;
+     background:#eef1f5}
+.wrap{background:#fff;border:1px solid #9fb0c4;border-top:0;padding:16px 20px 24px}
+h1{font-size:16px;margin:0;padding:10px 20px;color:#fff;background:#1f4e79;
+   letter-spacing:2px;font-weight:bold}
+h1 .badge{background:#3d7ab8;color:#eaf2fb;margin-left:8px}
+h2{font-size:15px;margin:22px 0 8px;padding-left:8px;border-left:4px solid #1f4e79}
+h3{font-size:14px;margin:18px 0 6px;color:#1f4e79}
+table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
+th,td{border:1px solid #a9b8c8;padding:4px 8px;text-align:left}
+th{background:#dbe5f1;color:#1f3d5c;font-weight:bold}
+tbody tr:nth-child(even){background:#f6f8fa}
+.badge{display:inline-block;padding:0 6px;border-radius:2px;font-size:12px;
+       border:1px solid #888;color:#555;background:#f2f2f2}
+.st-DRAFT{border-color:#8a8a8a;color:#5a5a5a;background:#f0f0f0}
+.st-PUSHED{border-color:#c98a00;color:#8a5d00;background:#fff6de}
+.st-APPROVED{border-color:#1f4e79;color:#1f4e79;background:#e3edf8}
+.st-POSTED{border-color:#2e7d32;color:#1b5e20;background:#e8f5e9;font-weight:bold}
+.st-REJECTED{border-color:#a32d2d;color:#a32d2d;background:#fcebeb}
+.st-WITHDRAWN{border-color:#8a8a8a;color:#5a5a5a;background:#eceff1}
+.err{color:#a32d2d;background:#fcebeb;border:1px solid #e5b4b4;padding:8px 12px}
 .warn{color:#7a4a00;background:#fff7e6;border:1px solid #ffd591;
-      padding:10px 14px;border-radius:6px;margin:8px 0;font-size:14px;line-height:1.7}
+      padding:10px 14px;margin:8px 0;font-size:13px;line-height:1.7}
 .warn ul{margin:6px 0 6px 20px;padding:0}
-a{color:#185fa5;text-decoration:none}a:hover{text-decoration:underline}
-.nav{font-size:14px;margin:-8px 0 20px}
-.ops{background:#f8f9fb;border:1px solid #e3e6ec;border-radius:8px;
-     padding:12px 16px;margin:14px 0}
+.ok{color:#1b5e20;background:#e8f5e9;border:1px solid #a5d6a7;padding:10px 14px;
+    margin:8px 0;font-size:13px;line-height:1.7}
+a{color:#154c8a;text-decoration:none}a:hover{text-decoration:underline}
+.nav{font-size:13px;margin:0 0 14px;padding:6px 10px;background:#dbe5f1;border:1px solid #a9b8c8}
+.ops{background:#f4f7fb;border:1px solid #b9c8d8;padding:12px 16px;margin:14px 0}
 .ops form{margin:6px 0}
 button.danger{background:#a32d2d}
-input,textarea{width:100%;padding:6px;margin:4px 0;box-sizing:border-box}
+input,textarea{font-family:inherit;width:100%;padding:5px;margin:4px 0;box-sizing:border-box;
+               border:1px solid #a9b8c8}
 input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}
-label{font-size:14px;cursor:pointer;user-select:none}
-button{padding:6px 18px;background:#185fa5;color:#fff;border:0;border-radius:6px;cursor:pointer}
-.userbar{float:right;font-size:13px;color:#555;margin-top:-34px}
-.userbar b{color:#1a1a1a}
-select{width:100%;padding:6px;margin:4px 0;box-sizing:border-box}
+label{font-size:13px;cursor:pointer;user-select:none}
+button{padding:5px 16px;background:#1f4e79;color:#fff;border:1px solid #163d5e;
+       border-radius:2px;cursor:pointer;font-family:inherit;font-size:13px}
+button:hover{background:#2b62a3}
+button.ghost{background:#fff;color:#1f4e79}
+.userbar{float:right;font-size:12px;color:#eaf2fb;margin-top:-26px;margin-right:20px}
+.userbar b{color:#fff}.userbar a{color:#cfe0f2}
+select{font-family:inherit;width:100%;padding:4px;margin:4px 0;box-sizing:border-box;
+       border:1px solid #a9b8c8}
+/* 工具条：老软件的「制单/审核/记账」一排按钮，肌肉记忆的落点 */
+.toolbar{background:#dbe5f1;border:1px solid #a9b8c8;padding:6px 10px;margin:10px 0;
+         font-size:13px}
+.toolbar a,.toolbar span.sep{color:#1f4e79;margin-right:14px}
+.toolbar .sep{color:#9fb0c4}
+.num{text-align:right;font-family:'Courier New',monospace}
+.vno{font-family:'Courier New',monospace;font-weight:bold}
+/* 结账体检清单 */
+.check{list-style:none;padding:0;margin:8px 0}
+.check li{border:1px solid #d5dde6;padding:8px 12px;margin:6px 0;font-size:13px;line-height:1.7}
+.check li.pass{border-left:4px solid #2e7d32;background:#f3faf4}
+.check li.fail{border-left:4px solid #a32d2d;background:#fdf4f4}
+.check .item{font-weight:bold}
+.check .hint{color:#8a5d00}
 </style>"""
 
 
@@ -71,16 +107,34 @@ def _page(title: str, body: str, user: str | None = None) -> HTMLResponse:
             f'<div class="userbar">当前身份：<b>{html.escape(user)}</b>'
             f'　<a href="/logout">退出</a></div>'
         )
-    nav = '<p class=nav><a href="/">工作区</a> · <a href="/todo">审批待办</a></p>'
+    nav = ('<div class=nav><a href="/">工作区</a> · '
+           '<a href="/todo">审批待办</a></div>')
     return HTMLResponse(
         f"<!doctype html><html lang=zh><head><meta charset=utf-8>"
         f"<title>{html.escape(title)} · XErp</title>{_CSS}</head>"
-        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{userbar}{nav}{body}</body></html>"
+        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{userbar}"
+        f'<div class=wrap>{nav}{body}</div></body></html>'
     )
 
 
 def _fmt(d) -> str:
     return f"{(d or 0):.2f}"
+
+
+def st_badge(status: str) -> str:
+    """状态徽章：中文术语 + 配色。
+
+    老会计认的是「未审核 / 已记账」这几个字，不是 DRAFT / POSTED。
+    颜色只是辅助，语义由文字承担——色盲用户与打印场景都不能丢信息。
+    """
+    from kernel.classic import status_zh  # noqa: F401  顶部已导入，此处显式标注来源
+
+    return f'<span class="badge st-{html.escape(status)}">{html.escape(status_zh(status))}</span>'
+
+
+def _toolbar(*items: str) -> str:
+    """工具条。老软件的肌肉记忆落点：一排「制单 / 审核 / 记账 / 结账」。"""
+    return '<div class=toolbar>' + '<span class=sep>|</span>'.join(items) + '</div>'
 
 
 def _opening_form(ls_id: str, existing: list) -> str:
@@ -216,11 +270,20 @@ def _account_options(accounts: list, selected: str = "") -> str:
     return "".join(opts)
 
 
-def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None) -> str:
-    """渲染制单表单。values 非空表示提交失败后的回填。"""
+def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None,
+                  summaries: list | None = None) -> str:
+    """渲染制单表单。values 非空表示提交失败后的回填。
+
+    怀旧设计：凭证类别是老会计制单的第一下手感——先选收/付/转，再录分录。
+    这里默认「自动」，由前端按资金流向实时预判并回显，与内核
+    classify_voucher_type 同一套规则，避免界面与内核判定打架。
+    """
+    from kernel.classic import CASH_BANK_CODES, period_zh
+
     v = values or {}
     vdate = v.get("voucher_date") or _default_voucher_date(period)
     summary = v.get("summary") or ""
+    vtype = str(v.get("voucher_type") or "")
     rows = list(v.get("rows") or [])
     while len(rows) < 4:  # 至少 4 行：一借一贷是常态，留两行给复杂分录
         rows.append({"account_code": "", "debit": "", "credit": ""})
@@ -233,7 +296,7 @@ def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None
         last = monthrange(period.year, period.month)[1]
         head = (
             f"<p>记账期间：<b>{period.year}-{period.month:02d}</b>"
-            f"（{period.status}）　日期须落在 "
+            f"（{period_zh(period.status)}）　日期须落在 "
             f"{period.year}-{period.month:02d}-01 ～ {period.year}-{period.month:02d}-{last:02d}</p>"
         )
 
@@ -252,11 +315,71 @@ def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None
             "删除</button></td></tr>"
         )
 
+    type_opts = "".join(
+        f'<option value="{val}"{" selected" if vtype == val else ""}>{label}</option>'
+        for val, label in (
+            ("", "记账凭证（统一编号 记-）"),
+            ("收", "收款凭证（收-）"),
+            ("付", "付款凭证（付-）"),
+            ("转", "转账凭证（转-）"),
+        )
+    )
+    # 常用摘要下拉：老会计的摘要高度重复，让他重打一遍是最招骂的设计
+    dl = ""
+    if summaries:
+        opts = "".join(
+            f'<option value="{html.escape(str(s.get("summary") or ""))}">'
+            for s in summaries[:50]
+            if s.get("summary")
+        )
+        dl = f"<datalist id=sumList>{opts}</datalist>"
+
+    cash_js = ", ".join(f'"{c}"' for c in CASH_BANK_CODES)
+    type_js = f"""
+<script>
+var CASH_PREFIX = [{cash_js}];
+function isCash(code){{
+  code = (code || '').trim();
+  for (var i = 0; i < CASH_PREFIX.length; i++) {{
+    if (code.indexOf(CASH_PREFIX[i]) === 0) return true;
+  }}
+  return false;
+}}
+function guessType(){{
+  var rows = document.querySelectorAll('#lines tr'), dr = false, cr = false;
+  for (var i = 0; i < rows.length; i++) {{
+    var sel = rows[i].querySelector('select.acct');
+    if (!sel || !isCash(sel.value)) continue;
+    var dEl = rows[i].querySelector('.amt-debit');
+    var cEl = rows[i].querySelector('.amt-credit');
+    var d = parseFloat((dEl && dEl.value) || 0) || 0;
+    var c = parseFloat((cEl && cEl.value) || 0) || 0;
+    if (c > 0) cr = true;
+    if (d > 0) dr = true;
+  }}
+  var t = cr ? '付' : (dr ? '收' : '转');
+  var el = document.getElementById('typeHint');
+  if (el) el.textContent = '（资金流向判定：' + t + '）';
+}}
+document.addEventListener('DOMContentLoaded', function(){{
+  var tb = document.getElementById('lines');
+  if (tb) {{
+    tb.addEventListener('input', guessType);
+    tb.addEventListener('change', guessType);
+  }}
+  guessType();
+}});
+</script>"""
+
     return f"""
 {_FORM_JS}
-<h2>新建凭证</h2>
+<h2>填制凭证</h2>
 {head}
 <form method=post action="/ledger/{ls_id}/voucher/new">
+<p>凭证类别：<select name=voucher_type onchange="this.form.querySelector(
+   'select[name=voucher_type]').blur()" style="max-width:220px;display:inline-block"
+   >{type_opts}</select>
+   <span id=typeHint style="margin-left:10px;color:#1f4e79"></span></p>
 <p>科目过滤：<input id=acctFilter oninput="filterAccounts(this.value)"
    placeholder="输入编码或名称，如 1002 或 银行"
    style="max-width:320px;display:inline-block"></p>
@@ -279,14 +402,16 @@ def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None
    <span id=balanceHint style="margin-left:12px;font-size:14px"></span></p>
 <p>日期：<input type=date name=voucher_date value="{vdate}"
    style="max-width:200px;display:inline-block"></p>
-<p>摘要：<input name=summary value="{html.escape(str(summary))}"
-   placeholder="如：报销差旅费"></p>
+<p>摘要：<input name=summary list=sumList autocomplete=off
+   value="{html.escape(str(summary))}" placeholder="如：报销差旅费"></p>
 <p>
-<button type=submit name=action value=draft>保存为草稿</button>
-<button type=submit name=action value=submit style="margin-left:8px">保存并提交审批</button>
+<button type=submit name=action value=draft>保存（草稿）</button>
+<button type=submit name=action value=submit style="margin-left:8px">保存并送审</button>
 <a href="/ledger/{ls_id}" style="margin-left:12px">取消</a>
 </p>
 </form>
+{dl}
+{type_js}
 """
 
 
@@ -552,8 +677,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
             vrows = ""
             for v in vouchers:
                 vrows += (
-                    f"<tr><td><a href=/voucher/{v.id}>{v.voucher_no}</a></td>"
-                    f"<td>{v.voucher_date}</td><td><span class=badge>{v.status}</span></td>"
+                    f"<tr><td><a class=vno href=/voucher/{v.id}>{v.voucher_no}</a></td>"
+                    f"<td>{v.voucher_date}</td><td>{st_badge(v.status)}</td>"
                     f"<td>{html.escape(v.summary or '')}</td></tr>"
                 )
 
@@ -605,20 +730,27 @@ def build_app(db_url: str | None = None) -> FastAPI:
 
             ptabs = "".join(
                 f'<a href="/ledger/{ls_id}?year={p.year}&month={p.month}">'
-                f"{p.year}-{p.month:02d}({p.status})</a>&nbsp;"
+                f"{p.year}-{p.month:02d}({period_zh(p.status)})</a>&nbsp;"
                 for p in periods
             ) or "（无期间）"
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            plabel = (
+                f"{period.year}-{period.month:02d}" if period is not None else "无期间"
+            )
             body = (
-                f"<h2>账套：{html.escape(ls.name)}　"
-                f"<a href='/ledger/{ls_id}/reports'>三大报表 →</a></h2>"
-                f"<p>期间切换：{ptabs}</p>{err}"
+                f"<h2>账套：{html.escape(ls.name)}</h2>"
+                + _toolbar(
+                    f"<a href='/ledger/{ls_id}/voucher/new'>填制凭证</a>",
+                    f"<a href='/ledger/{ls_id}/reports'>账簿报表</a>",
+                    f"<a href='/ledger/{ls_id}/close'>月末结账</a>",
+                )
+                + f"<p>期间切换：{ptabs}</p>{err}"
                 '<h3>凭证（最近 50 张）　'
                 f"<a href='/ledger/{ls_id}/voucher/new'>+ 新建凭证</a></h3>"
                 "<table><tr><th>凭证号</th><th>日期</th><th>状态</th><th>摘要</th></tr>"
                 + (vrows or "<tr><td colspan=4>暂无凭证</td></tr>")
                 + "</table>"
-                f"<h3>科目余额表 {period.year}-{period.month:02d}</h3>"
+                f"<h3>科目余额表 {plabel}</h3>"
                 "<table><tr><th rowspan=2>编码</th><th rowspan=2>科目</th>"
                 "<th rowspan=2>期初余额</th><th colspan=2>本期发生额</th>"
                 "<th rowspan=2>期末余额</th></tr>"
@@ -693,10 +825,14 @@ def build_app(db_url: str | None = None) -> FastAPI:
             # 只给末级科目：非末级科目过账会被内核拒绝（父科目余额由子科目汇总），
             # 放进下拉等于埋一个「选了必然报错」的坑。
             leaf = [a for a in all_acc if a.is_leaf] or all_acc
+            # 常用摘要：从历史凭证统计，不新增表也不缓存（历史凭证就是摘要库）
+            from kernel.classic import suggest_summaries
+
+            summaries = suggest_summaries(s, ledger_set_id=ls_id, limit=20)
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
             body = (
                 f"<p><a href='/ledger/{ls_id}'>← 返回账套</a></p>{err}"
-                + _voucher_form(ls_id, leaf, period, values)
+                + _voucher_form(ls_id, leaf, period, values, summaries)
             )
             return _page(f"{ls.name} · 新建凭证", body,
                          request.state.subject_name)
@@ -715,7 +851,9 @@ def build_app(db_url: str | None = None) -> FastAPI:
         debit: list[str] = Form([]),
         credit: list[str] = Form([]),
         action: str = Form("draft"),
+        voucher_type: str = Form(""),
     ):
+        from kernel.classic import voucher_prefix
         from kernel.posting import PostingError
         from kernel.state import transition
         from kernel.voucher_wizard import create_draft_voucher, record_voucher_created
@@ -732,9 +870,15 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     "credit": cr or "",
                 }
             )
+        # 凭证类别 → 编号前缀。未选类别时沿用统一编号「记-」，与 MCP 同一
+        # 语义、与历史账套一致——怀旧是可选开关，不是默认行为变更。
+        chosen = (voucher_type or "").strip()
+        use_prefix = chosen in ("收", "付", "转")
+        prefix = voucher_prefix(chosen) if use_prefix else "记-"
         values = {
             "voucher_date": voucher_date,
             "summary": summary,
+            "voucher_type": chosen,
             "rows": rows or [{"account_code": "", "debit": "", "credit": ""}] * 4,
         }
         try:
@@ -746,6 +890,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     voucher_date=voucher_date,
                     summary=summary,
                     lines=rows,
+                    prefix=prefix,
+                    per_prefix=use_prefix,
                 )
                 if not replayed:
                     record_voucher_created(s, v, actor)
@@ -859,6 +1005,83 @@ def build_app(db_url: str | None = None) -> FastAPI:
             )
             return _page(f"{ls.name} 报表", body, request.state.subject_name)
 
+    @app.get("/ledger/{ls_id}/close", response_class=HTMLResponse)
+    def close_page(request: Request, ls_id: str, year: int = 0, month: int = 0):
+        """月末结账体检页——怀旧设计里最有仪式感的一环。
+
+        老软件的价值不在于点「结账」这个动作，而在于**点之前先告诉你还差什么**。
+        四道闸门一次查完列成清单，而不是逐个抛异常让人来回试错。
+        """
+        from kernel.classic import precheck_close
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>",
+                             request.state.subject_name)
+            periods = list(
+                s.scalars(
+                    select(Period)
+                    .where(Period.ledger_set_id == ls_id)
+                    .order_by(Period.year.desc(), Period.month.desc())
+                ).all()
+            )
+            if year and month:
+                period = next(
+                    (p for p in periods if p.year == year and p.month == month), None
+                )
+            else:
+                period = next((p for p in periods if p.status == "OPEN"), None)
+            period = period or (periods[0] if periods else None)
+            if period is None:
+                return _page("月末结账", "<p class=err>本账套尚无会计期间</p>",
+                             request.state.subject_name)
+
+            result = precheck_close(
+                s, ledger_set_id=ls_id, year=period.year, month=period.month
+            )
+            lis = ""
+            for c in result["checks"]:
+                cls = "pass" if c["passed"] else "fail"
+                mark = "√" if c["passed"] else "×"
+                hint = c.get("hint") or ""
+                hint_html = (
+                    f'<div class=hint>→ {html.escape(hint)}</div>' if hint else ""
+                )
+                lis += (
+                    f'<li class={cls}><span class=item>{mark} '
+                    f'{html.escape(c["item"])}</span>　'
+                    f'{html.escape(c["detail"])}{hint_html}</li>'
+                )
+            ptabs = "".join(
+                f'<a href="/ledger/{ls_id}/close?year={p.year}&month={p.month}">'
+                f"{p.year}-{p.month:02d}({period_zh(p.status)})</a>&nbsp;"
+                for p in periods
+            )
+            if period.status == "CLOSED":
+                banner = (f'<div class=ok>本期（{period.year}-{period.month:02d}）'
+                          "已结账。</div>")
+                action = ""
+            elif result["can_close"]:
+                banner = '<div class=ok>结账条件已全部满足，可以结账。</div>'
+                action = (
+                    f'<div class=ops><form method=post action="/ledger/{ls_id}/close">'
+                    f'<input type=hidden name=year value="{period.year}">'
+                    f'<input type=hidden name=month value="{period.month}">'
+                    "<button>执行月末结账</button></form></div>"
+                )
+            else:
+                banner = f'<div class=warn>{html.escape(result["summary"])}</div>'
+                action = ""
+            body = (
+                f"<p><a href='/ledger/{ls_id}'>← 返回账套</a></p>"
+                f"<h2>月末结账　{period.year}-{period.month:02d}"
+                f"（{period_zh(period.status)}）</h2>"
+                f"<p>期间切换：{ptabs}</p>"
+                f"{banner}<ul class=check>{lis}</ul>{action}"
+            )
+            return _page("月末结账", body, request.state.subject_name)
+
     @app.post("/ledger/{ls_id}/close")
     def do_close(
         request: Request, ls_id: str, year: int = Form(0), month: int = Form(0)
@@ -904,7 +1127,17 @@ def build_app(db_url: str | None = None) -> FastAPI:
             me = s.get(Subject, actor_id)
             i_am_agent = (me.type if me else "user") == "agent"
             ops = ""
-            if v.status == "PUSHED":
+            if v.status == "DRAFT" and is_maker and not i_am_agent:
+                ops = (
+                    f'<div class=ops><form method=post action="/voucher/{vid}/push">'
+                    "<button>推送审批（提交给审批人）</button></form></div>"
+                )
+            elif v.status == "DRAFT" and i_am_agent:
+                ops = (
+                    '<div class=ops><p class=warn>草稿待制单人推送审批；'
+                    "当前身份是 Agent，推送须由制单人人执行。</p></div>"
+                )
+            elif v.status == "PUSHED":
                 if is_maker:
                     ops = (
                         f'<div class=ops><form method=post action="/voucher/{vid}/withdraw">'
@@ -934,7 +1167,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 ops = '<div class=ops><p class=warn>Agent 不能执行过账，请由人员操作。</p></div>'
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
             body = (
-                f"<h2>凭证 {v.voucher_no} <span class=badge>{v.status}</span></h2>"
+                f"<h2>凭证 <span class=vno>{v.voucher_no}</span> {st_badge(v.status)}</h2>"
                 f"<p>日期 {v.voucher_date}　摘要 {html.escape(v.summary or '')}</p>"
                 + err
                 + "<table><tr><th>#</th><th>编码</th><th>科目</th><th>借方</th><th>贷方</th></tr>"
@@ -957,7 +1190,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
         返回 (error_message | None, voucher | None)。"""
         from kernel.authz import AuthzError, enforce
         from kernel.posting import PostingError, post_voucher
-        from kernel.state import transition
+        from kernel.state import ALLOWED, transition
 
         actor_id = request.state.subject_id
         try:
@@ -965,6 +1198,12 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 v = s.get(Voucher, vid)
                 if v is None:
                     return "凭证不存在", None
+                # 状态机合法性预检：非法组合（如已推送再推送）直接给中文
+                # 提示，避免落进错误的权限动作被 casbin 抢先拦截。
+                # POSTED 目标例外：APPROVED→POSTED 走 post_voucher 专属
+                # 路径（不在 transition 的 ALLOWED 字典里），由它自校验。
+                if target != "POSTED" and (v.status, target) not in ALLOWED:
+                    return f"不允许从 {v.status} 跃迁到 {target}", None
                 me = s.get(Subject, actor_id)
                 actor = {"type": (me.type if me else "user"), "id": actor_id}
                 is_maker = str(v.created_by) == str(actor_id)
@@ -975,7 +1214,9 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     return "制单人不能审批自己的凭证；如需收回请改用撤回", None
                 # 权限动作映射（与 MCP _action_for 一致）：PUSHED→DRAFT
                 # 按执行人区分 —— 撤回是制单人动作，驳回是审批人动作。
-                if (v.status, target) == ("PUSHED", "APPROVED"):
+                if (v.status, target) == ("DRAFT", "PUSHED"):
+                    action = "voucher:push"
+                elif (v.status, target) == ("PUSHED", "APPROVED"):
                     action = "voucher:approve"
                 elif (v.status, target) == ("PUSHED", "DRAFT"):
                     action = "voucher:push" if is_maker else "voucher:approve"
@@ -1066,6 +1307,13 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + "</table>"
             )
             return _page("审批待办", body, request.state.subject_name)
+
+    @app.post("/voucher/{vid}/push")
+    def voucher_push_web(request: Request, vid: str):
+        err, _v = _apply_transition(request, vid, "PUSHED", require_maker=True)
+        if err:
+            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
+        return RedirectResponse(f"/voucher/{vid}", 303)
 
     @app.post("/voucher/{vid}/approve")
     def voucher_approve_web(request: Request, vid: str):

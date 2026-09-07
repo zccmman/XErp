@@ -97,7 +97,11 @@ def anon_client(env):
 def _leaf_codes(client, ls_id) -> list[str]:
     r = client.get(f"/ledger/{ls_id}/voucher/new")
     assert r.status_code == 200
-    return [c for c in re.findall(r'<option value="([^"]+)"', r.text) if c]
+    # 只取「科目」下拉内的 option：页面上还有凭证类别等其它 select，
+    # 抓全局 option 会把类别值（收/付/转）当成科目编码提交。
+    m = re.search(r"<select class=acct[^>]*>(.*?)</select>", r.text, re.S)
+    scope = m.group(1) if m else r.text
+    return [c for c in re.findall(r'<option value="([^"]+)"', scope) if c]
 
 
 def _make_pushed(client, env, summary: str, amount="66.00") -> str:
@@ -324,6 +328,71 @@ def test_pushed_cannot_post_directly(maker_client, reviewer_client, env):
     vid = _make_pushed(maker_client, env, "跳步过账")
     r = maker_client.post(f"/voucher/{vid}/post", follow_redirects=True)
     assert "APPROVED" in r.text or "记账" in r.text or "审批" in r.text
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        assert s.get(Voucher, vid).status == "PUSHED"
+    engine.dispose()
+
+
+# ---------- 推送（DRAFT→PUSHED，独立路由） ----------
+
+
+def _make_draft(client, env, summary: str, amount="77.00") -> str:
+    """Web 表单仅保存草稿（action=draft），返回凭证 id。"""
+    ls = env["ids"]["ledger_set_id"]
+    codes = _leaf_codes(client, ls)
+    r = client.post(
+        f"/ledger/{ls}/voucher/new",
+        data={
+            "voucher_date": f"{env['ids']['year']}-{env['ids']['month']:02d}-15",
+            "summary": summary,
+            "account_code": [codes[0], codes[1]],
+            "debit": [amount, ""],
+            "credit": ["", amount],
+            "action": "draft",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, r.text
+    return r.headers["location"].rsplit("/", 1)[-1]
+
+
+def test_draft_shows_push_button_to_maker(maker_client, reviewer_client, env):
+    """DRAFT 凭证：制单人看到推送按钮，审批人不该看到任何操作。"""
+    vid = _make_draft(maker_client, env, "推送按钮显隐")
+    mt = maker_client.get(f"/voucher/{vid}").text
+    rt = reviewer_client.get(f"/voucher/{vid}").text
+    assert f'action="/voucher/{vid}/push"' in mt, "制单人应看到推送按钮"
+    assert "/push" not in rt, "非制单人不应看到推送按钮"
+
+
+def test_push_by_maker_succeeds(maker_client, env):
+    """保存草稿 → 独立推送 → PUSHED（驳回后退回重推的主路径）。"""
+    vid = _make_draft(maker_client, env, "草稿后推送")
+    r = maker_client.post(f"/voucher/{vid}/push", follow_redirects=False)
+    assert r.status_code == 303
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        assert s.get(Voucher, vid).status == "PUSHED"
+    engine.dispose()
+
+
+def test_push_by_non_maker_blocked(reviewer_client, maker_client, env):
+    """非制单人推送 → require_maker 预校验拦截。"""
+    vid = _make_draft(maker_client, env, "别人不能替我推")
+    r = reviewer_client.post(f"/voucher/{vid}/push", follow_redirects=True)
+    assert "制单人" in r.text
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        assert s.get(Voucher, vid).status == "DRAFT"
+    engine.dispose()
+
+
+def test_push_non_draft_blocked(maker_client, env):
+    """已推送凭证再点推送 → 状态机拒绝（非法跃迁）。"""
+    vid = _make_pushed(maker_client, env, "重复推送")
+    r = maker_client.post(f"/voucher/{vid}/push", follow_redirects=True)
+    assert "无法" in r.text or "不允许" in r.text or "状态" in r.text
     engine = create_engine(env["url"])
     with Session(engine) as s:
         assert s.get(Voucher, vid).status == "PUSHED"

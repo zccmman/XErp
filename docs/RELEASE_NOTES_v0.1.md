@@ -23,7 +23,7 @@
 - **审计回放 CLI**：`python -m kernel.audit export|verify`，退出码 0=链完整 / 2=链异常
 
 ### 能力层（MCP，13 个工具）
-`get_workspace` · `init_ledger_set` · `ensure_period` · `import_opening_balances` · `list_accounts` ·
+`get_workspace`（v0.2 起更名 `get_session_context`，旧名保留为别名） · `init_ledger_set` · `ensure_period` · `import_opening_balances` · `list_accounts` ·
 `create_voucher` · `push_voucher` · `approve_voucher` · `post_voucher` · `cancel_post_voucher` ·
 `get_voucher` · `query_balances` · `feishu_send_approval`
 

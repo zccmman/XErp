@@ -69,6 +69,41 @@ def _err(code: str, message_zh: str, details: dict | None = None):
     }
 
 
+def _resolve_standard(
+    session, ledger_set_id: str, requested: str | None
+) -> tuple[str | None, dict | None]:
+    """会计口径单一真源：**以账套设置为准**（P0-A3）。
+
+    不传（空）→ 取账套 LedgerSet.accounting_standard；
+    传了 → 必须与账套值一致，否则返回 STANDARD_MISMATCH 错误。
+
+    历史行为是各工具各自硬编码默认 "small_business"，与账套值冲突时无任何定义，
+    报表口径错了极难定位。现在口径只有账套一个来源。
+
+    返回 (standard, err)；err 非空时调用方应直接 return 该错误。
+    """
+    from kernel.db.models import LedgerSet
+
+    ls = session.get(LedgerSet, ledger_set_id)
+    if ls is None:
+        return None, _err("LEDGER_NOT_FOUND", f"账套 {ledger_set_id} 不存在")
+    actual = ls.accounting_standard or "small_business"
+    if requested in (None, ""):
+        return actual, None
+    if requested != actual:
+        return None, _err(
+            "STANDARD_MISMATCH",
+            f"传入的会计口径「{requested}」与账套「{ls.name}」的设置「{actual}」不一致，"
+            f"报表口径以账套设置为准，请去掉 accounting_standard 参数",
+            {
+                "ledger_set_id": ledger_set_id,
+                "requested": requested,
+                "actual": actual,
+            },
+        )
+    return actual, None
+
+
 def _amount(value, field: str) -> Decimal:
     try:
         d = Decimal(str(value if value not in (None, "") else "0"))
@@ -206,12 +241,8 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 ]
             )
 
-    @mcp.tool()
-    def get_workspace() -> dict:
-        """发现工作区：账套列表（含 id）、操作者身份（制单人/审批人及其主体 id）、各账套 OPEN 期间。
-
-        会话开始时先调用本工具，取得 ledger_set_id 与 actor_id 后再进行记账。
-        """
+    def _session_context() -> dict:
+        """会话自举的实际实现（供 get_session_context 与废弃别名共用）。"""
         from kernel.db.models import LedgerSet, Subject
 
         with repo.session() as s:
@@ -222,7 +253,7 @@ def build_server(db_url: str | None = None) -> FastMCP:
                     "accounting_standard": ls.accounting_standard,
                     "status": ls.status,
                     "open_periods": [
-                        {"year": p.year, "month": p.month}
+                        {"period_year": p.year, "period_month": p.month}
                         for p in s.scalars(
                             select(Period).where(
                                 Period.ledger_set_id == ls.id,
@@ -243,6 +274,20 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 for sub in s.scalars(select(Subject)).all()
             ]
             return _ok(ledgers=ledgers, subjects=subjects)
+
+    @mcp.tool()
+    def get_session_context() -> dict:
+        """会话自举：账套列表（含 id 与会计口径）、操作者身份（制单人/审批人及其主体 id）、各账套开放期间。
+
+        **会话开始时第一个调用本工具**，取得 ledger_set_id 与 actor_id 后再进行记账。
+        期间字段名统一为 period_year / period_month，与全系统其余工具一致。
+        """
+        return _session_context()
+
+    @mcp.tool()
+    def get_workspace() -> dict:
+        """[已废弃] 请用 get_session_context 代替；本工具仅作过渡别名保留，行为完全一致。"""
+        return _session_context()
 
     @mcp.tool()
     def get_voucher(voucher_id: str) -> dict:
@@ -323,11 +368,21 @@ def build_server(db_url: str | None = None) -> FastMCP:
         summary: str = "",
         idempotency_key: str | None = None,
         lines: list[dict] | None = None,
+        voucher_type: str | None = None,
     ) -> dict:
         """创建草稿凭证并即时硬校验。
 
         lines 形如 [{"account_code":"6602","debit":"800","credit":""}]，金额字符串。
         不平衡/金额非法/科目不存在将直接拒绝（VOUCHER_UNBALANCED 等）。
+
+        voucher_type 是分类编号开关（经典模式惯例）：
+            None  → 统一编号「记-0001」（默认，行为不变）
+            "收"  → 收款凭证「收-0001」，借方涉及现金/银行
+            "付"  → 付款凭证「付-0001」，贷方涉及现金/银行
+            "转"  → 转账凭证「转-0001」，不涉及现金/银行
+            "auto"→ 由系统按资金流向自动判定
+        指定类别后各类别独立编号（收-1 号与付-1 号并存）。
+        不传则完全走原来的统一编号，老账套不受影响。
         """
         try:
             with repo.session() as sess:
@@ -351,10 +406,17 @@ def build_server(db_url: str | None = None) -> FastMCP:
             return _err("FORBIDDEN", str(e))
         actor = {"type": "user", "id": actor_id}
         # 与 Web 制单共用内核唯一实现，避免两条路径两套校验
+        from kernel.classic import classify_voucher_type, voucher_prefix
         from kernel.voucher_wizard import (
             create_draft_voucher,
             record_voucher_created,
         )
+
+        # 分类编号：未指定 → "记-"统一编号（与历史行为完全一致）
+        vtype = (voucher_type or "").strip() or None
+        if vtype == "auto":
+            vtype = classify_voucher_type(lines or [])
+        prefix = voucher_prefix(vtype)
 
         try:
             with repo.session() as s:
@@ -366,6 +428,8 @@ def build_server(db_url: str | None = None) -> FastMCP:
                     summary=summary,
                     lines=lines,
                     idempotency_key=idempotency_key,
+                    prefix=prefix,
+                    per_prefix=bool(vtype),
                 )
                 if replayed:
                     return _ok(voucher=_brief(v), replayed=True)
@@ -438,12 +502,13 @@ def build_server(db_url: str | None = None) -> FastMCP:
     @mcp.tool()
     def feishu_send_approval(
         voucher_id: str,
-        receive_id: str,
-        receive_id_type: str = "open_id",
+        user: str,
+        user_type: str = "open_id",
     ) -> dict:
         """把待审凭证推送为飞书审批卡片（PUSHED 状态凭证）。
 
-        receive_id_type: open_id | chat_id 等；接收人由 scripts/feishu_ws.py 绑定流程获得。
+        通道参数与企微侧语义对齐：**user = 推送给谁**。
+        user_type: open_id | chat_id 等（飞书特有）；接收人由 scripts/feishu_ws.py 绑定流程获得。
         卡片上的批准/驳回按钮经长连接回调写回状态机。
         """
         try:
@@ -475,8 +540,8 @@ def build_server(db_url: str | None = None) -> FastMCP:
                     ],
                     voucher_id=v.id,
                 )
-                send_card(receive_id_type=receive_id_type, receive_id=receive_id, card=card)
-                return _ok(voucher=_brief(v), sent_to=receive_id)
+                send_card(receive_id_type=user_type, receive_id=user, card=card)
+                return _ok(voucher=_brief(v), sent_to=user)
         except FeishuError as e:
             return _err("FEISHU_ERROR", str(e))
 
@@ -574,18 +639,23 @@ def build_server(db_url: str | None = None) -> FastMCP:
         ledger_set_id: str,
         period_year: int,
         period_month: int,
-        accounting_standard: str = "small_business",
+        accounting_standard: str = "",
     ) -> dict:
         """资产负债表：按准则模板聚合资产/负债/所有者权益，返回是否平衡与差额校验。
 
         本期净利润在结转（P1-02）前挂在权益项下，以保证表内平衡。
+
+        accounting_standard 默认留空 = 取账套设置（推荐）；显式传值必须与账套一致。
         """
         try:
             with repo.session() as s:
                 from kernel.reporting.statements import balance_sheet
 
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
                 return _ok(report=balance_sheet(
-                    s, ledger_set_id, period_year, period_month, accounting_standard
+                    s, ledger_set_id, period_year, period_month, standard
                 ))
         except ReportError as e:
             return _err("REPORT_ERROR", str(e))
@@ -595,15 +665,21 @@ def build_server(db_url: str | None = None) -> FastMCP:
         ledger_set_id: str,
         period_year: int,
         period_month: int,
-        accounting_standard: str = "small_business",
+        accounting_standard: str = "",
     ) -> dict:
-        """利润表：营业收入/成本/费用分项 + 净利润（本期发生额口径）。"""
+        """利润表：营业收入/成本/费用分项 + 净利润（本期发生额口径）。
+
+        accounting_standard 默认留空 = 取账套设置；显式传值必须与账套一致。
+        """
         try:
             with repo.session() as s:
                 from kernel.reporting.statements import income_statement
 
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
                 return _ok(report=income_statement(
-                    s, ledger_set_id, period_year, period_month, accounting_standard
+                    s, ledger_set_id, period_year, period_month, standard
                 ))
         except ReportError as e:
             return _err("REPORT_ERROR", str(e))
@@ -613,15 +689,21 @@ def build_server(db_url: str | None = None) -> FastMCP:
         ledger_set_id: str,
         period_year: int,
         period_month: int,
-        accounting_standard: str = "small_business",
+        accounting_standard: str = "",
     ) -> dict:
-        """现金流量表（直接法）：经营/投资/筹资三类净额 + 期初-净增加-期末勾稽。"""
+        """现金流量表（直接法）：经营/投资/筹资三类净额 + 期初-净增加-期末勾稽。
+
+        accounting_standard 默认留空 = 取账套设置；显式传值必须与账套一致。
+        """
         try:
             with repo.session() as s:
                 from kernel.reporting.statements import cash_flow
 
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
                 return _ok(report=cash_flow(
-                    s, ledger_set_id, period_year, period_month, accounting_standard
+                    s, ledger_set_id, period_year, period_month, standard
                 ))
         except ReportError as e:
             return _err("REPORT_ERROR", str(e))
@@ -632,24 +714,29 @@ def build_server(db_url: str | None = None) -> FastMCP:
         period_year: int,
         period_month: int,
         actor_id: str,
-        accounting_standard: str = "small_business",
+        accounting_standard: str = "",
     ) -> dict:
         """期末结转：损益类科目余额结转至本年利润（3103），生成「结转-YYYYMM-NNN」凭证。
 
         幂等保护：同期间重复调用返回 ALREADY_CLOSED。结转后该期间损益科目清零，
         利润表仍可按凭证分录回放。
+
+        accounting_standard 默认留空 = 取账套设置；显式传值必须与账套一致。
         """
         try:
             with repo.session() as s:
                 from kernel.closing import close_period as _close
 
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
                 v = _close(
                     s,
                     ledger_set_id=ledger_set_id,
                     year=period_year,
                     month=period_month,
                     actor={"type": "user", "id": actor_id},
-                    standard=accounting_standard,
+                    standard=standard,
                 )
                 s.flush()
                 return _ok(voucher=_brief(v))
@@ -664,24 +751,29 @@ def build_server(db_url: str | None = None) -> FastMCP:
         period_year: int,
         period_month: int,
         actor_id: str,
-        accounting_standard: str = "small_business",
+        accounting_standard: str = "",
     ) -> dict:
         """期初结转：把 (period_year, period_month) 的资产负债类期末余额滚入下一期间。
 
         前置：该期间已执行期末结转（close_period）。生成「期初-YYYYMM-NNN」凭证，
         新期间自动创建为 OPEN。幂等：重复调用返回 ALREADY_OPENED。
+
+        accounting_standard 默认留空 = 取账套设置；显式传值必须与账套一致。
         """
         try:
             with repo.session() as s:
                 from kernel.carryforward import open_next_period as _open
 
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
                 v = _open(
                     s,
                     ledger_set_id=ledger_set_id,
                     year=period_year,
                     month=period_month,
                     actor={"type": "user", "id": actor_id},
-                    standard=accounting_standard,
+                    standard=standard,
                 )
                 s.flush()
                 return _ok(voucher=_brief(v))
@@ -813,18 +905,23 @@ def build_server(db_url: str | None = None) -> FastMCP:
         ledger_set_id: str,
         period_year: int,
         period_month: int,
-        accounting_standard: str = "small_business",
+        accounting_standard: str = "",
     ) -> dict:
         """账账核对：逐凭证平衡、投影 vs 凭证明细重算、试算平衡、现金流勾稽。
 
         返回 ok 与 issues 明细；对不上即说明投影被破坏或存在篡改。
+
+        accounting_standard 默认留空 = 取账套设置；显式传值必须与账套一致。
         """
         try:
             with repo.session() as s:
                 from kernel.reconcile import reconcile_ledger as _rec
 
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
                 return _ok(report=_rec(
-                    s, ledger_set_id, period_year, period_month, accounting_standard
+                    s, ledger_set_id, period_year, period_month, standard
                 ))
         except ReconcileError as e:
             return _err("RECONCILE_ERROR", str(e))
@@ -834,13 +931,15 @@ def build_server(db_url: str | None = None) -> FastMCP:
     @mcp.tool()
     def partner_balances(
         ledger_set_id: str,
-        year: int = 0,
-        month: int = 0,
+        period_year: int = 0,
+        period_month: int = 0,
     ) -> dict:
         """往来余额表：按客户/供应商维度聚合应收与应付，回答「谁欠我、我欠谁」。
 
         数据来自余额投影（适配器挂账的 aux_dims）；未指定期间取最新 OPEN 期间。
         早期未挂维度的余额单独列 untracked_total，不混入明细（脏数据宁暴露不吞）。
+
+        期间统一用 period_year/period_month（与全系统一致）；传 0 表示取最新 OPEN 期间。
         """
         with repo.session() as s:
             from kernel.adapters.partners import partner_balances as _pb
@@ -849,8 +948,8 @@ def build_server(db_url: str | None = None) -> FastMCP:
                 report=_pb(
                     s,
                     ledger_set_id,
-                    year=year or None,
-                    month=month or None,
+                    year=period_year or None,
+                    month=period_month or None,
                 )
             )
 
@@ -1289,21 +1388,35 @@ def build_server(db_url: str | None = None) -> FastMCP:
             )
 
     @mcp.tool()
-    def ensure_period(ledger_set_id: str, year: int, month: int) -> dict:
-        """确保某期间存在且为 OPEN（跨月记账前置）。已存在则原样返回。"""
+    def ensure_period(ledger_set_id: str, period_year: int, period_month: int) -> dict:
+        """确保某期间存在且为 OPEN（跨月记账前置）。已存在则原样返回。
+
+        期间参数统一为 period_year / period_month（与全系统一致）。
+        """
         with repo.session() as s:
             period = s.scalars(
                 select(Period).where(
                     Period.ledger_set_id == ledger_set_id,
-                    Period.year == year,
-                    Period.month == month,
+                    Period.year == period_year,
+                    Period.month == period_month,
                 )
             ).first()
             if period is None:
-                period = Period(ledger_set_id=ledger_set_id, year=year, month=month, status="OPEN")
+                period = Period(
+                    ledger_set_id=ledger_set_id,
+                    year=period_year,
+                    month=period_month,
+                    status="OPEN",
+                )
                 s.add(period)
                 s.commit()
-            return _ok(period={"year": period.year, "month": period.month, "status": period.status})
+            return _ok(
+                period={
+                    "period_year": period.year,
+                    "period_month": period.month,
+                    "status": period.status,
+                }
+            )
 
     @mcp.tool()
     def import_opening_balances(
@@ -1342,6 +1455,64 @@ def build_server(db_url: str | None = None) -> FastMCP:
         except PostingError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    @mcp.tool()
+    def precheck_close(ledger_set_id: str, period_year: int, period_month: int) -> dict:
+        """结账前体检：一次查完四道闸门，返回「还差什么」的清单。
+
+        结账之所以需要仪式感，不是因为点了什么按钮，而是因为系统必须
+        **明确告诉你还差什么**。本工具不抛异常、不改任何数据，只做体检：
+
+            1. 上月是否已结账（会计期间必须连续闭合）
+            2. 本月是否还有未记账凭证
+            3. 本月试算是否平衡
+            4. 本月损益是否已结转
+
+        返回 can_close + 逐条 checks（item/passed/detail/hint）+ 中文 summary。
+        建议结账前先调它，把 summary 原样告诉用户。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.classic import precheck_close as _precheck
+
+                return _ok(
+                    **_precheck(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        year=period_year,
+                        month=period_month,
+                    )
+                )
+        except Exception as e:  # pragma: no cover - 兜底，保持 _ok/_err 契约
+            return _err("PRECHECK_FAILED", f"结账体检失败：{e}")
+
+    @mcp.tool()
+    def suggest_summaries(
+        ledger_set_id: str, account_code: str | None = None, limit: int = 5
+    ) -> dict:
+        """常用摘要推荐：某科目历史上用得最多的摘要，按使用次数降序。
+
+        老会计制单不重新打字，只从常用摘要里挑。这里不加表不加缓存——
+        摘要本来就是凭证的一部分，历史凭证就是最好的摘要库。
+
+        account_code 为空则统计整个账套。返回 [{summary, used_count}]。
+        制单时用户没给摘要，可拿首条作为默认值并告知用户。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.classic import suggest_summaries as _suggest
+
+                return _ok(
+                    account_code=account_code or "",
+                    items=_suggest(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        account_code=account_code,
+                        limit=limit,
+                    ),
+                )
+        except Exception as e:  # pragma: no cover
+            return _err("SUGGEST_FAILED", f"摘要推荐失败：{e}")
+
     # ---------- 助手 ----------
 
     def _open_period_brief(s: Session, ledger_set_id: str) -> dict:
@@ -1357,7 +1528,16 @@ def build_server(db_url: str | None = None) -> FastMCP:
         )
 
     def _brief(v: Voucher) -> dict:
-        return {"id": v.id, "voucher_no": v.voucher_no, "status": v.status}
+        # status_zh 是给人和 LLM 看的中文状态（POSTED → 已记账）。
+        # 枚举值本身不变，新增字段向后兼容。
+        from kernel.classic import status_zh
+
+        return {
+            "id": v.id,
+            "voucher_no": v.voucher_no,
+            "status": v.status,
+            "status_zh": status_zh(v.status),
+        }
 
     def _snapshot(s: Session, v: Voucher) -> dict:
         ids = [ln.account_id for ln in v.lines]

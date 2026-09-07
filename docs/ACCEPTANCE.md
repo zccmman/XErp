@@ -41,7 +41,7 @@ Start-Process "<python>" -ArgumentList "scripts\feishu_ws.py" -WindowStyle Hidde
 
 **对 AI 说**：给验收账套创建 2026 年 9 月的会计期间。
 
-**AI 执行**：`ensure_period(ledger_set_id=<LS>, year=2026, month=9)`
+**AI 执行**：`ensure_period(ledger_set_id=<LS>, period_year=2026, period_month=9)`
 
 ---
 
@@ -415,12 +415,13 @@ git ls-tree -r --name-only HEAD | grep -E "\.env$|\.db$"        # 预期空
 | PENDING_VOUCHERS | 有未审凭证 | 关账 Agent 闸门 |
 | FORBIDDEN | 无权限 | Casbin 拒绝 |
 
-## 附录 B：43 个 MCP 工具速查
+## 附录 B：48 个 MCP 工具速查（含 1 个过渡别名 `get_workspace`）
 
-账套类：`init_ledger_set` `ensure_period` `get_workspace` `list_accounts` `ledger_detail`
-凭证类：`create_voucher` `push_voucher` `approve_voucher` `post_voucher` `cancel_post_voucher` `get_voucher` `import_opening_balances`
+账套类：`init_ledger_set` `ensure_period` `get_session_context`（原 `get_workspace`） `list_accounts` `ledger_detail`
+凭证类：`create_voucher` `push_voucher` `approve_voucher` `reject_voucher` `withdraw_voucher` `post_voucher` `cancel_post_voucher` `get_voucher` `import_opening_balances`
 查询类：`query_balances` `report_balance_sheet` `report_income_statement` `report_cash_flow` `reconcile_ledger`
-月结类：`close_period` `open_next_period` `monthend_run`
+月结类：`close_period` `open_next_period` `monthend_run` `precheck_close`
+怀旧类：`suggest_summaries`（常用摘要推荐，Web 制单页 datalist 亦用此）
 转账类：`transfer_define` `transfer_list` `transfer_run`
 集成类：`feishu_send_approval` `wecom_send` `wecom_send_approval` `wecom_finish_card` `adapter_ingest` `adapter_list` `adapter_preview` `adapter_register` `partner_balances`
 智能类：`ocr_ingest_invoice` `ocr_accuracy_report` `bank_import_csv` `bank_reconcile` `log_agent_decision`

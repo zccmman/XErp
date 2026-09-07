@@ -105,11 +105,13 @@ def _mk_voucher(env, server, key=None):
 
 
 def test_get_workspace_bootstrap(env, server):
-    r = _call(server, "get_workspace")
+    # get_session_context 是当前名；get_workspace 为过渡别名（见 test_api_convergence）
+    r = _call(server, "get_session_context")
     assert r["ok"] is True
     assert any(ls["name"] == "演示账套" for ls in r["ledgers"])
     assert all(
-        ls["open_periods"] == [{"year": 2026, "month": 8}] for ls in r["ledgers"]
+        ls["open_periods"] == [{"period_year": 2026, "period_month": 8}]
+        for ls in r["ledgers"]
     )
     names = {x["display_name"] for x in r["subjects"]}
     assert {"丞辰", "审批人"} <= names

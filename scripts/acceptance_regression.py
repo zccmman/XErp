@@ -133,7 +133,8 @@ def main() -> int:
     ls_id = r1["ledger_set_id"]
     owner = r1["owner_subject_id"]
     reviewer = _create_reviewer(engine, ls_id)
-    call(server, "ensure_period", ledger_set_id=ls_id, year=YEAR, month=MONTH)
+    call(server, "ensure_period", ledger_set_id=ls_id,
+         period_year=YEAR, period_month=MONTH)
     record("setup", "建账 + 期间 + 审批员主体", r1.get("accounts_created", 0) >= 140)
 
     # ============ A 期初建账（试算平衡） ============
@@ -273,7 +274,7 @@ def main() -> int:
            f2.get("ok") and f2["voucher"]["status"] == "PUSHED", str(f2.get("voucher", f2)))
 
     pb = call(server, "partner_balances", ledger_set_id=ls_id,
-              year=YEAR, month=MONTH)
+              period_year=YEAR, period_month=MONTH)
     record("F3", "往来余额表（客户甲在途 + untracked 诚实单列）",
            pb.get("ok") and "report" in pb, json.dumps(pb.get("report", {}), ensure_ascii=False)[:200])
 

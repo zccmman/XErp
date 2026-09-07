@@ -89,16 +89,22 @@ def _parse_date(value: str) -> date:
         ) from None
 
 
-def next_voucher_no(session: Session, ledger_set_id: str, prefix: str = "记-") -> str:
-    """下一张凭证号。按账套内凭证总数递增，不复用已用过的号。"""
-    seq = (
-        len(
-            session.scalars(
-                select(Voucher.id).where(Voucher.ledger_set_id == ledger_set_id)
-            ).all()
-        )
-        + 1
-    )
+def next_voucher_no(
+    session: Session,
+    ledger_set_id: str,
+    prefix: str = "记-",
+    per_prefix: bool = False,
+) -> str:
+    """下一张凭证号。不复用已用过的号。
+
+    per_prefix=False（默认，行为不变）：按账套内凭证总数递增。
+    per_prefix=True：只在该前缀内计数——经典模式收/付/转各自独立编号，
+    符合老会计「收款 1 号、付款 1 号并存」的阅读习惯。
+    """
+    stmt = select(Voucher.id).where(Voucher.ledger_set_id == ledger_set_id)
+    if per_prefix:
+        stmt = stmt.where(Voucher.voucher_no.like(f"{prefix}%"))
+    seq = len(session.scalars(stmt).all()) + 1
     return f"{prefix}{seq:04d}"
 
 
@@ -112,6 +118,7 @@ def create_draft_voucher(
     lines: list[dict] | None = None,
     idempotency_key: str | None = None,
     prefix: str = "记-",
+    per_prefix: bool = False,
 ) -> tuple[Voucher, bool]:
     """创建草稿凭证并即时硬校验。
 
@@ -177,7 +184,7 @@ def create_draft_voucher(
     v = Voucher(
         ledger_set_id=ledger_set_id,
         period_id=period.id,
-        voucher_no=next_voucher_no(session, ledger_set_id, prefix),
+        voucher_no=next_voucher_no(session, ledger_set_id, prefix, per_prefix),
         voucher_date=d,
         status="DRAFT",
         summary=summary,

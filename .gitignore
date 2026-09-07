@@ -36,4 +36,7 @@ web/dist2/
 /_*.py
 /_*.txt
 /_*.log
-/_junit.xml
+/_*.xml
+/_last_result.json
+/_perfile_report.txt
+/_wt_head/

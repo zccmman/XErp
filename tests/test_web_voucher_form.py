@@ -82,7 +82,11 @@ def _leaf_codes(client, ls_id) -> list[str]:
     """从制单页下拉里取出可选科目编码（即页面实际暴露给用户的集合）。"""
     r = client.get(f"/ledger/{ls_id}/voucher/new")
     assert r.status_code == 200
-    return [c for c in re.findall(r'<option value="([^"]+)"', r.text) if c]
+    # 只取「科目」下拉内的 option：页面上还有凭证类别等其它 select，
+    # 抓全局 option 会把类别值（收/付/转）当成科目编码提交。
+    m = re.search(r"<select class=acct[^>]*>(.*?)</select>", r.text, re.S)
+    scope = m.group(1) if m else r.text
+    return [c for c in re.findall(r'<option value="([^"]+)"', scope) if c]
 
 
 def _submit(client, ls_id, *, codes, debits, credits, voucher_date, summary="测试",
