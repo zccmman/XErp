@@ -92,6 +92,18 @@ def transition(
                 "审批必须由人执行，Agent 不能审批凭证",
                 {"agent_id": actor.get("id")},
             )
+        # D7 守卫：多级签字未齐，禁止绕过签字直接 APPROVED。
+        # 懒导入避免 state ↔ signing 循环依赖（signing 在加载时 import state）。
+        if voucher.required_signers:
+            from kernel.signing import pending_signers
+
+            missing = pending_signers(voucher)
+            if missing:
+                raise PostingError(
+                    "PENDING_SIGNATURES",
+                    f"尚有签字位未签署：{missing}，请先完成多级签字",
+                    {"missing": missing},
+                )
     elif (voucher.status, target) == ("PUSHED", "DRAFT"):
         is_maker = str(actor.get("id")) == str(voucher.created_by)
         if is_maker:

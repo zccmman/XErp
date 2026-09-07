@@ -180,7 +180,7 @@ def _tools_for(profile):
 
 def test_build_server_profile_filters_tools():
     """build_server(profile=) 必须真的把工具挡在 list_tools 之外（不只是改配置）。"""
-    for p, expected in (("minimal", 15), ("standard", 28), ("pro", 48)):
+    for p, expected in (("minimal", 15), ("standard", 29), ("pro", 49)):
         got = _tools_for(p)
         assert len(got) == expected, f"{p} 档 list_tools 应为 {expected}，实为 {len(got)}"
         assert set(got) == set(profiles.enabled_for(p)), f"{p} 档暴露集合与 profiles 不一致"

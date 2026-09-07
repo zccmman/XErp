@@ -183,6 +183,13 @@ class Voucher(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # D7 多级签字（「签字位」抽象：Subject×角色×凭证 的签署事件）。
+    # required_signers：要求签署的角色列表，如 ["cashier","manager"]；
+    #   空 / None = 传统单层审批（APPROVED 一跳，行为不变）。
+    # signatures：已签署记录，每条 {slot, signer_id, signer_name, signed_at,
+    #   decision("approved"|"rejected"), reason?}，完全由 kernel.signing 维护。
+    required_signers: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    signatures: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
 
     lines: Mapped[list["VoucherLine"]] = relationship(
         back_populates="voucher", order_by="VoucherLine.line_no", cascade="all, delete-orphan"

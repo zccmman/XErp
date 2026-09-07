@@ -7,8 +7,8 @@
 三档：
 
     minimal  极简  15 个：建账 → 制单 → 审核 → 记账 → 查账 → 两张主表
-    standard 标准  28 个：+ 驳回/撤回/反记账/月结/往来/银行/OCR
-    pro      专业  48 个：全量（自治过账、异常扫描、适配器、转账模板、双审批通道）
+    standard 标准  29 个：+ 驳回/撤回/反记账/多级签字/月结/往来/银行/OCR
+    pro      专业  49 个：全量（自治过账、异常扫描、适配器、转账模板、双审批通道）
 
 归类铁律（由 tests/test_tool_profiles.py 钉死）：
 
@@ -60,6 +60,8 @@ STANDARD_EXTRA: tuple[str, ...] = (
     "reject_voucher",
     "withdraw_voucher",
     "cancel_post_voucher",
+    # 多级签字（D7）：出纳/主管等签字位，全部签完自动审批通过
+    "sign_voucher",
     # 明细与勾稽
     "ledger_detail",
     "reconcile_ledger",
@@ -113,7 +115,7 @@ PRO_ONLY: tuple[str, ...] = (
 #: 档位 → 说明。顺序即"由小到大"。
 PROFILES: dict[str, str] = {
     "minimal": "极简：建账、制单、审核、记账、查账、两张主表",
-    "standard": "标准：极简 + 驳回撤回、月结、往来、银行对账、票据识别",
+    "standard": "标准：极简 + 驳回撤回、多级签字、月结、往来、银行对账、票据识别",
     "pro": "专业：全量，含自治过账、风控、适配器、转账模板、双审批通道",
 }
 

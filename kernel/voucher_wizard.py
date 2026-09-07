@@ -119,6 +119,7 @@ def create_draft_voucher(
     idempotency_key: str | None = None,
     prefix: str = "记-",
     per_prefix: bool = False,
+    required_signers: list[str] | None = None,
 ) -> tuple[Voucher, bool]:
     """创建草稿凭证并即时硬校验。
 
@@ -190,6 +191,7 @@ def create_draft_voucher(
         summary=summary,
         created_by=str(actor.get("id") or ""),
         idempotency_key=idempotency_key,
+        required_signers=list(required_signers) if required_signers else None,
         lines=orm_lines,
     )
     session.add(v)

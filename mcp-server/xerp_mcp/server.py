@@ -45,6 +45,7 @@ from kernel.db.models import (  # noqa: E402
     VoucherLine,
 )
 from kernel.events import E  # noqa: E402
+from kernel.signing import pending_signers as _pending_signers  # noqa: E402  (D7)
 from kernel.posting import (  # noqa: E402
     PostingError,
     PostingLine,
@@ -216,6 +217,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             "approve_voucher（须非制单人审批）→ post_voucher。金额一律字符串十进制。"
             "审批不通过用 reject_voucher 驳回（原因必填，退回制单人修改）；"
             "制单人在审批前反悔用 withdraw_voucher 撤回。"
+            "多级签字凭证（create_voucher 的 required_signers 非空）须用 sign_voucher "
+            "逐位签署，全部签完自动 APPROVED；签字未齐时 approve_voucher 会被拦截。"
         ),
     )
 
@@ -371,6 +374,7 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         idempotency_key: str | None = None,
         lines: list[dict] | None = None,
         voucher_type: str | None = None,
+        required_signers: list[str] | None = None,
     ) -> dict:
         """创建草稿凭证并即时硬校验。
 
@@ -432,6 +436,7 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                     idempotency_key=idempotency_key,
                     prefix=prefix,
                     per_prefix=bool(vtype),
+                    required_signers=required_signers,
                 )
                 if replayed:
                     return _ok(voucher=_brief(v), replayed=True)
@@ -447,8 +452,57 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
 
     @mcp.tool()
     def approve_voucher(voucher_id: str, actor_id: str) -> dict:
-        """审批通过：PUSHED → APPROVED。制单人与审批人不能相同（NO_SELF_APPROVAL）。"""
+        """审批通过：PUSHED → APPROVED。制单人与审批人不能相同（NO_SELF_APPROVAL）。
+
+        多级签字凭证（required_signers 非空）在签字未齐时调用本工具会被 PENDING_SIGNATURES
+        拦截——请改用 sign_voucher 完成各签字位。
+        """
         return guarded(voucher_id, actor_id, "APPROVED")
+
+    @mcp.tool()
+    def sign_voucher(
+        voucher_id: str,
+        actor_id: str,
+        slot: str,
+        decision: str = "approved",
+        reason: str = "",
+    ) -> dict:
+        """多级签字：签署一个签字位（出纳 cashier / 主管 manager 等，D7）。
+
+        凭证须已声明 required_signers（create_voucher 的 required_signers 参数传入）。
+        - 全部签字位签署 approved → 自动审批通过（APPROVED）；
+        - 任一签字位 rejected → 凭证退回制单人（DRAFT）。
+        Agent 不能签字；签字人不能是制单人。重复签署同一 approved 位幂等放行。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.authz import AuthzError, enforce
+
+                v0 = s.get(Voucher, voucher_id)
+                if v0 is None:
+                    return _err("VOUCHER_NOT_FOUND", f"凭证 {voucher_id} 不存在")
+                enforce(
+                    s,
+                    actor_id=actor_id,
+                    ledger_set_id=v0.ledger_set_id,
+                    action="voucher:approve",
+                )
+                from kernel.signing import sign_voucher as _sign
+
+                v = _sign(
+                    s,
+                    voucher_id=voucher_id,
+                    slot=slot,
+                    actor={"type": "user", "id": actor_id},
+                    decision=decision,
+                    reason=reason,
+                )
+                s.flush()
+                return _ok(voucher=_brief(v))
+        except (PostingError, AuthzError) as e:
+            code = "FORBIDDEN" if isinstance(e, AuthzError) else e.code
+            msg = str(e) if isinstance(e, AuthzError) else e.message_zh
+            return _err(code, msg, getattr(e, "details", None))
 
     @mcp.tool()
     def reject_voucher(voucher_id: str, actor_id: str, reason: str) -> dict:
@@ -1539,6 +1593,10 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             "voucher_no": v.voucher_no,
             "status": v.status,
             "status_zh": status_zh(v.status),
+            "required_signers": list(v.required_signers or []),
+            "pending_signers": (
+                _pending_signers(v) if v.required_signers else []
+            ),
         }
 
     def _snapshot(s: Session, v: Voucher) -> dict:
