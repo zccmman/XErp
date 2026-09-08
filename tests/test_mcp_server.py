@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "mcp-server"))
 
 from kernel.coa import import_chart_of_accounts, load_template_rows  # noqa: E402
 from kernel.db.base import Base  # noqa: E402
-from kernel.db.models import Subject  # noqa: E402
+from kernel.db.models import Period, Subject  # noqa: E402
 from kernel.seed import seed_demo_ledger  # noqa: E402
 
 
@@ -262,3 +262,25 @@ def test_create_voucher_clean_lines_no_findings(env, server):
         ],
     )
     assert r["ok"] and r["ontology_findings"] == []
+
+
+def test_report_balance_sheet_reclass_switch(env, server):
+    """本体第一次进报表：开关默认关（reclass=None），开启后返回重分类明细。"""
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        p = s.get(Period, env["ids"]["period_id"])
+        year, month = p.year, p.month
+    engine.dispose()
+    args = dict(
+        ledger_set_id=env["ids"]["ledger_set_id"],
+        period_year=year,
+        period_month=month,
+    )
+    off = _call(server, "report_balance_sheet", **args)
+    assert off["ok"] and off["report"]["reclass"] is None
+    on = _call(server, "report_balance_sheet", apply_reclass=True, **args)
+    assert on["ok"], on
+    rc = on["report"]["reclass"]
+    assert rc is not None and rc["pairs"], "开关开启必须给出本体声明的科目对"
+    assert {p["asset_code"] for p in rc["pairs"]} == {"1122", "1123"}
+    assert on["report"]["balanced"], "重分类后表内仍须平衡"

@@ -700,12 +700,20 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         period_year: int,
         period_month: int,
         accounting_standard: str = "",
+        apply_reclass: bool = False,
     ) -> dict:
         """资产负债表：按准则模板聚合资产/负债/所有者权益，返回是否平衡与差额校验。
 
         本期净利润在结转（P1-02）前挂在权益项下，以保证表内平衡。
 
         accounting_standard 默认留空 = 取账套设置（推荐）；显式传值必须与账套一致。
+
+        apply_reclass=True 启用**往来重分类列报**（阶段1，默认关闭）：
+        应收/预付下的贷方余额（实为预收）、应付/预收下的借方余额（实为预付），
+        按往来单位余额方向搬到对方科目列报——科目对取自本体 relations.csv。
+        不重分类会让资产与负债同时虚增（明明是预收却挂在资产方），
+        报表因此失真；重分类只在两边之间搬金额，资产=负债+权益仍成立。
+        未挂往来维度的余额保守留在原处，在 report.reclass.untracked 中单列。
         """
         try:
             with repo.session() as s:
@@ -715,7 +723,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                 if err:
                     return err
                 return _ok(report=balance_sheet(
-                    s, ledger_set_id, period_year, period_month, standard
+                    s, ledger_set_id, period_year, period_month, standard,
+                    apply_reclass=apply_reclass,
                 ))
         except ReportError as e:
             return _err("REPORT_ERROR", str(e))

@@ -1022,7 +1022,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
 
     @app.get("/ledger/{ls_id}/reports", response_class=HTMLResponse)
     def reports(request: Request, ls_id: str, year: int = 0, month: int = 0,
-             error: str = ""):
+             error: str = "", apply_reclass: str = ""):
         with session() as s:
             ls = s.get(LedgerSet, ls_id)
             if ls is None:
@@ -1046,7 +1046,11 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     income_statement,
                 )
 
-                bs = balance_sheet(s, ls_id, yr, mo, ls.accounting_standard)
+                # 往来重分类列报（阶段1）：默认关闭，勾选后按往来单位余额
+                # 方向把预收/预付性质余额搬到对方科目（本体 reclass_pairs）
+                use_reclass = apply_reclass in ("1", "on", "true")
+                bs = balance_sheet(s, ls_id, yr, mo, ls.accounting_standard,
+                                   apply_reclass=use_reclass)
                 inc = income_statement(s, ls_id, yr, mo, ls.accounting_standard)
                 cf = cash_flow(s, ls_id, yr, mo, ls.accounting_standard)
             except Exception as e:  # noqa: BLE001
@@ -1104,14 +1108,42 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f'<input type=hidden name=month value={mo}>'
                 f'<button type=submit>执行 {yr}-{mo:02d} 期末结转</button></form>'
             )
+            # 重分类开关与明细：勾选即重算，明细逐项列出（本体第一次进报表）
+            reclass_ui = (
+                f'<form method=get action="/ledger/{ls_id}/reports" class=inline>'
+                f'<input type=hidden name=year value={yr}>'
+                f'<input type=hidden name=month value={mo}>'
+                f'<label><input type=checkbox name=apply_reclass value=1'
+                f'{" checked" if use_reclass else ""}'
+                f' onchange="this.form.submit()"> 往来重分类列报</label>'
+                f"</form>"
+            )
+            reclass_block = ""
+            rc = bs.get("reclass")
+            if use_reclass and rc and rc["items"]:
+                lis = "".join(
+                    f"<li>{html.escape(i['account_code'])} · "
+                    f"{html.escape(i['partner'])} {i['balance']:,.2f} → "
+                    f"{html.escape(i['to_account_code'])}</li>"
+                    for i in rc["items"]
+                )
+                untracked_note = (
+                    f"（另有 {rc['untracked']:,.2f} 未挂往来维度，"
+                    f"保守留在原项目）" if rc["untracked"] else ""
+                )
+                reclass_block = (
+                    "<p class=ok>资产→负债 "
+                    f"{rc['to_liability']:,.2f}、负债→资产 "
+                    f"{rc['to_asset']:,.2f}{untracked_note}</p><ul>{lis}</ul>"
+                )
             body = (
                 f"<h2>{html.escape(ls.name)} · {yr}-{mo:02d} 三大报表</h2>"
                 f"<p><a href=/ledger/{ls_id}>← 返回账套</a> · "
                 f"<a href='/ledger/{ls_id}/forecast?year={yr}&month={mo}'>"
                 f"三表预测</a></p>{err}<p>{close_ui}</p>"
                 f"<h3>利润表</h3>{table(inc_rows, '项目', '金额')}"
-                f"<h3>资产负债表 <span class=badge>{badge}</span></h3>"
-                f"{table(bs_rows, '项目', '金额')}"
+                f"<h3>资产负债表 <span class=badge>{badge}</span> {reclass_ui}</h3>"
+                f"{reclass_block}{table(bs_rows, '项目', '金额')}"
                 f"<h3>现金流量表（直接法）</h3>{table(cf_rows, '项目', '金额')}"
                 f"<h3>账账核对</h3><p>{rec_badge}</p>"
                 f"<p>勾稽：期初现金 {cf['reconcile']['opening_cash']:,.2f} + 净增加 "

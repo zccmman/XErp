@@ -75,10 +75,23 @@ def net_profit(session: Session, ledger_set_id: str, year: int, month: int,
 
 
 def balance_sheet(session: Session, ledger_set_id: str, year: int, month: int,
-                  standard: str = "small_business") -> dict:
+                  standard: str = "small_business",
+                  apply_reclass: bool = False) -> dict:
+    """资产负债表。
+
+    apply_reclass=True 时启用往来重分类列报（阶段1）：把应收/预付下
+    **贷方余额**（实为预收）、应付/预收下**借方余额**（实为预付）按往来
+    单位方向搬到对方科目列报——科目对取自本体 relations.csv。
+    默认关闭：列报口径变更必须显式选择，历史口径不因升级而漂移。
+    """
     mp = M.get_mapping(standard)
     period = _period(session, ledger_set_id, year, month)
     amounts = _amounts_by_code(session, period)
+    reclass = None
+    if apply_reclass:
+        from kernel.reporting.reclass import apply_reclass as _apply
+
+        amounts, reclass = _apply(session, ledger_set_id, period, amounts, standard)
 
     groups: dict[tuple[str, str], list[dict]] = {}
     for code, (dr, cr) in sorted(amounts.items()):
@@ -135,6 +148,7 @@ def balance_sheet(session: Session, ledger_set_id: str, year: int, month: int,
             "liabilities_plus_equity": total_liabs + total_equity,
             "diff": total_assets - (total_liabs + total_equity),
         },
+        "reclass": reclass,
     }
 
 

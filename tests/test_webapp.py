@@ -429,3 +429,22 @@ def test_actor_is_logged_in_subject_not_first_subject(client, env):
             f"actor 应为登录身份 {reviewer}，实为 {v.created_by}（疑似退回『第一个主体』）"
         )
     engine.dispose()
+
+
+def test_reports_page_has_reclass_toggle(client, env):
+    """报表页必须有往来重分类开关：列报口径变更要能被看见、被选择，而不是默认生效。"""
+    ls = env["ids"]["ledger_set_id"]
+    r = client.get(f"/ledger/{ls}/reports")
+    assert r.status_code == 200, r.text
+    assert "往来重分类列报" in r.text
+    assert 'name=apply_reclass' in r.text
+    assert "checked" not in r.text.split("apply_reclass")[1][:80], "默认不应勾选"
+
+
+def test_reports_page_reclass_on_shows_detail(client, env):
+    ls = env["ids"]["ledger_set_id"]
+    r = client.get(f"/ledger/{ls}/reports?apply_reclass=1")
+    assert r.status_code == 200, r.text
+    assert "往来重分类列报" in r.text
+    # 演示账套无反向往来余额时无明细，但页面仍须正常渲染且保持平衡
+    assert "资产负债表" in r.text
