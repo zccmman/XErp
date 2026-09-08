@@ -19,7 +19,6 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from fastmcp import FastMCP
-from xerp_mcp.profiles import disabled_for  # 工具分层（P0-B）：改配置不改内核
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -31,6 +30,8 @@ _REPO_ROOT = os.path.dirname(_MCP_DIR)
 for _p in (_REPO_ROOT, _MCP_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from xerp_mcp.profiles import disabled_for  # noqa: E402 工具分层（P0-B）：需在 sys.path 自举后导入
 
 from kernel.adapters.spec import (  # noqa: E402
     EventFieldError,
