@@ -438,3 +438,116 @@ def test_clean_lines_skip_ontology_gate(client, env):
     )
     assert r.status_code == 303, r.text
     assert "本体提示" not in r.text
+
+
+# ---------- 辅助维度输入（阶段1：消除往来科目必勾选的摩擦） ----------
+
+
+def test_form_has_aux_dims_inputs_and_hints(client, env):
+    """表单每行必须有辅助维度输入，且带科目声明的动态提示 JS。"""
+    ls = env["ids"]["ledger_set_id"]
+    r = client.get(f"/ledger/{ls}/voucher/new")
+    assert r.status_code == 200
+    assert 'name=aux_dims' in r.text
+    assert "辅助维度" in r.text
+    # ACCT_DIMS 映射须包含模板声明的维度（1122→customer 等）
+    assert "ACCT_DIMS" in r.text
+    assert '"1122": [\'customer\']' in r.text
+    assert "hintDims" in r.text
+
+
+def test_aux_dims_satisfy_ontology_no_ack_needed(client, env):
+    """应收挂客户维度 → 本体预检通过，无需勾选确认直接创建（摩擦消除）。"""
+    ls = env["ids"]["ledger_set_id"]
+    r = client.post(
+        f"/ledger/{ls}/voucher/new",
+        data={
+            "voucher_date": _in_period_date(env["ids"]),
+            "summary": "挂维度的赊销",
+            "account_code": ["100201", "1122"],
+            "debit": ["500.00", ""],
+            "credit": ["", "500.00"],
+            "aux_dims": ["", "customer=甲公司"],
+            "action": "draft",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, r.text
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        v = s.scalars(
+            select(Voucher).where(Voucher.summary == "挂维度的赊销")
+        ).first()
+        assert v is not None and v.status == "DRAFT"
+        ar_acc = s.scalars(
+            select(Account.id).where(
+                Account.ledger_set_id == ls, Account.code == "1122"
+            )
+        ).first()
+        line = s.scalars(
+            select(VoucherLine).where(VoucherLine.voucher_id == v.id)
+        ).all()
+        ar = next(ln for ln in line if ln.account_id == ar_acc)
+        assert ar.aux_dims == {"customer": "甲公司"}
+    engine.dispose()
+
+
+def test_aux_dims_bad_format_inplace_error(client, env):
+    ls = env["ids"]["ledger_set_id"]
+    r = client.post(
+        f"/ledger/{ls}/voucher/new",
+        data={
+            "voucher_date": _in_period_date(env["ids"]),
+            "summary": "维度格式错误",
+            "account_code": ["100201", "1122"],
+            "debit": ["10.00", ""],
+            "credit": ["", "10.00"],
+            "aux_dims": ["", "甲公司"],  # 缺 = 号
+            "action": "draft",
+        },
+    )
+    assert r.status_code == 200
+    assert "辅助维度格式不对" in r.text
+    assert "甲公司" in r.text  # 原样回填，不丢用户输入
+
+
+def test_aux_dims_undeclared_key_kernel_rejects(client, env):
+    """双层防线：错误维度先被本体预检拦（须挂 customer）；用户勾选
+    「已知晓」强行继续后，内核 AUX_DIM_UNDECLARED 兜底拒绝。"""
+    ls = env["ids"]["ledger_set_id"]
+    data = {
+        "voucher_date": _in_period_date(env["ids"]),
+        "summary": "维度声明不符",
+        "account_code": ["100201", "1122"],
+        "debit": ["10.00", ""],
+        "credit": ["", "10.00"],
+        "aux_dims": ["", "project=机房"],  # 1122 只声明了 customer
+        "action": "draft",
+    }
+    r = client.post(f"/ledger/{ls}/voucher/new", data=data)
+    assert r.status_code == 200
+    assert "R-1122-01" in r.text, "第一层：本体提示须指出 customer 缺失"
+    # 强行确认 → 内核兜底
+    r2 = client.post(f"/ledger/{ls}/voucher/new", data={**data, "ignore_ontology": "1"})
+    assert r2.status_code == 200
+    assert "不在其声明维度内" in r2.text, "第二层：内核维度声明校验兜底"
+    assert "project" in r2.text, "报错须点名非法维度"
+
+
+def test_aux_dims_failed_submit_preserves_input(client, env):
+    """试算不平衡失败 → aux_dims 输入原样回填。"""
+    ls = env["ids"]["ledger_set_id"]
+    r = client.post(
+        f"/ledger/{ls}/voucher/new",
+        data={
+            "voucher_date": _in_period_date(env["ids"]),
+            "summary": "不平凭证",
+            "account_code": ["100201", "1122"],
+            "debit": ["100.00", ""],
+            "credit": ["", "90.00"],
+            "aux_dims": ["", "customer=乙公司"],
+            "action": "draft",
+        },
+    )
+    assert r.status_code == 200
+    assert 'value="customer=乙公司"' in r.text

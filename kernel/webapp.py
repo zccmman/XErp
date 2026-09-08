@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from decimal import Decimal
@@ -332,6 +333,30 @@ def _account_options(accounts: list, selected: str = "") -> str:
     return "".join(opts)
 
 
+def _parse_aux_dims(raw: str) -> dict | None:
+    """「customer=甲公司;department=销售部」→ dict；格式非法返回 None。
+
+    分隔符兼容中英文分号/逗号；k=v 风格与 coa 模板 attrs 列一致，
+    会计一次学习两处通用。空串返回空 dict（无维度，合法）。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    dims: dict = {}
+    for part in re.split(r"[;；,，]", raw):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            return None
+        k, _, val = part.partition("=")
+        k, val = k.strip(), val.strip()
+        if not k or not val:
+            return None
+        dims[k] = val
+    return dims
+
+
 def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None,
                   summaries: list | None = None) -> str:
     """渲染制单表单。values 非空表示提交失败后的回填。
@@ -372,6 +397,11 @@ def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None
             f'placeholder="0.00" value="{html.escape(str(r.get("debit") or ""))}"></td>'
             f'<td><input class="amt-credit" name=credit inputmode=decimal '
             f'placeholder="0.00" value="{html.escape(str(r.get("credit") or ""))}"></td>'
+            # 辅助维度（阶段1）：往来科目挂客户/供应商是本体规则要求，
+            # 在表单里就地提供输入，而不是让用户每次勾「已知晓」绕过提示
+            f'<td><input name=aux_dims class=aux style="width:150px" '
+            f'placeholder="如 customer=甲公司" '
+            f'value="{html.escape(str(r.get("aux_dims") or ""))}"></td>'
             '<td><button type=button class="del" '
             'style="padding:2px 8px;background:#fff;color:#a32d2d;border:1px solid #ddd">'
             "删除</button></td></tr>"
@@ -397,9 +427,19 @@ def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None
         dl = f"<datalist id=sumList>{opts}</datalist>"
 
     cash_js = ", ".join(f'"{c}"' for c in CASH_BANK_CODES)
+    # 科目 → 声明的辅助维度（aux_dim_defs），供前端就地提示「这个科目要挂什么」
+    dims_js = ", ".join(
+        '"{code}": [{defs}]'.format(
+            code=a.code,
+            defs=", ".join(f"'{d}'" for d in (a.aux_dim_defs or [])),
+        )
+        for a in accounts
+        if a.aux_dim_defs
+    )
     type_js = f"""
 <script>
 var CASH_PREFIX = [{cash_js}];
+var ACCT_DIMS = {{{dims_js}}};
 function isCash(code){{
   code = (code || '').trim();
   for (var i = 0; i < CASH_PREFIX.length; i++) {{
@@ -407,9 +447,21 @@ function isCash(code){{
   }}
   return false;
 }}
+function hintDims(row){{
+  var sel = row.querySelector('select.acct');
+  var aux = row.querySelector('input.aux');
+  if (!sel || !aux) return;
+  var defs = ACCT_DIMS[sel.value];
+  if (defs && defs.length) {{
+    aux.placeholder = '须挂：' + defs.join('/') + '（格式 ' + defs[0] + '=值）';
+  }} else {{
+    aux.placeholder = '无辅助维度';
+  }}
+}}
 function guessType(){{
   var rows = document.querySelectorAll('#lines tr'), dr = false, cr = false;
   for (var i = 0; i < rows.length; i++) {{
+    hintDims(rows[i]);
     var sel = rows[i].querySelector('select.acct');
     if (!sel || !isCash(sel.value)) continue;
     var dEl = rows[i].querySelector('.amt-debit');
@@ -446,17 +498,18 @@ document.addEventListener('DOMContentLoaded', function(){{
    placeholder="输入编码或名称，如 1002 或 银行"
    style="max-width:320px;display:inline-block"></p>
 <table>
-<thead><tr><th style="width:52%">科目</th><th>借方</th><th>贷方</th><th style="width:70px"></th></tr></thead>
+<thead><tr><th style="width:44%">科目</th><th>借方</th><th>贷方</th>
+<th style="width:18%">辅助维度</th><th style="width:70px"></th></tr></thead>
 <tbody id=lines>{trows}</tbody>
 <tfoot><tr>
   <th style="text-align:right">合计</th>
   <th id=sumDebit style="text-align:right">0.00</th>
   <th id=sumCredit style="text-align:right">0.00</th>
-  <th></th>
+  <th></th><th></th>
 </tr><tr>
   <th style="text-align:right">差额</th>
   <th id=sumDiff colspan=2 style="text-align:right">0.00</th>
-  <th></th>
+  <th></th><th></th>
 </tr></tfoot>
 </table>
 <p><button type=button onclick="addLine()" style="background:#fff;color:#185fa5;
@@ -940,10 +993,13 @@ def build_app(db_url: str | None = None) -> FastAPI:
         account_code: list[str] = Form([]),
         debit: list[str] = Form([]),
         credit: list[str] = Form([]),
+        aux_dims: list[str] = Form([]),
         action: str = Form("draft"),
         voucher_type: str = Form(""),
         ignore_ontology: str = Form(""),
     ):
+        from itertools import zip_longest
+
         from kernel.classic import voucher_prefix
         from kernel.posting import PostingError
         from kernel.state import transition
@@ -951,14 +1007,27 @@ def build_app(db_url: str | None = None) -> FastAPI:
 
         actor = {"type": "user", "id": request.state.subject_id}
         rows = []
-        for code, dr, cr in zip(account_code, debit, credit):
-            if not (code or "").strip():
+        dims_error = ""
+        for i, (code, dr, cr) in enumerate(
+            zip_longest(account_code, debit, credit, fillvalue="")
+        ):
+            code = (code or "").strip()
+            if not code:
                 continue  # 未选科目的空行直接丢弃，不算分录
+            raw_dims = (aux_dims[i] if i < len(aux_dims) else "").strip()
+            dims = _parse_aux_dims(raw_dims)
+            if dims is None:
+                dims_error = (
+                    f"第 {len(rows) + 1} 行辅助维度格式不对：请写「customer=甲公司」"
+                    "这样的「维度=值」，多个用分号隔开"
+                )
             rows.append(
                 {
-                    "account_code": code.strip(),
+                    "account_code": code,
                     "debit": dr or "",
                     "credit": cr or "",
+                    "aux_dims": raw_dims,  # 原样回填用
+                    "dims": dims or {},    # 解析结果给内核
                 }
             )
         # 凭证类别 → 编号前缀。未选类别时沿用统一编号「记-」，与 MCP 同一
@@ -966,12 +1035,20 @@ def build_app(db_url: str | None = None) -> FastAPI:
         chosen = (voucher_type or "").strip()
         use_prefix = chosen in ("收", "付", "转")
         prefix = voucher_prefix(chosen) if use_prefix else "记-"
-        values = {
-            "voucher_date": voucher_date,
-            "summary": summary,
-            "voucher_type": chosen,
-            "rows": rows or [{"account_code": "", "debit": "", "credit": ""}] * 4,
-        }
+
+        def _form_values(rs):
+            return {
+                "voucher_date": voucher_date,
+                "summary": summary,
+                "voucher_type": chosen,
+                "rows": rs or [{"account_code": "", "debit": "",
+                                "credit": "", "aux_dims": ""}] * 4,
+            }
+
+        values = _form_values(rows)
+        if dims_error:
+            return _render_voucher_form(request, ls_id, error=dims_error,
+                                        values=values)
         # 本体预检（阶段1）：命中规则先展示提示、确认后才创建（HITL）。
         # 与内核铁律一致——本体只建议不拦截，拦截权在用户的这一次勾选。
         if rows and not ignore_ontology:
@@ -984,7 +1061,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     findings = check_lines(
                         std,
                         [
-                            {"code": r["account_code"], "aux_dims": None,
+                            {"code": r["account_code"],
+                             "aux_dims": r.get("dims") or None,
                              "debit": r["debit"]}
                             for r in rows
                         ],
@@ -1002,7 +1080,17 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     actor=actor,
                     voucher_date=voucher_date,
                     summary=summary,
-                    lines=rows,
+                    # 内核行协议：aux_dims 必须是 dict；rows 里的
+                    # "aux_dims" 原始字符串仅供表单回填，这里换 "dims"
+                    lines=[
+                        {
+                            "account_code": r["account_code"],
+                            "debit": r["debit"],
+                            "credit": r["credit"],
+                            "aux_dims": r["dims"] or None,
+                        }
+                        for r in rows
+                    ],
                     prefix=prefix,
                     per_prefix=use_prefix,
                 )
