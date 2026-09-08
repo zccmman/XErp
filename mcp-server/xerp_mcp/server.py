@@ -1231,11 +1231,14 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
 
         命中大额/频率规则且创建主体是 Agent → 断路器自动跳闸冻结其自治；
         人类主体只记录事件不冻结。检出结果落 agent.anomaly.detected 事件。
+        返回除 findings 明细外附 guide 块：整体结论（未检出/建议关注/已冻结）
+        + 每条异常的中文名与建议动作——给人看的那份解释。
         """
         try:
             with repo.session() as s:
-                from kernel.anomaly import scan_voucher
+                from kernel.anomaly import breaker_is_open, scan_voucher
                 from kernel.authz import AuthzError, enforce
+                from kernel.explain import explain_findings
 
                 enforce(s, actor_id=actor_id, ledger_set_id=ledger_set_id,
                         action="ledger:read")
@@ -1245,8 +1248,21 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                 findings = scan_voucher(
                     s, v, actor={"type": "user", "id": actor_id})
                 s.commit()
-                return _ok(findings=[{"rule": f.rule, "severity": f.severity,
-                                      "message": f.message_zh} for f in findings])
+                # 断路器结论以状态表为准（单一真源），不在此二次推断。
+                tripped = (
+                    breaker_is_open(s, v.created_by)
+                    if v.created_by is not None else None
+                )
+                return _ok(
+                    findings=[{"rule": f.rule, "severity": f.severity,
+                               "message": f.message_zh} for f in findings],
+                    guide=explain_findings(
+                        [{"rule": f.rule, "severity": f.severity,
+                          "message": f.message_zh} for f in findings],
+                        breaker_tripped=bool(tripped) if tripped is not None
+                        else None,
+                    ),
+                )
         except AuthzError as e:
             return _err("FORBIDDEN", str(e))
 
@@ -1309,11 +1325,16 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
 
     @mcp.tool()
     def autonomy_audit_list(ledger_set_id: str) -> dict:
-        """抽检池：全部 L3 自治过账凭证及其抽检状态（pending/passed/reversed）。"""
+        """抽检池：全部 L3 自治过账凭证及其抽检状态（pending/passed/reversed）。
+
+        附 guide 块：中文摘要（几张待抽检、建议先看哪张）+ 每张的状态中文名。
+        """
         with repo.session() as s:
             from kernel.autonomy import audit_list as _list
+            from kernel.explain import explain_audit_pool
 
-            return _ok(**_list(s, ledger_set_id=ledger_set_id))
+            res = _list(s, ledger_set_id=ledger_set_id)
+            return _ok(**res, guide=explain_audit_pool(res))
 
     @mcp.tool()
     def autonomy_audit_review(
@@ -1345,13 +1366,18 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
 
     @mcp.tool()
     def autonomy_replay(voucher_id: str) -> dict:
-        """一键回放：按凭证聚合全部事件（创建/推送/审批/过账/AI 决策），审计轨迹不漏一行。"""
+        """一键回放：按凭证聚合全部事件（创建/推送/审批/过账/AI 决策），审计轨迹不漏一行。
+
+        附 guide 块：时间线逐行中文名 + 一段"这一笔的来龙去脉"摘要。
+        """
         with repo.session() as s:
             from kernel.autonomy import AutonomyError
             from kernel.autonomy import replay as _replay
+            from kernel.explain import explain_replay
 
             try:
-                return _ok(**_replay(s, voucher_id=voucher_id))
+                res = _replay(s, voucher_id=voucher_id)
+                return _ok(**res, guide=explain_replay(res))
             except AutonomyError as e:
                 return _err(e.code, e.message_zh, e.details)
 
