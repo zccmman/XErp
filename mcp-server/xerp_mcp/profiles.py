@@ -1,14 +1,14 @@
 """工具分层（tool profiles）：同一套内核，三种暴露面。
 
-为什么分层：48 个工具全量暴露给 AI，上下文成本和误调用概率都高；而个人/代账
+为什么分层：51 个工具全量暴露给 AI，上下文成本和误调用概率都高；而个人/代账
 用户真正用到的不到三分之一。裁剪通过 mcp.json 的 `disabledTools` 完成——
 **改配置不改代码，内核一行不动**，因此三档共用同一个 MCP Server、同一份数据。
 
 三档：
 
-    minimal  极简  15 个：建账 → 制单 → 审核 → 记账 → 查账 → 两张主表
-    standard 标准  30 个：+ 驳回/撤回/反记账/多级签字/月结/往来/银行/OCR/三表预测
-    pro      专业  50 个：全量（自治过账、异常扫描、适配器、转账模板、双审批通道）
+    minimal  极简  16 个：建账 → 制单 → 审核 → 记账 → 查账 → 两张主表 + 状态引导
+    standard 标准  31 个：+ 驳回/撤回/反记账/多级签字/月结/往来/银行/OCR/三表预测
+    pro      专业  51 个：全量（自治过账、异常扫描、适配器、转账模板、双审批通道）
 
 归类铁律（由 tests/test_tool_profiles.py 钉死）：
 
@@ -46,9 +46,10 @@ MINIMAL: tuple[str, ...] = (
     "query_balances",
     "report_balance_sheet",
     "report_income_statement",
-    # 怀旧层：结账体检 + 常用摘要（高频、只读、零风险）
+    # 怀旧层：结账体检 + 常用摘要 + 账套状态引导（高频、只读、零风险）
     "precheck_close",
     "suggest_summaries",
+    "month_end_guide",
 )
 
 

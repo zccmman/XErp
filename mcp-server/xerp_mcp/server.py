@@ -1598,6 +1598,41 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("PRECHECK_FAILED", f"结账体检失败：{e}")
 
     @mcp.tool()
+    def month_end_guide(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+    ) -> dict:
+        """账套状态引导：把"这个月我该怎么走"讲给财务新手听（阶段0）。
+
+        只读、不写、不抛账务错误。一次返回你本月所处阶段 + 最该做的一件事：
+
+            phase      no_period 期间未建 / closed 已结账 / empty 尚无记账
+                       daily_pending 有凭证未处理完 / closing_pending 结账前待办
+                       closing_ready 可结转结账
+            counts    本期间各状态凭证数（草稿/待审/已审/已记账）
+            next_action 一句话：现在最该做的那件事（新人可直接照着做）
+            close     结账闸门明细（复用 precheck_close；仅在进入期末阶段时给出）
+
+        设计要点：刚建账、本期还没记过任何凭证的账套，会被引导去**录期初/记账**，
+        而不是被误导去做损益结转——那是 precheck_close 单点会犯的错。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.period_guide import month_end_guide as _guide
+
+                return _ok(
+                    **_guide(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        year=period_year,
+                        month=period_month,
+                    )
+                )
+        except Exception as e:  # pragma: no cover - 兜底，保持 _ok/_err 契约
+            return _err("GUIDE_FAILED", f"账套状态引导失败：{e}")
+
+    @mcp.tool()
     def suggest_summaries(
         ledger_set_id: str, account_code: str | None = None, limit: int = 5
     ) -> dict:
