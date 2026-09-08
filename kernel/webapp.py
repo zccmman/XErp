@@ -137,6 +137,68 @@ def _toolbar(*items: str) -> str:
     return '<div class=toolbar>' + '<span class=sep>|</span>'.join(items) + '</div>'
 
 
+def _guide_card(guide: dict | None, ls_id: str) -> str:
+    """本月引导卡（超级AI总账 · 阶段0）：把 month_end_guide 的结论讲给人听。
+
+    会计一进账套，最先看到的不是凭证流水，而是「这个月还差什么、下一步干嘛」。
+    本卡片只复用内核 phase/counts/next_action/close 的结论做展示与跳转，
+    不做任何二次推断——文案与 MCP 工具 month_end_guide 同源，两端口径永远一致。
+    """
+    if guide is None:
+        # 账套连期间都没有：与内核 no_phase 口径一致，指向建账向导。
+        return ('<div class=warn><b>本账套尚未建账</b>——请先初始化期间，'
+                "再开始记账。</div>")
+    head = (
+        f'<b>{html.escape(guide["phase_zh"])}</b>　'
+        f'{html.escape(guide["next_action"])}'
+    )
+    if guide["phase"] == "closed":
+        return f'<div class=ok>{head}</div>'
+    if guide["phase"] == "closing_ready":
+        return (
+            f'<div class=ok>{head}　'
+            f'<a href="/ledger/{ls_id}/close">去月末结账 →</a></div>'
+        )
+    parts = [f'<div class=warn>{head}']
+    c = guide.get("counts") or {}
+    if c:
+        parts.append(
+            '<div style=margin-top:6px>'
+            f'凭证盘点：未审核草稿 {c.get("draft", 0)} 张 · '
+            f'待审核 {c.get("pushed", 0)} 张 · '
+            f'已审待记账 {c.get("approved", 0)} 张 · '
+            f'已记账 {c.get("posted", 0)} 张</div>'
+        )
+    if guide["phase"] == "daily_pending":
+        parts.append(
+            '<div style=margin-top:6px>'
+            f'<a href="/todo">去审批待办 →</a>　'
+            f'<a href="/ledger/{ls_id}/voucher/new">继续制单 →</a></div>'
+        )
+    close = guide.get("close")
+    if close:
+        lis = ""
+        for chk in close["checks"]:
+            cls = "pass" if chk["passed"] else "fail"
+            mark = "√" if chk["passed"] else "×"
+            hint = chk.get("hint") or ""
+            hint_html = (
+                f'<div class=hint>→ {html.escape(hint)}</div>' if hint else ""
+            )
+            lis += (
+                f'<li class={cls}><span class=item>{mark} '
+                f'{html.escape(chk["item"])}</span>　'
+                f'{html.escape(chk["detail"])}{hint_html}</li>'
+            )
+        parts.append(
+            f'<ul style="list-style:none;padding:0;margin:8px 0 0">{lis}</ul>'
+            '<div style=margin-top:6px>'
+            f'<a href="/ledger/{ls_id}/close">查看结账体检 →</a></div>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def _opening_form(ls_id: str, existing: list) -> str:
     """期初导入表单。已存在期初时切换为警告态：默认导入会被内核拒绝，
     必须显式勾选「覆盖」才走 force 红字冲销重导。"""
@@ -733,6 +795,17 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"{p.year}-{p.month:02d}({period_zh(p.status)})</a>&nbsp;"
                 for p in periods
             ) or "（无期间）"
+            # 本月引导卡（阶段0）：进账套先回答「这个月还差什么、下一步干嘛」，
+            # 再看凭证流水。选中期间与内核 month_end_guide 同一真源。
+            from kernel.period_guide import month_end_guide
+
+            guide = (
+                month_end_guide(
+                    s, ledger_set_id=ls_id, year=period.year, month=period.month
+                )
+                if period is not None
+                else None
+            )
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
             plabel = (
                 f"{period.year}-{period.month:02d}" if period is not None else "无期间"
@@ -746,7 +819,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"<a href='/ledger/{ls_id}/close'>月末结账</a>",
                 )
                 + f"<p>期间切换：{ptabs}</p>{err}"
-                '<h3>凭证（最近 50 张）　'
+                + ("<h3>本月引导</h3>" + _guide_card(guide, ls_id))
+                + '<h3>凭证（最近 50 张）　'
                 f"<a href='/ledger/{ls_id}/voucher/new'>+ 新建凭证</a></h3>"
                 "<table><tr><th>凭证号</th><th>日期</th><th>状态</th><th>摘要</th></tr>"
                 + (vrows or "<tr><td colspan=4>暂无凭证</td></tr>")
