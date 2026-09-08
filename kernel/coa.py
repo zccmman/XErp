@@ -52,6 +52,29 @@ def _parse_dims(raw: str | None) -> list[str]:
     return dims
 
 
+def parse_attrs(raw: str | None) -> dict[str, str]:
+    """attrs 格式：分号分隔的 k=v 键值对，如 `cash_flow=yes;bad_debt=eligible`。
+
+    本体声明属性（阶段1底座），值域由 kernel/ontology.py 消费端定义；
+    此处只做格式确定性校验，不限定键名（新属性以文件为真源渐进扩展）。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise CoaImportError(f"attrs 片段缺 '=': {part!r}")
+        k, v = (x.strip() for x in part.split("=", 1))
+        if not k or not v:
+            raise CoaImportError(f"attrs 片段键值为空: {part!r}")
+        out[k] = v
+    return out
+
+
 def import_chart_of_accounts(
     session: Session,
     ledger_set_id: str,
@@ -121,6 +144,10 @@ def import_chart_of_accounts(
             want_dims = _parse_dims(r.get("aux_dims"))
             if want_dims and not acc0.aux_dim_defs:
                 acc0.aux_dim_defs = want_dims
+            # attrs 同理：模板是权威定义，旧种子科目缺本体属性则补齐。
+            want_attrs = parse_attrs(r.get("attrs"))
+            if want_attrs and not acc0.attrs:
+                acc0.attrs = want_attrs
             continue
         if parent_code and parent_code not in existing:
             raise CoaImportError(f"{code}: 父科目 {parent_code} 不存在（须先定义父级）")
@@ -131,6 +158,7 @@ def import_chart_of_accounts(
             direction=r["direction"],
             category=r["category"],
             aux_dim_defs=_parse_dims(r.get("aux_dims")),
+            attrs=parse_attrs(r.get("attrs")),
         )
         session.add(acc)
         existing[code] = acc

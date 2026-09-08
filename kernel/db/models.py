@@ -106,6 +106,7 @@ class Account(Base):
     parent_id: Mapped[str | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
     is_leaf: Mapped[bool] = mapped_column(default=True)
     aux_dim_defs: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    attrs: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     parent: Mapped["Account | None"] = relationship(

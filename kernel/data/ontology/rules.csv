@@ -1,0 +1,10 @@
+﻿rule_id,scope,rule_type,params,severity,message_zh
+R-1121-01,1121,aux_required,customer,error,应收票据须挂客户（customer）辅助维度
+R-1122-01,1122,aux_required,customer,error,应收账款须挂客户（customer）辅助维度
+R-1123-01,1123,aux_required,supplier,error,预付账款须挂供应商（supplier）辅助维度
+R-2201-01,2201,aux_required,supplier,error,应付票据须挂供应商（supplier）辅助维度
+R-2202-01,2202,aux_required,supplier,error,应付账款须挂供应商（supplier）辅助维度
+R-2203-01,2203,aux_required,customer,error,预收账款须挂客户（customer）辅助维度
+R-6601-01,6601*,aux_required,department,recommend,销售费用类科目建议挂部门（department）辅助维度
+R-6602-01,6602*,aux_required,department,recommend,管理费用类科目建议挂部门（department）辅助维度
+R-660204-01,660204,deduction_limit,,recommend,业务招待费按发生额60%且不超过当年营业收入0.5%限额税前扣除
