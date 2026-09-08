@@ -369,3 +369,72 @@ def test_blank_lines_never_persist_zero_amounts(client, env):
         for ln in v.lines:
             assert not (ln.debit == 0 and ln.credit == 0), "存在借贷双零的脏行"
     engine.dispose()
+
+
+# ---------- 本体预检 HITL（阶段1） ----------
+
+
+def _submit_raw(client, ls_id, *, codes, debits, credits, voucher_date,
+                summary="测试", action="draft", ignore_ontology=None):
+    data = {
+        "voucher_date": voucher_date,
+        "summary": summary,
+        "account_code": codes,
+        "debit": debits,
+        "credit": credits,
+        "action": action,
+    }
+    if ignore_ontology is not None:
+        data["ignore_ontology"] = ignore_ontology
+    return client.post(f"/ledger/{ls_id}/voucher/new", data=data,
+                       follow_redirects=False)
+
+
+def test_ontology_findings_block_until_ack(client, env):
+    """应收无客户维度 → 本体提示拦截，勾选确认前不落库。"""
+    ls = env["ids"]["ledger_set_id"]
+    r = _submit_raw(
+        client, ls, codes=["100201", "1122"], debits=["500.00", ""],
+        credits=["", "500.00"], voucher_date=_in_period_date(env["ids"]),
+        summary="本体拦截凭证",
+    )
+    assert r.status_code == 200, "命中本体规则应原地回填而非创建"
+    assert "本体提示" in r.text
+    assert "R-1122-01" in r.text
+    assert 'name=ignore_ontology' in r.text
+    assert "1122" in r.text  # 原地回填：科目仍保留
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        assert s.scalars(
+            select(Voucher).where(Voucher.summary == "本体拦截凭证")
+        ).first() is None, "确认前不得落库"
+    engine.dispose()
+
+
+def test_ontology_ack_allows_creation(client, env):
+    ls = env["ids"]["ledger_set_id"]
+    r = _submit_raw(
+        client, ls, codes=["100201", "1122"], debits=["500.00", ""],
+        credits=["", "500.00"], voucher_date=_in_period_date(env["ids"]),
+        summary="本体确认凭证", ignore_ontology="1",
+    )
+    assert r.status_code == 303, r.text
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        v = s.scalars(
+            select(Voucher).where(Voucher.summary == "本体确认凭证")
+        ).first()
+        assert v is not None and v.status == "DRAFT"
+    engine.dispose()
+
+
+def test_clean_lines_skip_ontology_gate(client, env):
+    """纯现金科目不命中任何规则 → 不出现确认勾选，直接创建。"""
+    ls = env["ids"]["ledger_set_id"]
+    r = _submit_raw(
+        client, ls, codes=["1001", "100201"], debits=["30.00", ""],
+        credits=["", "30.00"], voucher_date=_in_period_date(env["ids"]),
+        summary="现金提现",
+    )
+    assert r.status_code == 303, r.text
+    assert "本体提示" not in r.text

@@ -877,7 +877,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
     # ---------- 制单（G1 制单闭环） ----------
 
     def _render_voucher_form(request, ls_id: str, error: str = "",
-                             values: dict | None = None) -> HTMLResponse:
+                             values: dict | None = None,
+                             findings: list | None = None) -> HTMLResponse:
         """制单页渲染。建单走内核原语 create_draft_voucher——与 MCP 同一实现，
         避免「对话里进得来、界面上进不去」的两套校验。"""
         with session() as s:
@@ -905,8 +906,22 @@ def build_app(db_url: str | None = None) -> FastAPI:
 
             summaries = suggest_summaries(s, ledger_set_id=ls_id, limit=20)
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            # 本体提示区（阶段1）：确定性规则命中时展示，勾选确认才放行（HITL）
+            onto_html = ""
+            if findings:
+                items = "".join(
+                    f'<li class="{"fail" if f["severity"] == "error" else "warn"}">'
+                    f'{html.escape(f["message_zh"])}（{f["rule_id"]}）</li>'
+                    for f in findings
+                )
+                onto_html = (
+                    '<div class="warn"><p><b>本体提示——以下分录可能有讲究：</b></p>'
+                    f"<ul>{items}</ul>"
+                    '<p><label><input type=checkbox name=ignore_ontology value=1>'
+                    "已知晓上述提示，继续创建凭证</label></p></div>"
+                )
             body = (
-                f"<p><a href='/ledger/{ls_id}'>← 返回账套</a></p>{err}"
+                f"<p><a href='/ledger/{ls_id}'>← 返回账套</a></p>{err}{onto_html}"
                 + _voucher_form(ls_id, leaf, period, values, summaries)
             )
             return _page(f"{ls.name} · 新建凭证", body,
@@ -927,6 +942,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
         credit: list[str] = Form([]),
         action: str = Form("draft"),
         voucher_type: str = Form(""),
+        ignore_ontology: str = Form(""),
     ):
         from kernel.classic import voucher_prefix
         from kernel.posting import PostingError
@@ -956,6 +972,28 @@ def build_app(db_url: str | None = None) -> FastAPI:
             "voucher_type": chosen,
             "rows": rows or [{"account_code": "", "debit": "", "credit": ""}] * 4,
         }
+        # 本体预检（阶段1）：命中规则先展示提示、确认后才创建（HITL）。
+        # 与内核铁律一致——本体只建议不拦截，拦截权在用户的这一次勾选。
+        if rows and not ignore_ontology:
+            from kernel.ontology import OntologyError, check_lines
+
+            with session() as s:
+                ls_row = s.get(LedgerSet, ls_id)
+                std = ls_row.accounting_standard if ls_row else "small_business"
+                try:
+                    findings = check_lines(
+                        std,
+                        [
+                            {"code": r["account_code"], "aux_dims": None,
+                             "debit": r["debit"]}
+                            for r in rows
+                        ],
+                    )
+                except OntologyError:
+                    findings = []
+            if findings:
+                return _render_voucher_form(request, ls_id, values=values,
+                                            findings=findings)
         try:
             with session() as s:
                 v, replayed = create_draft_voucher(

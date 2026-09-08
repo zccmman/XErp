@@ -203,3 +203,62 @@ def test_idempotent_create_replays_same_voucher(env, server):
     assert a["ok"] and b["ok"]
     assert b.get("replayed") is True
     assert a["voucher"]["id"] == b["voucher"]["id"]
+
+
+# ---- 本体层（阶段1）----
+
+
+def test_subject_semantics_tool(env, server):
+    r = _call(server, "subject_semantics", account_code="1122")
+    assert r["ok"], r
+    assert r["attrs"] == {"bad_debt": "eligible"}
+    assert any(ru["rule_id"] == "R-1122-01" for ru in r["rules"])
+    # 入向：坏账准备备抵 + 预收重分类对冲
+    others = {(x["rel_type"], x["other_code"]) for x in r["related"]}
+    assert ("contra_of", "1231") in others
+    assert ("reclass_pairs", "2203") in others
+
+
+def test_subject_semantics_unknown_code(env, server):
+    r = _call(server, "subject_semantics", account_code="9999")
+    assert r["ok"] is False and r["error"]["code"] == "ONTOLOGY_UNKNOWN"
+
+
+def test_create_voucher_attaches_ontology_findings(env, server):
+    """制单响应自动附本体预检：6602 无部门维度 → recommend 提示（不拦截）。"""
+    r = _mk_voucher(env, server, key="onto-001")
+    assert r["ok"], r
+    fids = [f["rule_id"] for f in r["ontology_findings"]]
+    assert "R-6602-01" in fids
+    assert r["ontology_findings"][0]["severity"] == "recommend"
+    # 幂等重放分支同样附带
+    b = _call(
+        server,
+        "create_voucher",
+        ledger_set_id=env["ids"]["ledger_set_id"],
+        voucher_date="2026-08-27",
+        summary="联调凭证",
+        actor_id=_actor(env),
+        idempotency_key="onto-001",
+        lines=_balanced_lines(),
+    )
+    assert b.get("replayed") is True
+    assert [f["rule_id"] for f in b["ontology_findings"]] == fids
+
+
+def test_create_voucher_clean_lines_no_findings(env, server):
+    """纯现金科目的凭证本体预检为空列表（明确「通过」而非缺省）。"""
+    r = _call(
+        server,
+        "create_voucher",
+        ledger_set_id=env["ids"]["ledger_set_id"],
+        voucher_date="2026-08-27",
+        summary="现金提现",
+        actor_id=_actor(env),
+        idempotency_key="onto-clean-001",
+        lines=[
+            {"account_code": "1001", "debit": "50", "credit": ""},
+            {"account_code": "100201", "debit": "", "credit": "50"},
+        ],
+    )
+    assert r["ok"] and r["ontology_findings"] == []

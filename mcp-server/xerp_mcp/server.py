@@ -40,6 +40,7 @@ from kernel.adapters.spec import (  # noqa: E402
 from kernel.db.models import (  # noqa: E402
     Account,
     Balance,
+    LedgerSet,
     Period,
     Subject,
     Voucher,
@@ -439,10 +440,12 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                     per_prefix=bool(vtype),
                     required_signers=required_signers,
                 )
+                onto = _ontology_findings(s, ledger_set_id, lines)
                 if replayed:
-                    return _ok(voucher=_brief(v), replayed=True)
+                    return _ok(voucher=_brief(v), replayed=True,
+                               ontology_findings=onto)
                 record_voucher_created(s, v, actor)
-                return _ok(voucher=_brief(v))
+                return _ok(voucher=_brief(v), ontology_findings=onto)
         except PostingError as e:
             return _err(e.code, e.message_zh, e.details)
 
@@ -1659,6 +1662,35 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("GUIDE_FAILED", f"账套状态引导失败：{e}")
 
     @mcp.tool()
+    def subject_semantics(
+        account_code: str, standard: str = "small_business"
+    ) -> dict:
+        """科目本体语义查询：制单前先问一句「这个科目有什么讲究」（阶段1）。
+
+        返回该科目的三源聚合语义（确定性，来自准则本体文件，非 AI 臆断）：
+
+            attrs    科目级声明属性（cash_flow/bad_debt/depreciate/amortize/
+                     deduction…），报表与预检的确定性依据
+            rules    命中的治理规则（aux_required：须挂什么辅助维度；
+                     deduction_limit：税前扣除限额提示）
+            related  相关科目关系（contra_of 备抵 / reclass_pairs 报表重分类
+                     对冲 / carryforward_from 结转对应），含出入两个方向
+
+        典型用法：给「应收账款」记账前调它，把 rules 里的中文提示讲给用户听。
+        制单更省事的做法是直接 create_voucher——响应里会自动附上
+        ontology_findings 预检结果，无需逐科目手查。
+        """
+        try:
+            from kernel.ontology import OntologyError
+            from kernel.ontology import subject_semantics as _sem
+
+            return _ok(**_sem(standard, account_code))
+        except OntologyError as e:
+            return _err("ONTOLOGY_UNKNOWN", str(e))
+        except Exception as e:  # pragma: no cover - 兜底
+            return _err("SEMANTICS_FAILED", f"科目语义查询失败：{e}")
+
+    @mcp.tool()
     def suggest_summaries(
         ledger_set_id: str, account_code: str | None = None, limit: int = 5
     ) -> dict:
@@ -1687,6 +1719,32 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("SUGGEST_FAILED", f"摘要推荐失败：{e}")
 
     # ---------- 助手 ----------
+
+    def _ontology_findings(s: Session, ledger_set_id: str, lines) -> list[dict]:
+        """本体预检（阶段1）：制单响应附带确定性提示，只建议不拦截。
+
+        「AI 只建议不动账」：拦截留给状态机与硬校验，这里只把本体规则的
+        中文提示交还 AI 复述。本体文件缺失/准则未知时静默降级为空——
+        预检不能成为制单的单点故障。
+        """
+        try:
+            ls = s.get(LedgerSet, ledger_set_id)
+            std = ls.accounting_standard if ls else "small_business"
+            from kernel.ontology import check_lines
+
+            return check_lines(
+                std,
+                [
+                    {
+                        "code": (ln.get("account_code") or "").strip(),
+                        "aux_dims": ln.get("aux_dims"),
+                        "debit": ln.get("debit"),
+                    }
+                    for ln in (lines or [])
+                ],
+            )
+        except Exception:  # noqa: BLE001
+            return []
 
     def _open_period_brief(s: Session, ledger_set_id: str) -> dict:
         period = s.scalars(
