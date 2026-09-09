@@ -61,5 +61,28 @@
 
 ## 后续迭代（不在本 ADR 范围）
 
-- **迭代 2**：D3 联动（`create_voucher` 回调写 drafting→pending / 异常扫描回调写 alert / LLM ping 写 offline）+ i18n 资源注入
-- **迭代 3**（C 完整版）：MCP `ai_runtime.state` 工具暴露 + IM 卡片显示算子状态
+- ~~**迭代 2**：D3 联动 + i18n 资源注入~~ → **已于 2026-09-09 落地，见下节**
+- **迭代 3**（C 完整版）：MCP `ai_runtime.state` 工具暴露 + IM 卡片显示算子状态 + LLM 通道 offline 信号接入
+
+## 迭代 2 落地记录（2026-09-09）
+
+**D7 i18n**：`_LABELS` 扩为 `{"zh-CN": …, "en-US": …}` 双语表；`set_locale()`（未知语言抛 `ValueError`，不静默降级）/ `current_locale()` / `state_label()` 为渲染层唯一取词口；初值读环境变量 `XERP_OPERATOR_LANG`。
+
+**D8 跨进程信号桥**：MCP 进程与 Web 进程是两个 Python 进程，进程内 `_state` 互不可见。桥 = JSON 信号文件（`XERP_OPERATOR_STATE_FILE` 覆盖，默认仓库根 `operator_state.json`，单向 MCP→Web）：
+
+- `signal(state)`（MCP 侧）：只写不应用，只表达「最近一次 AI Runtime 活动」，新信号覆盖旧信号，任何 I/O 失败静默吞掉——**桥是纯增值信息，绝不阻塞业务**；
+- `sync_from_bridge()`（Web 侧）：`_page(show_operator=True)` 渲染前调用，按 ts 去重后经 `_walk_to()` 合法化应用（PENDING 经 DRAFTING 中转，其余经 IDLE）；未知状态值/坏 JSON/缺文件一律忽略——桥污染不致死。
+
+**D9 联动点（仅 3 处，全部走桥）**：
+
+| 触发 | 信号 | 位置 |
+|---|---|---|
+| MCP `create_voucher` 成功 | `drafting`（AI 起草完成） | server.py |
+| MCP `push_voucher`（`guarded` target=PUSHED） | `pending`（待 Boss 审） | server.py |
+| MCP `anomaly_scan` 有发现 | `alert` | server.py |
+| Web 制单成功存草稿 | `drafting`（进程内直写，不经桥） | webapp.py |
+| Web 制单成功直接提交 | `drafting`→`pending` | webapp.py |
+
+**OFFLINE 保留**：代码库尚无 LLM 运行时（anomaly 双通道的 LLM 侧未落地），offline 信号的原语（`signal(OFFLINE)`）已就绪，触发点留待迭代 3 AI Runtime LLM 层接入。
+
+**红线重申**：算子仍是只读镜像——创建/审批/落账等终态动作永远由 Boss 显式确认，信号只反映已发生的事实。

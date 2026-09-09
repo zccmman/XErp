@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from kernel import operator as op
 
 
 @pytest.fixture(autouse=True)
-def _reset_op():
+def _reset_op(monkeypatch, tmp_path):
     op.reset()
+    # 桥指向临时文件 + 清已应用时间戳：测试间互不污染，也不碰仓库根真桥
+    monkeypatch.setenv("XERP_OPERATOR_STATE_FILE", str(tmp_path / "op_bridge.json"))
+    monkeypatch.setattr(op, "_applied_ts", 0.0)
     yield
     op.reset()
+    op.set_locale("zh-CN")  # i18n 用例切过语言，恢复默认防串扰
 
 
 def test_state_enum_has_six_members():
@@ -82,3 +88,64 @@ def test_drafting_to_pending_is_legal():
     op.set_state(op.OperatorState.DRAFTING)
     op.set_state(op.OperatorState.PENDING)
     assert op.current_state() == op.OperatorState.PENDING
+
+
+# ---------- 迭代2 · 跨进程信号桥 ----------
+
+
+def test_signal_writes_bridge_and_sync_applies():
+    """MCP 侧 signal 只写不应用；Web 侧 sync 读桥后合法化应用。"""
+    ok = op.signal(op.OperatorState.DRAFTING, source="test")
+    assert ok is True
+    assert op.current_state() == op.OperatorState.IDLE, "signal 不改本进程状态"
+    applied = op.sync_from_bridge()
+    assert applied == op.OperatorState.DRAFTING
+    assert op.current_state() == op.OperatorState.DRAFTING
+
+
+def test_sync_walks_legally_to_pending_from_idle():
+    """IDLE 直达 PENDING 非法（合法表约束）；sync 经 DRAFTING 中转必须到达。"""
+    op.signal(op.OperatorState.PENDING, source="test")
+    applied = op.sync_from_bridge()
+    assert applied == op.OperatorState.PENDING
+    # 重复 sync 同一信号不重放（ts 去重）
+    assert op.sync_from_bridge() is None
+    assert op.current_state() == op.OperatorState.PENDING
+
+
+def test_sync_ignores_unknown_state_and_broken_bridge():
+    """桥污染不致死：未知状态值 / 坏 JSON / 缺文件都静默忽略。"""
+    p = op._bridge_path()
+    p.write_text(json.dumps({"state": "hacked", "source": "x", "ts": 99.0}),
+                 encoding="utf-8")
+    assert op.sync_from_bridge() is None
+    assert op.current_state() == op.OperatorState.IDLE
+    p.write_text("not-json{{", encoding="utf-8")
+    assert op.sync_from_bridge() is None
+    p.unlink()
+    assert op.sync_from_bridge() is None
+
+
+# ---------- 迭代2 · i18n（zh-CN / en-US） ----------
+
+
+def test_labels_en_us_cover_all_six_states():
+    op.set_locale("en-US")
+    assert op.current_locale() == "en-US"
+    for s in op.OperatorState:
+        label = op.state_label(s)
+        assert label.startswith("Operator · "), f"{s} 缺英文文案"
+    frag = op.render_fragment(op.OperatorState.PENDING)
+    assert "Operator · Awaiting review" in frag
+    assert "算子" not in frag, "en-US 下不得残留中文标签"
+
+
+def test_locale_switch_roundtrip_and_unknown_raises():
+    assert op.current_locale() == "zh-CN"
+    assert op.state_label(op.OperatorState.IDLE) == "算子 · 待机"
+    op.set_locale("en-US")
+    op.set_locale("zh-CN")
+    assert op.state_label(op.OperatorState.IDLE) == "算子 · 待机"
+    with pytest.raises(ValueError):
+        op.set_locale("fr-FR")
+    assert op.current_locale() == "zh-CN", "非法 locale 不应改变现值"

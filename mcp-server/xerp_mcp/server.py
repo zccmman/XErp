@@ -63,6 +63,20 @@ from kernel.reporting.statements import ReportError  # noqa: E402
 from kernel.state import transition  # noqa: E402
 
 
+def _op_signal(state: str, source: str = "mcp") -> None:
+    """写算子状态桥（ADR-007 迭代2 联动）。
+
+    MCP 侧写、Web 渲染侧 sync_from_bridge() 读并合法化应用。
+    桥是纯增值信息：任何失败静默吞掉，绝不阻塞业务主流程。
+    """
+    try:
+        from kernel.operator import OperatorState, signal as _op_write
+
+        _op_write(OperatorState(state), source=source)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _ok(**data):
     return {"ok": True, **data}
 
@@ -206,6 +220,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                     reason=reason,
                 )
                 s.flush()
+                if target == "PUSHED":
+                    _op_signal("pending")  # 算子联动：凭证进入待审
                 return _ok(voucher=_brief(v))
         except (PostingError, AuthzError) as e:
             code = "FORBIDDEN" if isinstance(e, AuthzError) else e.code
@@ -441,6 +457,7 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                     required_signers=required_signers,
                 )
                 onto = _ontology_findings(s, ledger_set_id, lines)
+                _op_signal("drafting")  # 算子联动：AI 起草完成（ADR-007 迭代2）
                 if replayed:
                     return _ok(voucher=_brief(v), replayed=True,
                                ontology_findings=onto)
@@ -1260,6 +1277,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                 findings = scan_voucher(
                     s, v, actor={"type": "user", "id": actor_id})
                 s.commit()
+                if findings:
+                    _op_signal("alert")  # 算子联动：异常扫描有发现
                 # 断路器结论以状态表为准（单一真源），不在此二次推断。
                 tripped = (
                     breaker_is_open(s, v.created_by)

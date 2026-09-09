@@ -13,8 +13,11 @@ XErp · AI Runtime 具象 — 「算子 · 账本精灵」状态机（第一版�
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 
@@ -215,22 +218,54 @@ _SVG_BUILDERS: dict[OperatorState, Any] = {
     OperatorState.OFFLINE: _offline_body,
 }
 
-# 状态标签（i18n 第一版内置 zh-CN；en-US 留接口由 webapp 后续注入）
-_LABELS_ZH: dict[OperatorState, str] = {
-    OperatorState.IDLE: "算子 · 待机",
-    OperatorState.LISTENING: "算子 · 听令",
-    OperatorState.DRAFTING: "算子 · 起草中",
-    OperatorState.PENDING: "算子 · 待审",
-    OperatorState.ALERT: "算子 · 异常",
-    OperatorState.OFFLINE: "算子 · 离线",
+# 状态标签（i18n 迭代2）：zh-CN / en-US 双语；渲染走 current_locale()。
+_LABELS: dict[str, dict[OperatorState, str]] = {
+    "zh-CN": {
+        OperatorState.IDLE: "算子 · 待机",
+        OperatorState.LISTENING: "算子 · 听令",
+        OperatorState.DRAFTING: "算子 · 起草中",
+        OperatorState.PENDING: "算子 · 待审",
+        OperatorState.ALERT: "算子 · 异常",
+        OperatorState.OFFLINE: "算子 · 离线",
+    },
+    "en-US": {
+        OperatorState.IDLE: "Operator · Idle",
+        OperatorState.LISTENING: "Operator · Listening",
+        OperatorState.DRAFTING: "Operator · Drafting",
+        OperatorState.PENDING: "Operator · Awaiting review",
+        OperatorState.ALERT: "Operator · Alert",
+        OperatorState.OFFLINE: "Operator · Offline",
+    },
 }
+
+# locale 真源：环境变量 XERP_OPERATOR_LANG 注入初值，运行期 set_locale 切换。
+_locale: str = os.environ.get("XERP_OPERATOR_LANG", "zh-CN").strip() or "zh-CN"
+if _locale not in _LABELS:
+    _locale = "zh-CN"
+
+
+def set_locale(lang: str) -> None:
+    """切换状态文案语言。未知语言抛 ValueError（静默降级会掩盖配置错误）。"""
+    global _locale
+    if lang not in _LABELS:
+        raise ValueError(f"未知算子语言：{lang}（支持 {'/'.join(_LABELS)}）")
+    _locale = lang
+
+
+def current_locale() -> str:
+    return _locale
+
+
+def state_label(state: OperatorState) -> str:
+    """当前 locale 下的状态文案。渲染层唯一取词口。"""
+    return _LABELS[_locale][state]
 
 
 def render_svg(state: OperatorState | None = None) -> str:
     """渲染指定状态的 SVG 字符串（无外层容器，inline 用）。"""
     s = state or current_state()
     body = _SVG_BUILDERS[s]()
-    return _SVG_HEADER.format(state=s.value, label=_LABELS_ZH[s]) + body + _SVG_FOOTER
+    return _SVG_HEADER.format(state=s.value, label=state_label(s)) + body + _SVG_FOOTER
 
 
 def is_hidden() -> bool:
@@ -254,18 +289,91 @@ def render_fragment(state: OperatorState | None = None) -> str:
         return '<div class="op-container op-hidden" data-state="hidden"></div>'
     s = state or current_state()
     svg = render_svg(s)
+    label = state_label(s)
     detail = (
         f'<div class="op-detail op-{s.value}" role="tooltip">'
         f'<div class="op-detail-svg">{svg.replace("width=\"24\" height=\"24\"", "width=\"40\" height=\"40\"")}</div>'
-        f'<div class="op-detail-text">{_LABELS_ZH[s]}</div>'
+        f'<div class="op-detail-text">{label}</div>'
         "</div>"
     )
     return (
         f'<div class="op-container op-{s.value}" data-state="{s.value}" '
-        f'title="{_LABELS_ZH[s]}（只读 · 不触发写动作）">'
+        f'title="{label}（只读 · 不触发写动作）">'
         f"{svg}{detail}"
         "</div>"
     )
+
+
+# ---- 跨进程信号桥（迭代2 联动） ---------------------------------------------
+#
+# MCP 进程（create_voucher / push_voucher / anomaly_scan）与 Web 进程（渲染算子）
+# 是两个 Python 进程，进程内 _state 互不可见。桥 = 一个 JSON 信号文件：
+#   MCP 侧 signal() 写 → Web 侧 _page 渲染前 sync_from_bridge() 读并合法化应用。
+# 信号只表达「最近一次 AI Runtime 活动」，不是队列——新信号覆盖旧信号。
+# 桥是纯增值信息：读写任何失败都静默吞掉，绝不阻塞业务主流程。
+
+
+def _bridge_path() -> Path:
+    """桥文件路径。XERP_OPERATOR_STATE_FILE 覆盖；默认仓库根（同仓双进程一致）。"""
+    p = os.environ.get("XERP_OPERATOR_STATE_FILE", "").strip()
+    if p:
+        return Path(p)
+    return Path(__file__).resolve().parents[1] / "operator_state.json"
+
+
+def _walk_to(target: OperatorState) -> None:
+    """合法化走到 target：不经过的状态瞬时不渲染，故走快路无副作用。
+
+    PENDING 不能从 IDLE 直达（合法表约束），经 DRAFTING 中转。
+    """
+    if current_state() == target:
+        return
+    set_state(OperatorState.IDLE)  # IDLE 对所有态合法出边
+    if target is OperatorState.PENDING:
+        set_state(OperatorState.DRAFTING)
+    if target is not OperatorState.IDLE:
+        set_state(target)
+
+
+def signal(target: OperatorState, source: str = "mcp") -> bool:
+    """写桥（MCP 侧调用）。只写不应用——应用权在 Web 渲染侧。
+
+    返回是否落盘成功；任何异常（只读盘/权限）静默吞掉。
+    """
+    try:
+        payload = json.dumps(
+            {"state": target.value, "source": source, "ts": time.time()},
+            ensure_ascii=False,
+        )
+        _bridge_path().write_text(payload, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+# 渲染侧已应用到的信号时间戳（去重；重复应用同值转移无害但没必要）。
+_applied_ts: float = 0.0
+
+
+def sync_from_bridge() -> OperatorState | None:
+    """读桥并合法化应用（Web 渲染前调用）。
+
+    返回应用后的状态；无桥/无效载荷/已应用过 → None（保持现态）。
+    """
+    global _applied_ts
+    try:
+        raw = json.loads(_bridge_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or float(raw.get("ts", 0)) <= _applied_ts:
+        return None
+    try:
+        target = OperatorState(raw.get("state", ""))
+    except ValueError:
+        return None  # 未知状态值：桥污染不致死，忽略
+    _applied_ts = float(raw["ts"])
+    _walk_to(target)
+    return current_state()
 
 
 __all__ = [
@@ -277,4 +385,9 @@ __all__ = [
     "render_svg",
     "render_fragment",
     "is_hidden",
+    "set_locale",
+    "current_locale",
+    "state_label",
+    "signal",
+    "sync_from_bridge",
 ]

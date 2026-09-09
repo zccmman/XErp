@@ -39,6 +39,7 @@ from kernel.ontology import (  # noqa: E402
     template_attrs as _ontology_attrs,
 )
 from kernel.operator import render_fragment as _render_operator  # noqa: E402
+from kernel.operator import sync_from_bridge as _operator_sync  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -125,6 +126,8 @@ def _page(title: str, body: str, user: str | None = None,
 
     show_operator=True 时在右上角注入算子 fragment（仅 M1 制单页开启，
     遵守产品方案 §8.2 "不能喧宾夺主"红线；其他页面零改动）。
+    渲染前同步算子信号桥：MCP 进程（create_voucher / push_voucher /
+    anomaly_scan）写、Web 进程读——跨进程状态经此单向汇合（ADR-007 迭代2）。
     """
     userbar = ""
     if user:
@@ -132,6 +135,11 @@ def _page(title: str, body: str, user: str | None = None,
             f'<div class="userbar">当前身份：<b>{html.escape(user)}</b>'
             f'　<a href="/logout">退出</a></div>'
         )
+    if show_operator:
+        try:
+            _operator_sync()
+        except Exception:  # noqa: BLE001 桥失败绝不阻塞渲染
+            pass
     operator_html = _render_operator() if show_operator else ''
     nav = ('<div class=nav><a href="/">工作区</a> · '
            '<a href="/todo">审批待办</a></div>')
@@ -1129,6 +1137,16 @@ def build_app(db_url: str | None = None) -> FastAPI:
             # 原地重渲染并回填：重定向回空表会让会计把整张凭证重打一遍
             return _render_voucher_form(request, ls_id, error=e.message_zh,
                                         values=values)
+        # 算子联动（ADR-007 迭代2）：制单成功 = 起草完成；直接提交 = 待审。
+        # 状态机是进程内单点，本进程写本进程渲；非法转移（如当前 offline）静默忽略。
+        from kernel.operator import IllegalOperatorTransition, OperatorState, set_state
+
+        try:
+            set_state(OperatorState.DRAFTING)
+            if action == "submit":
+                set_state(OperatorState.PENDING)
+        except IllegalOperatorTransition:
+            pass
         return RedirectResponse(f"/voucher/{vid}", status_code=303)
 
     # ---------- 凭证详情 ----------

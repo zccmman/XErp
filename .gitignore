@@ -46,3 +46,6 @@ build/
 _perfile_report.txt
 _pytest_full.xml
 _pf_*.xml
+
+# 算子跨进程信号桥运行时文件（ADR-007 迭代2）
+operator_state.json
