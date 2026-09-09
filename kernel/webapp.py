@@ -127,6 +127,10 @@ select{font-family:inherit;width:100%;padding:4px;margin:4px 0;box-sizing:border
 .op-container:hover .op-detail,.op-container:focus .op-detail{display:block}
 .op-detail-text{margin-top:6px;color:#1f4e79;font-weight:bold;text-align:center}
 .op-detail-svg{display:flex;justify-content:center}
+/* 审批待办行内操作（G1 收口）：同意/驳回+原因/查看 一格放下 */
+.todo-ops{display:flex;gap:8px;align-items:center;margin:0;flex-wrap:wrap}
+.todo-ops input[name=reason]{width:11em;margin:0;padding:3px 6px;font-size:12px}
+.todo-ops button{margin:0;padding:3px 10px;font-size:12px}
 </style>"""
 
 
@@ -1733,6 +1737,17 @@ def build_app(db_url: str | None = None) -> FastAPI:
             msg = str(e) if isinstance(e, AuthzError) else e.message_zh
             return msg, None
 
+    def _back(vid: str, nxt: str, err: str = "") -> RedirectResponse:
+        """跃迁后回跳：待办行内操作带 next=/todo 回列表，详情页操作回详情。
+
+        防开放重定向：仅接受本站相对路径（/ 开头且非 //）。
+        """
+        base = (nxt if nxt.startswith("/") and not nxt.startswith("//")
+                else f"/voucher/{vid}")
+        return RedirectResponse(
+            f"{base}?error={quote(err)}" if err else base, status_code=303
+        )
+
     @app.get("/todo", response_class=HTMLResponse)
     def todo_list(request: Request, error: str = ""):
         """审批待办：审批人看到待我审批的队列，制单人看到自己推送的待审单。"""
@@ -1755,6 +1770,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
             }
             to_approve = ""
             mine = ""
+            n_to_approve = 0
+            n_mine = 0
             for v in pending:
                 maker = makers.get(v.created_by)
                 maker_name = maker.display_name if maker else (v.created_by or "?")
@@ -1768,16 +1785,33 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"<td>{html.escape(v.summary or '')}</td>"
                 )
                 if str(v.created_by) == str(actor_id):
+                    n_mine += 1
                     mine += (
                         row
-                        + f"<td><form method=post action=/voucher/{v.id}/withdraw "
-                        + 'style=margin:0><button>撤回</button></form></td></tr>'
+                        + "<td><form method=post "
+                        + f"action=/voucher/{v.id}/withdraw class=todo-ops>"
+                        + '<input type=hidden name=next value=/todo>'
+                        + "<button>撤回</button></form></td></tr>"
                     )
                 else:
-                    to_approve += (
-                        row
-                        + f"<td><a href=/voucher/{v.id}>去处理 →</a></td></tr>"
-                    )
+                    n_to_approve += 1
+                    if i_am_agent:
+                        ops = f'<a href=/voucher/{v.id}>查看 →</a>'
+                    else:
+                        # 行内一步审批（G1 收口）：同意直接落，驳回必须留原因；
+                        # next=/todo 处理完回队列，不用跳详情页再跳回来。
+                        ops = (
+                            f'<div class=todo-ops>'
+                            f'<form method=post action=/voucher/{v.id}/approve>'
+                            '<input type=hidden name=next value=/todo>'
+                            "<button>同意</button></form>"
+                            f'<form method=post action=/voucher/{v.id}/reject>'
+                            '<input type=hidden name=next value=/todo>'
+                            '<input name=reason placeholder="驳回原因（必填）" size=12>'
+                            '<button class=danger>驳回</button></form>'
+                            f'<a href=/voucher/{v.id}>查看</a></div>'
+                        )
+                    to_approve += row + f"<td>{ops}</td></tr>"
             if i_am_agent:
                 tip = (
                     '<p class=warn>当前身份是 Agent：审批与驳回必须由人执行，'
@@ -1786,8 +1820,12 @@ def build_app(db_url: str | None = None) -> FastAPI:
             else:
                 tip = ""
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            badge = (
+                f'<p>待我审批 <b>{n_to_approve}</b> 张 · '
+                f"我推送 <b>{n_mine}</b> 张</p>"
+            )
             body = (
-                "<h2>审批待办</h2>" + err + tip
+                "<h2>审批待办</h2>" + err + badge + tip
                 + "<h3>待我审批（非本人制单）</h3>"
                 + '<table><tr><th>账套</th><th>凭证号</th><th>日期</th>'
                 + "<th>制单人</th><th>摘要</th><th>操作</th></tr>"
@@ -1799,46 +1837,48 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + (mine or "<tr><td colspan=6>暂无待审单</td></tr>")
                 + "</table>"
             )
-            return _page("审批待办", body, request.state.subject_name)
+            return _page("审批待办", body, request.state.subject_name,
+                         show_operator=True)
 
     @app.post("/voucher/{vid}/push")
-    def voucher_push_web(request: Request, vid: str):
+    def voucher_push_web(request: Request, vid: str, next: str = Form("")):
         err, _v = _apply_transition(request, vid, "PUSHED", require_maker=True)
         if err:
-            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
-        return RedirectResponse(f"/voucher/{vid}", 303)
+            return _back(vid, next, err)
+        return _back(vid, next)
 
     @app.post("/voucher/{vid}/approve")
-    def voucher_approve_web(request: Request, vid: str):
+    def voucher_approve_web(request: Request, vid: str, next: str = Form("")):
         err, _v = _apply_transition(request, vid, "APPROVED", require_maker=False)
         if err:
-            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
-        return RedirectResponse(f"/voucher/{vid}", 303)
+            return _back(vid, next, err)
+        return _back(vid, next)
 
     @app.post("/voucher/{vid}/reject")
-    def voucher_reject_web(request: Request, vid: str, reason: str = Form("")):
+    def voucher_reject_web(request: Request, vid: str, reason: str = Form(""),
+                           next: str = Form("")):
         if not (reason or "").strip():
             err = "驳回必须填写原因，否则制单人不知道要改什么"
-            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
+            return _back(vid, next, err)
         err, _v = _apply_transition(request, vid, "DRAFT", reason=reason.strip(),
                                     require_maker=False)
         if err:
-            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
-        return RedirectResponse(f"/voucher/{vid}", 303)
+            return _back(vid, next, err)
+        return _back(vid, next)
 
     @app.post("/voucher/{vid}/withdraw")
-    def voucher_withdraw_web(request: Request, vid: str):
+    def voucher_withdraw_web(request: Request, vid: str, next: str = Form("")):
         err, _v = _apply_transition(request, vid, "DRAFT", require_maker=True)
         if err:
-            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
-        return RedirectResponse(f"/voucher/{vid}", 303)
+            return _back(vid, next, err)
+        return _back(vid, next)
 
     @app.post("/voucher/{vid}/post")
-    def voucher_post_web(request: Request, vid: str):
+    def voucher_post_web(request: Request, vid: str, next: str = Form("")):
         err, _v = _apply_transition(request, vid, "POSTED")
         if err:
-            return RedirectResponse(f"/voucher/{vid}?error={quote(err)}", 303)
-        return RedirectResponse(f"/voucher/{vid}", 303)
+            return _back(vid, next, err)
+        return _back(vid, next)
 
     # ---------- JSON API（React 前端 / A2UI 渲染器数据底座，P1-05） ----------
 

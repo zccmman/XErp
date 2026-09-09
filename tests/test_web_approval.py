@@ -134,11 +134,12 @@ def test_todo_requires_login(anon_client, env):
 
 
 def test_todo_splits_by_role(maker_client, reviewer_client, env):
-    """同一张待审单：制单人看到「撤回」，审批人看到「去处理」。"""
+    """同一张待审单：制单人看到「撤回」，审批人看到行内一步审批操作。"""
     vid = _make_pushed(maker_client, env, "待办分流")
     rt = reviewer_client.get("/todo").text
     mt = maker_client.get("/todo").text
-    assert vid in rt and "去处理" in rt, "审批人应看到待审队列"
+    assert vid in rt and f"action=/voucher/{vid}/approve" in rt, \
+        "审批人应看到行内同意操作"
     assert vid in mt and "撤回" in mt, "制单人应看到自己的可撤回单"
     assert "待我审批" in rt and "我推送的" in mt
 
@@ -147,7 +148,7 @@ def test_todo_agent_sees_warning(agent_client, maker_client, env):
     _make_pushed(maker_client, env, "agent围观")
     t = agent_client.get("/todo").text
     assert "审批与驳回必须由人执行" in t
-    assert "去处理" in t, "队列仍应可见（仅供查看）"
+    assert "查看 →" in t, "队列仍应可见（仅供查看）"
 
 
 def test_nav_has_todo_link(maker_client, env):
@@ -397,3 +398,85 @@ def test_push_non_draft_blocked(maker_client, env):
     with Session(engine) as s:
         assert s.get(Voucher, vid).status == "PUSHED"
     engine.dispose()
+
+
+# ---------- G1 收口 · 待办行内一步审批 + next 回跳 + 算子常驻 ----------
+
+def test_todo_inline_ops_present(reviewer_client, maker_client, env):
+    """待我审批行内含 同意表单/驳回表单(带原因输入)/查看链接。"""
+    vid = _make_pushed(maker_client, env, "行内审批UI")
+    t = reviewer_client.get("/todo").text
+    assert f"action=/voucher/{vid}/approve" in t
+    assert f"action=/voucher/{vid}/reject" in t
+    assert "name=next value=/todo" in t
+    assert "name=reason" in t
+
+
+def test_todo_counter_badge(reviewer_client, maker_client, env):
+    """页首计数徽标：推一张后「待我审批」计数 ≥1（module 内共享队列，不断言绝对数）。"""
+    _make_pushed(maker_client, env, "计数徽标")
+    t = reviewer_client.get("/todo").text
+    m = re.search(r"待我审批 <b>(\d+)</b> 张", t)
+    assert m and int(m.group(1)) >= 1, t[:500]
+
+
+def test_inline_approve_from_todo_returns_to_todo(reviewer_client, maker_client, env):
+    """行内同意：POST 带 next=/todo → 回待办页，凭证 APPROVED。"""
+    vid = _make_pushed(maker_client, env, "行内同意")
+    r = reviewer_client.post(
+        f"/voucher/{vid}/approve", data={"next": "/todo"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/todo"
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        assert s.get(Voucher, vid).status == "APPROVED"
+    engine.dispose()
+
+
+def test_inline_reject_from_todo_returns_to_todo(reviewer_client, maker_client, env):
+    """行内驳回（原因必填）：回待办页，凭证退回 DRAFT。"""
+    vid = _make_pushed(maker_client, env, "行内驳回")
+    r = reviewer_client.post(
+        f"/voucher/{vid}/reject",
+        data={"reason": "摘要不清", "next": "/todo"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"].startswith("/todo")
+    assert "error=" not in r.headers["location"]
+    engine = create_engine(env["url"])
+    with Session(engine) as s:
+        assert s.get(Voucher, vid).status == "DRAFT"
+    engine.dispose()
+
+
+def test_inline_reject_without_reason_shows_error_on_todo(reviewer_client,
+                                                          maker_client, env):
+    """行内驳回缺原因：错误提示回显在待办页（不丢队列上下文）。"""
+    vid = _make_pushed(maker_client, env, "缺原因驳回")
+    r = reviewer_client.post(
+        f"/voucher/{vid}/reject", data={"reason": "", "next": "/todo"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/todo?error=")
+    t = reviewer_client.get(r.headers["location"]).text
+    assert "驳回必须填写原因" in t
+
+
+def test_next_open_redirect_guard(reviewer_client, maker_client, env):
+    """next 只接受本站相对路径：//evil.com 打回详情页（防开放重定向）。"""
+    vid = _make_pushed(maker_client, env, "防重定向")
+    r = reviewer_client.post(
+        f"/voucher/{vid}/approve", data={"next": "//evil.com"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/voucher/{vid}"
+
+
+def test_todo_page_shows_operator(maker_client, env):
+    """待办页接入算子常驻（Boss 动作场，pending 态在此最恰如其分）。"""
+    _make_pushed(maker_client, env, "待办算子")
+    t = maker_client.get("/todo").text
+    assert 'class="op-container' in t
