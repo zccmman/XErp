@@ -32,6 +32,13 @@ from kernel.db.models import (
     Voucher,
     VoucherLine,
 )
+from kernel.ontology import (  # noqa: E402
+    check_lines as _ontology_check,
+    load_rules as _ontology_rules,
+    load_relations as _ontology_relations,
+    template_attrs as _ontology_attrs,
+)
+from kernel.operator import render_fragment as _render_operator  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -96,24 +103,42 @@ select{font-family:inherit;width:100%;padding:4px;margin:4px 0;box-sizing:border
 .check li.fail{border-left:4px solid #a32d2d;background:#fdf4f4}
 .check .item{font-weight:bold}
 .check .hint{color:#8a5d00}
+/* 算子 · 账本精灵（产品方案 §8）；右上角常驻 24×24；hover 展开 80×80 详情卡。
+   五条红线在 operator.py docstring 中钉死。 */
+.op-container{position:fixed;top:8px;right:16px;z-index:1000;display:inline-block}
+.op-container.op-hidden{display:none}
+.op-container .op-svg{cursor:help;vertical-align:middle}
+.op-container .op-detail{display:none;position:absolute;top:30px;right:0;
+   background:#fff;border:1px solid #9fb0c4;padding:10px 12px;border-radius:4px;
+   box-shadow:0 2px 6px rgba(0,0,0,.08);white-space:nowrap;font-size:13px;
+   color:#1a1a1a}
+.op-container:hover .op-detail,.op-container:focus .op-detail{display:block}
+.op-detail-text{margin-top:6px;color:#1f4e79;font-weight:bold;text-align:center}
+.op-detail-svg{display:flex;justify-content:center}
 </style>"""
 
 
-def _page(title: str, body: str, user: str | None = None) -> HTMLResponse:
+def _page(title: str, body: str, user: str | None = None,
+          show_operator: bool = False) -> HTMLResponse:
     """渲染页面。user 非空时在右上角显示当前身份与退出入口——
-    让「这笔账记在谁名下」始终可见，是审计可追溯的第一道防线。"""
+    让「这笔账记在谁名下」始终可见，是审计可追溯的第一道防线。
+
+    show_operator=True 时在右上角注入算子 fragment（仅 M1 制单页开启，
+    遵守产品方案 §8.2 "不能喧宾夺主"红线；其他页面零改动）。
+    """
     userbar = ""
     if user:
         userbar = (
             f'<div class="userbar">当前身份：<b>{html.escape(user)}</b>'
             f'　<a href="/logout">退出</a></div>'
         )
+    operator_html = _render_operator() if show_operator else ''
     nav = ('<div class=nav><a href="/">工作区</a> · '
            '<a href="/todo">审批待办</a></div>')
     return HTMLResponse(
         f"<!doctype html><html lang=zh><head><meta charset=utf-8>"
         f"<title>{html.escape(title)} · XErp</title>{_CSS}</head>"
-        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{userbar}"
+        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{userbar}{operator_html}"
         f'<div class=wrap>{nav}{body}</div></body></html>'
     )
 
@@ -938,7 +963,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
             ls = s.get(LedgerSet, ls_id)
             if ls is None:
                 return _page("错误", "<p class=err>账套不存在</p>",
-                             request.state.subject_name)
+                             request.state.subject_name, show_operator=True)
             period = s.scalars(
                 select(Period)
                 .where(Period.ledger_set_id == ls_id, Period.status == "OPEN")
@@ -978,7 +1003,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + _voucher_form(ls_id, leaf, period, values, summaries)
             )
             return _page(f"{ls.name} · 新建凭证", body,
-                         request.state.subject_name)
+                         request.state.subject_name, show_operator=True)
 
     @app.get("/ledger/{ls_id}/voucher/new", response_class=HTMLResponse)
     def voucher_new(request: Request, ls_id: str, error: str = ""):
