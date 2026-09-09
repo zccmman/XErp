@@ -64,19 +64,19 @@ def get_tenant_access_token(force: bool = False) -> str:
 
 def build_approval_card(*, voucher_no: str, status: str, summary: str,
                         lines: list[dict], voucher_id: str) -> dict:
-    """审批卡片蓝图：分录明细 + 批准/驳回按钮（value 回传给卡片回调）。"""
+    """审批卡片蓝图：分录明细 + 批准/驳回按钮（value 回传给卡片回调）。
+
+    审批引导行之前插算子状态行（ADR-007 迭代5，读桥最近信号；无桥不显示）——
+    note 元素永不置于末尾：审批引导行必须保持 elements[-1]。
+    """
+    from kernel.operator import card_note
+
     entries = "\n".join(
         f"{ln['account_code']} {ln['account_name']}　"
         f"借 {ln['debit']}　贷 {ln['credit']}"
         for ln in lines
     )
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": "orange",
-            "title": {"tag": "plain_text", "content": f"XErp 审批请求 · {voucher_no}"},
-        },
-        "elements": [
+    elements = [
             {
                 "tag": "div",
                 "fields": [
@@ -105,7 +105,20 @@ def build_approval_card(*, voucher_no: str, status: str, summary: str,
                     + voucher_no + "` 或 `驳回 " + voucher_no + " 意见`",
                 },
             },
-        ],
+        ]
+    note = card_note()
+    if note:
+        elements.insert(-1, {  # 引导行之前——引导行必须保持 elements[-1]
+            "tag": "note",
+            "elements": [{"tag": "plain_text", "content": f"算子 {note}"}],
+        })
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "orange",
+            "title": {"tag": "plain_text", "content": f"XErp 审批请求 · {voucher_no}"},
+        },
+        "elements": elements,
     }
 
 

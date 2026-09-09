@@ -146,12 +146,20 @@ def build_approval_card(
     """模板卡片（button_interaction）：批准/驳回按钮 key 回传给卡片回调。
 
     task_id 用 voucher_id——同一凭证重复推送会覆盖旧卡片，天然幂等。
+    副标题附算子状态行（ADR-007 迭代5，读桥最近信号；无桥不显示）——
+    Boss 在 IM 里也能看到 AI Runtime 当前活动层，与 Web 右上角同源。
     """
+    from kernel.operator import card_note
+
+    sub = f"摘要 {summary or '（无）'} · 状态 {status}"
+    note = card_note()
+    if note:
+        sub += f" · 算子 {note}"
     return {
         "card_type": "button_interaction",
         "source": {"desc": "XErp 智能审批"},
         "main_title": {"title": f"审批请求 · {voucher_no}"},
-        "sub_title_text": f"摘要 {summary or '（无）'} · 状态 {status}",
+        "sub_title_text": sub,
         "horizontal_content_list": [
             {"keyname": f"{ln['account_code']} {ln['account_name']}",
              "value": f"借 {ln['debit']} / 贷 {ln['credit']}"}

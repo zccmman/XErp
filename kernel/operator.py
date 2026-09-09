@@ -414,6 +414,20 @@ def arrive() -> OperatorState:
     return current_state()
 
 
+def card_note() -> str | None:
+    """IM 卡片状态行文案（ADR-007 迭代5）：读桥最近信号——跨进程唯一真源。
+
+    MCP 推审批卡片前必先 push_voucher（写桥 pending），桥上信号恰好是
+    「这张卡为什么发出来」的语义注脚，Boss 在 IM 里也能看到算子状态。
+    无桥/污染 → None（卡片不显示该行）；只读、绝不抛异常——纯增值信息。
+    """
+    last = peek_bridge()
+    if last is None:
+        return None
+    lab = labels_for(OperatorState(last["state"]))
+    return f'{lab["zh-CN"]} / {lab["en-US"]}'
+
+
 __all__ = [
     "OperatorState",
     "IllegalOperatorTransition",
@@ -431,4 +445,5 @@ __all__ = [
     "sync_from_bridge",
     "peek_bridge",
     "arrive",
+    "card_note",
 ]

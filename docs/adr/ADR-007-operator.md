@@ -119,3 +119,11 @@
 - 测试 +8（arrive 单元 4 + Web 联动 4，其中原「非制单页零改动」用例按本迭代语义更新为核心页常驻断言）。
 
 **红线重申不变**：算子只读镜像；结账/冲销/付款等终态动作永远由 Boss 显式确认。
+
+## 迭代 5（2026-09-09）：IM 卡片附算子状态行（四迭代收口）
+
+- **`card_note()`**（kernel/operator.py）：读桥最近信号（`peek_bridge()`——跨进程唯一真源），返回 `zh-CN / en-US` 双语短句；无桥/桥污染 → None，绝不抛异常——状态行是纯增值信息。
+- **企微审批卡**（kernel/wecom.py `build_approval_card`）：`sub_title_text` 追加 ` · 算子 {note}`；无桥时与原版完全一致（向后兼容）。
+- **飞书审批卡**（mcp-server/xerp_mcp/feishu.py `build_approval_card`）：note 元素（`{"tag": "note"}`）**insert(-1) 插在审批引导行之前**——引导行必须保持 `elements[-1]`，分录保持 `elements[3]`，既有卡片消费方（测试/回调解析）零感知。
+- **语义巧合即设计**：MCP 推审批卡片前必先 `push_voucher`（写桥 pending），桥上信号恰好是「这张卡为什么发出来」的语义注脚——Boss 在 IM 里看到的算子状态与 Web 右上角同源。
+- 测试 +7（test_operator_card：card_note 3 + 企微卡 2 + 飞书卡 2，含无桥向后兼容与桥污染免疫）。至此 ADR-007 五条红线下的算子改造全部收口：六态机 → 联动+i18n+跨进程桥 → MCP 暴露 → 全页面常驻+到场听令 → IM 卡片状态行。
