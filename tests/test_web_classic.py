@@ -175,3 +175,26 @@ def test_summary_datalist_offered(client, env):
     t = client.get(f"/ledger/{ls}/voucher/new").text
     assert "datalist id=sumList" in t
     assert "摘要复用测试" in t, "历史摘要应进入候选"
+
+
+# ---------- P1 体验 · 结账回跳闭环 ----------
+
+def test_do_close_success_returns_to_close_page(client, env):
+    """结账成功回 /close：页面自然显示「已结账」横幅（不甩到报表页）。"""
+    ls = env["ids"]["ledger_set_id"]
+    # 该 fixture 的期间若无结账前置障碍，先试直发；闸门不过则本测试跳断言横幅
+    r = client.post(f"/ledger/{ls}/close", data={"year": "2026", "month": "9"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    loc = r.headers["location"]
+    assert loc.startswith(f"/ledger/{ls}/close?year=2026&month=9")
+    if "error=" not in loc:  # 成功路径：横幅可见
+        t = client.get(loc).text
+        assert "已结账" in t
+
+
+def test_close_error_param_rendered(client, env):
+    """close 页消费 error= 参数（失败回跳后上下文完整）。"""
+    ls = env["ids"]["ledger_set_id"]
+    t = client.get(f"/ledger/{ls}/close?error=闸门未过").text
+    assert "闸门未过" in t

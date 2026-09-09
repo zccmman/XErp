@@ -131,6 +131,11 @@ select{font-family:inherit;width:100%;padding:4px;margin:4px 0;box-sizing:border
 .todo-ops{display:flex;gap:8px;align-items:center;margin:0;flex-wrap:wrap}
 .todo-ops input[name=reason]{width:11em;margin:0;padding:3px 6px;font-size:12px}
 .todo-ops button{margin:0;padding:3px 10px;font-size:12px}
+.spark{display:inline-flex;gap:2px;align-items:center;min-width:120px}
+.spark .sp{display:inline-block;height:8px;border-radius:1px}
+.spark .sp-pos{background:#1f4e79}
+.spark .sp-neg{background:#b0413e}
+table.trend td{padding:4px 8px;border:none}
 </style>"""
 
 
@@ -150,7 +155,7 @@ def _page(title: str, body: str, user: str | None = None,
     if user:
         userbar = (
             f'<div class="userbar">当前身份：<b>{html.escape(user)}</b>'
-            f'　<a href="/logout">退出</a></div>'
+            f'　<a href="/help">帮助</a>　<a href="/logout">退出</a></div>'
         )
     if show_operator:
         try:
@@ -600,7 +605,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
     from kernel import webauth
 
     # 无需登录即可访问的路径（企微回调由签名校验保护，不能走会话）
-    PUBLIC_PATHS = ("/login", "/logout", "/wecom/callback")
+    PUBLIC_PATHS = ("/login", "/logout", "/wecom/callback", "/help")
 
     def _is_fresh_install(s: Session) -> bool:
         """库中尚无任何操作身份 —— 即全新安装、从未建账。"""
@@ -705,6 +710,84 @@ def build_app(db_url: str | None = None) -> FastAPI:
         resp = RedirectResponse("/login", status_code=303)
         resp.delete_cookie(webauth.COOKIE_NAME)
         return resp
+
+    # ---------- 帮助中心（产品化收尾：把操作知识放在离操作最近的地方） ----------
+
+    _HELP_BODY = (
+        "<h2>帮助中心</h2>"
+        "<h3>快速上手 · 五步记好第一笔账</h3>"
+        "<ol>"
+        "<li><b>建账套</b>——首页「新建账套」，选小企业会计准则，自动导入科目表。</li>"
+        "<li><b>录期初</b>——账套首页录入各科目期初余额（借贷必须平衡）。"
+        "期初是存量，不是本月发生额。</li>"
+        "<li><b>制单</b>——「制单」页选科目录借贷，试算实时校验；"
+        "往来科目挂上辅助维度（如客户/供应商）后预检自动放行。</li>"
+        "<li><b>审批</b>——制单人「推送审批」，审批人在右上角「待办」"
+        "行内直接同意/驳回（驳回必须写原因，凭证退回草稿）。</li>"
+        "<li><b>记账与月结</b>——批准后「记账」入账；月末进「结账」页，"
+        "四道闸门全绿才放行。</li>"
+        "</ol>"
+        "<h3>凭证的生命周期</h3>"
+        "<table>"
+        "<tr><th>状态</th><th>含义</th><th>谁能操作</th></tr>"
+        "<tr><td>草稿 DRAFT</td><td>已创建未提交；被驳回/被撤回也回到这里</td>"
+        "<td>制单人可编辑、推送、撤回</td></tr>"
+        "<tr><td>待审 PUSHED</td><td>已推送等审批</td>"
+        "<td>审批人同意/驳回；制单人只能撤回</td></tr>"
+        "<tr><td>已批准 APPROVED</td><td>审批通过待记账</td>"
+        "<td>记账（POSTED）后进入正式账簿</td></tr>"
+        "<tr><td>已记账 POSTED</td><td>进入报表与余额；不可改</td>"
+        "<td>红冲需另做冲销凭证</td></tr>"
+        "</table>"
+        "<p class=hint>右上角的<b>算子</b>是这套流程的只读状态灯："
+        "听令=页面就绪 · 起草中=你在制单/录期初 · 待审=有单等你批 · "
+        "异常=检查提示 · 离线=AI 会话结束。它从不代替你做决定。</p>"
+        "<h3>审批的三条通道</h3>"
+        "<ul>"
+        "<li><b>Web 待办</b>——右上角「待办」，行内一步审批，处理完自动回队列。</li>"
+        "<li><b>企业微信卡片</b>——推送后卡片上直接点批准/驳回。</li>"
+        "<li><b>飞书消息</b>——回复「同意 凭证号」或「驳回 凭证号 原因」。</li>"
+        "</ul>"
+        "<p class=hint>无论哪条通道，裁决都走同一个状态机："
+        "不能审自己的单，Agent 不能代审。</p>"
+        "<h3>月末结账 · 四道闸门</h3>"
+        "<ol>"
+        "<li><b>上月已结账</b>——按月顺序结，不能跳月。</li>"
+        "<li><b>试算平衡</b>——借方合计 = 贷方合计。</li>"
+        "<li><b>损益已结转</b>——收入费用类科目余额先结入本年利润。</li>"
+        "<li>（体检页会一次列出全部未达项，改完立即重试，不丢上下文。）</li>"
+        "</ol>"
+        "<h3>三表预测 · 假设术语</h3>"
+        "<table>"
+        "<tr><th>假设</th><th>含义</th></tr>"
+        "<tr><td>收入增速</td><td>未来每期收入相对上期的增长率（%）</td></tr>"
+        "<tr><td>毛利率</td><td>1 − 营业成本/营业收入（%）</td></tr>"
+        "<tr><td>费用率</td><td>现金费用（不含折旧）/营业收入（%）</td></tr>"
+        "<tr><td>应收/应付/存货天数</td><td>周转天数——决定收入何时变成现金</td></tr>"
+        "<tr><td>资本开支率/年折旧率</td><td>投资与固定资产摊耗的速度（%）</td></tr>"
+        "</table>"
+        "<p class=hint>预测页默认假设由你的实际三表推导；"
+        "在页面表单里改完点「按此假设预测」即时重算，三情景（基准/乐观/悲观）"
+        "由基准假设按固定系数派生。</p>"
+        "<h3>常见问题</h3>"
+        "<dl>"
+        "<dt>为什么往来科目提示要挂辅助维度？</dt>"
+        "<dd>应收应付按客户/供应商分开管理是报表重分类的前提；"
+        "制单页每行有「辅助维度」输入框，格式 k=v，分号分隔。</dd>"
+        "<dt>期初录错了怎么办？</dt>"
+        "<dd>用「红字冲销」调整期初，不要直接改原凭证——调整会生成"
+        "真实的冲销凭证留痕。</dd>"
+        "<dt>驳回的单子去哪了？</dt>"
+        "<dd>回到制单人的「草稿」里，附驳回原因；改完重新推送即可。</dd>"
+        "<dt>算子显示「异常」但我找不到问题？</dt>"
+        "<dd>回到刚才操作的页面看红色提示条；异常态只标记，不拦截操作。</dd>"
+        "</dl>"
+    )
+
+    @app.get("/help", response_class=HTMLResponse)
+    def help_page(request: Request):
+        """帮助中心——纯静态知识页，不依赖账套；userbar 全局可达。"""
+        return _page("帮助中心", _HELP_BODY, request.state.subject_name)
 
     # ---------- 工作区 ----------
 
@@ -1316,11 +1399,17 @@ def build_app(db_url: str | None = None) -> FastAPI:
 
     @app.get("/ledger/{ls_id}/forecast", response_class=HTMLResponse)
     def forecast_page(request: Request, ls_id: str, year: int = 0,
-                      month: int = 0, horizon: int = 6, scenario: str = "base"):
+                      month: int = 0, horizon: int = 6, scenario: str = "base",
+                      custom: str = "", rev_growth: str = "",
+                      gross_margin: str = "", opex_ratio: str = "",
+                      tax_rate: str = "", ar_days: str = "", ap_days: str = "",
+                      inv_days: str = "", capex_pct: str = "",
+                      dep_rate: str = ""):
         """三表前向预测页——从实际三表外推未来 N 期。
 
         服务端直调内核 forecast 引擎（不经 MCP）。基准期默认取最近 OPEN 期；
         情景 base/best/worst 渲染三表明细（期间为列），all 渲染三情景对比表。
+        custom=1 时表单驱动假设生效（百分比按 % 输入折算），否则用实际数推导。
         """
         from kernel.forecast import forecast_from_actuals
 
@@ -1357,11 +1446,55 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"<a href='/ledger/{ls_id}/reports'>账簿报表</a></p>"
                 )
 
+            # 驱动假设：默认由实际数推导；custom=1 时按表单输入覆盖。
+            # 表单全部以 % / 天 为单位输入（会计视角），折算为内核小数。
+            # 任何一格填错/漏填都退回推导默认——预测永不因输入失败而拒绝服务。
+            def _dec(v: str, scale: str = "1") -> Decimal | None:
+                v = (v or "").strip().rstrip("%")
+                if not v:
+                    return None
+                try:
+                    d = Decimal(v)
+                except Exception:  # noqa: BLE001
+                    return None
+                return d / 100 if scale == "%" else d
+
+            assumptions_override = None
+            if custom == "1":
+                from kernel.forecast import Assumptions as _Asm
+
+                fields = {
+                    "rev_growth": _dec(rev_growth, "%"),
+                    "gross_margin": _dec(gross_margin, "%"),
+                    "opex_ratio": _dec(opex_ratio, "%"),
+                    "tax_rate": _dec(tax_rate, "%"),
+                    "capex_pct": _dec(capex_pct, "%"),
+                    "dep_rate": _dec(dep_rate, "%"),
+                    "ar_days": _dec(ar_days),
+                    "ap_days": _dec(ap_days),
+                    "inv_days": _dec(inv_days),
+                }
+                overrides = {}
+                for k, v in fields.items():
+                    if v is None:
+                        continue
+                    if k.endswith("_days"):
+                        v = max(1, min(int(v), 365))
+                    else:
+                        v = max(Decimal("-1"), min(v, Decimal("10")))
+                    overrides[k] = v
+                if overrides:
+                    try:
+                        assumptions_override = _Asm(**overrides)
+                    except Exception:  # noqa: BLE001
+                        assumptions_override = None
+
             try:
                 result = forecast_from_actuals(
                     s, ls_id, base.year, base.month,
                     horizon=horizon, scenario=scenario,
                     standard=ls.accounting_standard,
+                    assumptions_override=assumptions_override,
                 )
             except Exception as e:  # noqa: BLE001
                 return _page(
@@ -1383,14 +1516,57 @@ def build_app(db_url: str | None = None) -> FastAPI:
                                ("worst", "悲观"), ("all", "三情景对比"))
                 if sc != scenario
             )
+            # 假设来源：单情景在顶层；三情景对比在 scenarios.base 里
+            a = (result["assumptions"] if scenario != "all"
+                 else result["scenarios"]["base"]["assumptions"])
+
+            def _pct(v) -> str:
+                """内核小数 → 表单 % 值（0.03 → "3"，去尾零）。"""
+                return str((Decimal(str(v)) * 100).normalize())
+
+            is_custom = assumptions_override is not None
+            asm_badge = (
+                '<span class=badge>自定义假设</span>' if is_custom
+                else '<span class=badge>自动推导假设</span>'
+            )
+            _scn_cur = scenario if scenario in ("best", "base", "worst") else "base"
             form = (
                 f'<form method=get action="/ledger/{ls_id}/forecast" class=ops>'
                 f'<input type=hidden name=year value="{base.year}">'
                 f'<input type=hidden name=month value="{base.month}">'
-                f'<input type=hidden name=scenario value="{scenario}">'
+                f'<input type=hidden name=custom value="1">'
                 f'预测期数 <input type=number name=horizon min=1 max=36 '
-                f'value="{horizon}" style="width:5em"> 个月 '
-                "<button type=submit>重新预测</button></form>"
+                f'value="{horizon}" style="width:5em"> 个月 · '
+                f'情景 <select name=scenario>'
+                + "".join(
+                    f'<option value="{sc}"'
+                    f'{" selected" if sc == _scn_cur else ""}>{zh}</option>'
+                    for sc, zh in (("base", "基准"), ("best", "乐观"),
+                                   ("worst", "悲观"))
+                )
+                + "</select><br>"
+                "收入增速% <input type=number step=0.1 name=rev_growth "
+                f'value="{_pct(a["rev_growth"])}" style="width:6em"> · '
+                "毛利率% <input type=number step=0.1 name=gross_margin "
+                f'value="{_pct(a["gross_margin"])}" style="width:6em"> · '
+                "费用率% <input type=number step=0.1 name=opex_ratio "
+                f'value="{_pct(a["opex_ratio"])}" style="width:6em"> · '
+                "税率% <input type=number step=0.1 name=tax_rate "
+                f'value="{_pct(a["tax_rate"])}" style="width:6em"> · '
+                "资本开支率% <input type=number step=0.1 name=capex_pct "
+                f'value="{_pct(a["capex_pct"])}" style="width:6em"> · '
+                "年折旧率% <input type=number step=0.1 name=dep_rate "
+                f'value="{_pct(a["dep_rate"])}" style="width:6em"><br>'
+                "应收天数 <input type=number name=ar_days min=1 max=365 "
+                f'value="{a["ar_days"]}" style="width:5em"> · '
+                "应付天数 <input type=number name=ap_days min=1 max=365 "
+                f'value="{a["ap_days"]}" style="width:5em"> · '
+                "存货天数 <input type=number name=inv_days min=1 max=365 "
+                f'value="{a["inv_days"]}" style="width:5em"> '
+                "<button type=submit>按此假设预测</button> "
+                f'<a href="/ledger/{ls_id}/forecast?year={base.year}'
+                f'&month={base.month}&horizon={horizon}">恢复默认推导</a>'
+                "</form>"
             )
 
             def _m(v) -> str:
@@ -1437,10 +1613,11 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"{horizon} 期）</h2>"
                     f"<p>基准期切换：{ptabs}</p>"
                     f"<p>情景切换：{stabs}</p>{form}"
+                    f"<p class=hint>{asm_badge}</p>"
                     f"<h3>对比 <span class=badge>{badge}</span></h3>"
                     f"{_grid(labels, cmp_rows)}"
-                    "<p class=hint>假设由实际三表自动推导；调整假设请走 MCP "
-                    "forecast_statements 工具（assumptions_json）。</p>"
+                    "<p class=hint>假设由实际三表自动推导（或取自定义值）；"
+                    "切到单情景页可直接在表单里调整假设。</p>"
                 )
             else:
                 zh = _FORECAST_SCN_ZH[scenario]
@@ -1476,7 +1653,6 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 ]
                 all_ok = all(p["balance_sheet"]["balanced"] for p in per)
                 badge = "✅ 全期平衡" if all_ok else "❌ 存在不平衡期间"
-                a = result["assumptions"]
                 asm_line = (
                     f"假设：收入增速 {a['rev_growth']} · 毛利率 {a['gross_margin']} · "
                     f"费用率 {a['opex_ratio']} · 税率 {a['tax_rate']} · "
@@ -1484,25 +1660,55 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"存货 {a['inv_days']} 天 · 资本开支率 {a['capex_pct']} · "
                     f"年折旧率 {a['dep_rate']}"
                 )
+
+                def _spark(vals: list) -> str:
+                    """纯 HTML 迷你趋势条：宽度按|max|归一，正蓝负红，无外部资源。"""
+                    live = [v for v in vals if v is not None]
+                    if len(live) < 2:
+                        return ""
+                    mx = max(abs(v) for v in live) or 1
+                    bars = ""
+                    for v in vals:
+                        if v is None:
+                            continue
+                        w = max(3, int(abs(v) / mx * 100))
+                        cls = "sp-pos" if v >= 0 else "sp-neg"
+                        bars += f'<i class="sp {cls}" style="width:{w}%"></i>'
+                    return f'<span class=spark>{bars}</span>'
+
+                trend = (
+                    "<h3>趋势</h3><table class=trend>"
+                    f"<tr><td>净利润</td><td>"
+                    f"{_spark([p['income_statement']['net_profit'] for p in per])}"
+                    f"</td><td style=text-align:right>"
+                    f"{_m(per[-1]['income_statement']['net_profit'])}</td></tr>"
+                    f"<tr><td>期末现金</td><td>"
+                    f"{_spark([p['cash_flow']['closing_cash'] for p in per])}"
+                    f"</td><td style=text-align:right>"
+                    f"{_m(per[-1]['cash_flow']['closing_cash'])}</td></tr>"
+                    "</table>"
+                )
                 body = (
                     f"{_nav()}<h2>{html.escape(ls.name)} · {zh}情景三表预测"
                     f"（自 {base.year}-{base.month:02d} 起 {horizon} 期）</h2>"
                     f"<p>基准期切换：{ptabs}</p>"
                     f"<p>情景切换：{stabs}</p>{form}"
-                    f"<p class=hint>{asm_line}</p>"
+                    f"<p class=hint>{asm_badge} {asm_line}</p>"
+                    f"{trend}"
                     f"<h3>利润表</h3>{_grid(labels, inc_rows)}"
                     f"<h3>资产负债表 <span class=badge>{badge}</span></h3>"
                     f"{_grid(labels, bs_rows)}"
                     f"<h3>现金流量表</h3>{_grid(labels, cf_rows)}"
                     "<p class=hint>勾稽：净利润→留存收益→权益；折旧加回经营现金流；"
-                    "营运资本变动连接权责与收付。假设调整请走 MCP "
-                    "forecast_statements 工具（assumptions_json）。</p>"
+                    "营运资本变动连接权责与收付。假设直接在上方表单调整，"
+                    "改完点「按此假设预测」即时重算。</p>"
                 )
             return _page(f"{ls.name} 三表预测", body, request.state.subject_name,
                          show_operator=True)
 
     @app.get("/ledger/{ls_id}/close", response_class=HTMLResponse)
-    def close_page(request: Request, ls_id: str, year: int = 0, month: int = 0):
+    def close_page(request: Request, ls_id: str, year: int = 0, month: int = 0,
+                   error: str = ""):
         """月末结账体检页——怀旧设计里最有仪式感的一环。
 
         老软件的价值不在于点「结账」这个动作，而在于**点之前先告诉你还差什么**。
@@ -1574,7 +1780,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"<h2>月末结账　{period.year}-{period.month:02d}"
                 f"（{period_zh(period.status)}）</h2>"
                 f"<p>期间切换：{ptabs}</p>"
-                f"{banner}<ul class=check>{lis}</ul>{action}"
+                + (f'<p class="err">{html.escape(error)}</p>' if error else "")
+                + f"{banner}<ul class=check>{lis}</ul>{action}"
             )
             return _page("月末结账", body, request.state.subject_name,
                          show_operator=True)
@@ -1587,18 +1794,17 @@ def build_app(db_url: str | None = None) -> FastAPI:
         from kernel.posting import PostingError
 
         actor = {"type": "user", "id": request.state.subject_id}
+        back = f"/ledger/{ls_id}/close?year={year}&month={month}"
         try:
             with session() as s:
                 close_period(s, ledger_set_id=ls_id, year=year, month=month, actor=actor)
                 s.commit()
         except PostingError as e:
-            return RedirectResponse(
-                f"/ledger/{ls_id}/reports?year={year}&month={month}"
-                f"&error={e.message_zh}",
-                status_code=303,
-            )
-        return RedirectResponse(f"/ledger/{ls_id}/reports?year={year}&month={month}",
-                                status_code=303)
+            # 失败回结账页：闸门清单还在原地，改完立即重试，不丢上下文
+            return RedirectResponse(f"{back}&error={quote(e.message_zh)}",
+                                    status_code=303)
+        # 成功也回结账页：period 已转 CLOSED，页面自然显示「已结账」横幅
+        return RedirectResponse(back, status_code=303)
 
     @app.get("/voucher/{vid}", response_class=HTMLResponse)
     def voucher_detail(request: Request, vid: str, error: str = ""):

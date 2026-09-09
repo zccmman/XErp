@@ -157,3 +157,64 @@ def test_forecast_explicit_base_period(client, env):
     r = client.get(f"/ledger/{ls}/forecast?year=2026&month=9")
     assert r.status_code == 200
     assert "自 2026-09 起" in r.text
+
+
+# ---------- P1 深化 · Web 假设编辑器 + 趋势 sparkline ----------
+
+def test_forecast_form_assumption_editor_present(client, env):
+    """表单含全部驱动假设输入（% 单位）与恢复默认链接。"""
+    ls = env["ids"]["ledger_set_id"]
+    t = client.get(f"/ledger/{ls}/forecast").text
+    for name in ("rev_growth", "gross_margin", "opex_ratio", "tax_rate",
+                 "capex_pct", "dep_rate", "ar_days", "ap_days", "inv_days"):
+        assert f'name={name}' in t, name
+    assert 'name=custom value="1"' in t
+    assert "恢复默认推导" in t
+
+
+def test_forecast_default_badge_auto_derived(client, env):
+    """默认进入显示「自动推导假设」徽标。"""
+    ls = env["ids"]["ledger_set_id"]
+    t = client.get(f"/ledger/{ls}/forecast").text
+    assert "自动推导假设" in t and "自定义假设" not in t
+
+
+def test_forecast_custom_assumptions_applied(client, env):
+    """custom=1 + 表单值 → 自定义徽标 + 假设回显为折算后小数。"""
+    ls = env["ids"]["ledger_set_id"]
+    t = client.get(
+        f"/ledger/{ls}/forecast?custom=1&rev_growth=5&gross_margin=40"
+        "&ar_days=45&horizon=3"
+    ).text
+    assert "自定义假设" in t
+    assert "收入增速 0.05" in t
+    assert "毛利率 0.4" in t
+    assert "应收 45 天" in t
+    assert "自动推导假设" not in t
+
+
+def test_forecast_custom_partial_fills_rest_from_derived(client, env):
+    """只填部分假设：未填项回退推导默认，预测不拒服务。"""
+    ls = env["ids"]["ledger_set_id"]
+    t = client.get(
+        f"/ledger/{ls}/forecast?custom=1&rev_growth=10&horizon=2"
+    ).text
+    assert "自定义假设" in t
+    assert "收入增速 0.1" in t
+
+
+def test_forecast_custom_invalid_input_falls_back(client, env):
+    """非法输入（abc）→ 该项回退推导默认，页面正常渲染。"""
+    ls = env["ids"]["ledger_set_id"]
+    t = client.get(
+        f"/ledger/{ls}/forecast?custom=1&rev_growth=abc&horizon=2"
+    ).text
+    assert "自动推导假设" in t  # 全部无效 = 无 override
+
+
+def test_forecast_trend_sparkline(client, env):
+    """单情景页含趋势区：净利润/期末现金 spark 条。"""
+    ls = env["ids"]["ledger_set_id"]
+    t = client.get(f"/ledger/{ls}/forecast").text
+    assert "<h3>趋势</h3>" in t
+    assert 'class="sp sp-pos"' in t or 'class="sp sp-neg"' in t
