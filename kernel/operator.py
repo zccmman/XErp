@@ -261,6 +261,11 @@ def state_label(state: OperatorState) -> str:
     return _LABELS[_locale][state]
 
 
+def labels_for(state: OperatorState) -> dict[str, str]:
+    """给定状态的全部语言文案（工具输出 label_zh/label_en 用）。"""
+    return {lang: _LABELS[lang][state] for lang in sorted(_LABELS)}
+
+
 def render_svg(state: OperatorState | None = None) -> str:
     """渲染指定状态的 SVG 字符串（无外层容器，inline 用）。"""
     s = state or current_state()
@@ -355,6 +360,24 @@ def signal(target: OperatorState, source: str = "mcp") -> bool:
 _applied_ts: float = 0.0
 
 
+def peek_bridge() -> dict | None:
+    """读桥最近信号（不应用）。供 ai_runtime_state 工具展示「谁最后说了什么」。
+
+    无桥/坏载荷/未知状态值 → None。
+    """
+    try:
+        raw = json.loads(_bridge_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("state") not in OperatorState._value2member_map_:
+        return None
+    return {
+        "state": raw["state"],
+        "source": raw.get("source", ""),
+        "ts": float(raw.get("ts", 0)),
+    }
+
+
 def sync_from_bridge() -> OperatorState | None:
     """读桥并合法化应用（Web 渲染前调用）。
 
@@ -388,6 +411,8 @@ __all__ = [
     "set_locale",
     "current_locale",
     "state_label",
+    "labels_for",
     "signal",
     "sync_from_bridge",
+    "peek_bridge",
 ]

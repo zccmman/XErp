@@ -1,6 +1,6 @@
 # ADR-007 · AI Runtime 具象：算子 · 账本精灵
 
-> 决策日期：2026-09-09 · 基线：ledgeros `@52351ed` · 状态：**已接受**
+> 决策日期：2026-09-09 · 基线：ledgeros `@52351ed` · 状态：**已接受**（迭代2/3 补记于同日）
 
 ## 背景
 
@@ -62,7 +62,24 @@
 ## 后续迭代（不在本 ADR 范围）
 
 - ~~**迭代 2**：D3 联动 + i18n 资源注入~~ → **已于 2026-09-09 落地，见下节**
-- **迭代 3**（C 完整版）：MCP `ai_runtime.state` 工具暴露 + IM 卡片显示算子状态 + LLM 通道 offline 信号接入
+- ~~**迭代 3**：MCP 工具暴露~~ → **已于 2026-09-09 落地（`ai_runtime_state`，见下节）**；IM 卡片显示算子状态仍开放
+
+## 迭代 3 落地记录（2026-09-09）：MCP 暴露 `ai_runtime_state`
+
+**工具语义**（minimal 档，计数 17/32/52 → **18/33/53**）：
+
+- 无参 = **读**：返回 `state` + `label_zh`/`label_en`（`labels_for()` 全语言取词）+ `last_signal`（`peek_bridge()` 读桥最近信号，不应用）——AI 口述与用户眼里的算子保持一致；
+- 带 `state` = **写**：Agent 声明自己的活动层，写桥（source=`agent`），Web 渲染时合法化应用。offline 触发路径由此打通——会话结束/LLM 不可用时 Agent 手动声明（原"LLM ping"落地方案：代码库无 LLM 运行时，不设自动探针，声明权在 Agent）。
+
+**语义守卫**（`BAD_STATE` 拒绝）：
+
+- `pending` 拒绝手写——待审由 `push_voucher` 自动联动，保持语义单一；
+- `idle` 拒绝手写——复位态归系统管理；
+- 未知值拒绝（合法值随错误信息回显）。
+
+**验证**：`tests/test_ai_runtime_state.py` 5 项（读默认态/写桥 source=agent/offline 直达 Web 可应用/pending+idle+未知三类拒绝且不落桥/桥污染免疫）+ `test_tool_profiles` 计数同步。红线不破：状态只动信号桥，不碰凭证与金额；终态动作仍由 Boss 确认。
+
+**仍开放**：IM 卡片显示算子状态；Web 焦点联动 LISTENING（目前该态仅经桥可达）。
 
 ## 迭代 2 落地记录（2026-09-09）
 

@@ -1719,6 +1719,60 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("SEMANTICS_FAILED", f"科目语义查询失败：{e}")
 
     @mcp.tool()
+    def ai_runtime_state(state: str | None = None) -> dict:
+        """读/写算子（AI Runtime 具象）状态（ADR-007 迭代3）。
+
+        不带参数 → 读：返回 Web 端右上角算子当前状态与最近一次信号
+        （state/label_zh/label_en/last_signal）——AI 可借此知道「用户
+        眼里的算子此刻是什么状态」，让口述与视觉一致。
+
+        带 state 参数 → 写：Agent 声明自己的活动层，写进跨进程信号桥，
+        Web 渲染时合法化应用。合法值与语义：
+            listening  正在听令（会话开始/收到指令）
+            drafting   正在起草（进入制单推理前声明；凭证落库另有自动联动）
+            alert      发现异常需要 Boss 注意（自动联动通常已覆盖）
+            offline    会话结束/LLM 不可用（离线态，仅能回 idle）
+        pending 不接受手写——待审由 push_voucher 自动联动，保持语义单一。
+
+        状态只表达「AI Runtime 当前活动」，不联动任何写动作；落账/
+        结账等终态动作仍由 Boss 显式确认。
+        """
+        from kernel.operator import (
+            OperatorState,
+            current_state,
+            labels_for,
+            peek_bridge,
+            signal,
+        )
+
+        last = peek_bridge()
+        if state is None:
+            cur = current_state()
+            labels = labels_for(cur)
+            return _ok(
+                state=cur.value,
+                label_zh=labels["zh-CN"],
+                label_en=labels["en-US"],
+                last_signal=last,
+            )
+        try:
+            target = OperatorState(state.strip())
+        except ValueError:
+            legal = "/".join(s.value for s in OperatorState)
+            return _err("BAD_STATE", f"未知算子状态 {state!r}（合法值：{legal}）")
+        if target is OperatorState.PENDING:
+            return _err(
+                "BAD_STATE",
+                "pending 由 push_voucher 自动联动，不接受手写（保持语义单一）",
+            )
+        if target is OperatorState.IDLE:
+            return _err("BAD_STATE", "idle 是复位态，由系统管理，不接受手写")
+        signal(target, source="agent")
+        labels = labels_for(target)
+        return _ok(state=target.value, label_zh=labels["zh-CN"],
+                   label_en=labels["en-US"], last_signal=last)
+
+    @mcp.tool()
     def suggest_summaries(
         ledger_set_id: str, account_code: str | None = None, limit: int = 5
     ) -> dict:
