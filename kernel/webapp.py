@@ -38,8 +38,19 @@ from kernel.ontology import (  # noqa: E402
     load_relations as _ontology_relations,
     template_attrs as _ontology_attrs,
 )
+from kernel.operator import arrive as _operator_arrive  # noqa: E402
 from kernel.operator import render_fragment as _render_operator  # noqa: E402
 from kernel.operator import sync_from_bridge as _operator_sync  # noqa: E402
+
+
+def _op_event(state) -> None:
+    """进程内写算子状态，非法转移静默（ADR-007：状态机绝不阻塞业务）。"""
+    from kernel.operator import IllegalOperatorTransition, set_state
+
+    try:
+        set_state(state)
+    except IllegalOperatorTransition:
+        pass
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,10 +135,12 @@ def _page(title: str, body: str, user: str | None = None,
     """渲染页面。user 非空时在右上角显示当前身份与退出入口——
     让「这笔账记在谁名下」始终可见，是审计可追溯的第一道防线。
 
-    show_operator=True 时在右上角注入算子 fragment（仅 M1 制单页开启，
-    遵守产品方案 §8.2 "不能喧宾夺主"红线；其他页面零改动）。
+    show_operator=True 时在右上角注入算子 fragment（M1 制单 / M2 期初 /
+    M3 月结 / M4 报表四类核心页开启，遵守产品方案 §8.2 "不能喧宾夺主"红线）。
     渲染前同步算子信号桥：MCP 进程（create_voucher / push_voucher /
-    anomaly_scan）写、Web 进程读——跨进程状态经此单向汇合（ADR-007 迭代2）。
+    anomaly_scan）写、Web 进程读——跨进程状态经此单向汇合（ADR-007 迭代2）；
+    随后「用户到场」：仅 IDLE/OFFLINE 升 LISTENING，不抹掉起草/待审/异常
+    等有效信息（ADR-007 迭代4）。
     """
     userbar = ""
     if user:
@@ -138,6 +151,7 @@ def _page(title: str, body: str, user: str | None = None,
     if show_operator:
         try:
             _operator_sync()
+            _operator_arrive()
         except Exception:  # noqa: BLE001 桥失败绝不阻塞渲染
             pass
     operator_html = _render_operator() if show_operator else ''
@@ -893,6 +907,12 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 else None
             )
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            # 算子联动（迭代4）：页面带错误 = 异常态（IDLE/LISTENING/DRAFTING
+            # → ALERT 均合法；PENDING 保持——待审信息比刚发生的报错更值得盯着）。
+            if error:
+                from kernel.operator import OperatorState
+
+                _op_event(OperatorState.ALERT)
             plabel = (
                 f"{period.year}-{period.month:02d}" if period is not None else "无期间"
             )
@@ -923,13 +943,15 @@ def build_app(db_url: str | None = None) -> FastAPI:
 {_opening_form(ls_id, opening_vouchers)}
 """
             )
-            return _page(f"{ls.name}", body, request.state.subject_name)
+            return _page(f"{ls.name}", body, request.state.subject_name,
+                         show_operator=True)
 
     @app.post("/ledger/{ls_id}/opening")
     def opening_import(
         request: Request, ls_id: str, lines_text: str = Form(""), force: str = Form("")
     ):
         from kernel.opening import import_opening_balances
+        from kernel.operator import OperatorState
         from kernel.posting import PostingError
         back = f"/ledger/{ls_id}"
         actor = {"type": "user", "id": request.state.subject_id}
@@ -958,6 +980,9 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 s.commit()
         except PostingError as e:
             return RedirectResponse(f"{back}?error={e.message_zh}", status_code=303)
+        # 算子联动（迭代4）：期初导入成功 = 存量起草完成（RED lines：终态
+        # 冲销/过账已由内核落凭证，这里只如实呈现「起草完成」这一层）。
+        _op_event(OperatorState.DRAFTING)
         return RedirectResponse(back, status_code=303)
 
     # ---------- 制单（G1 制单闭环） ----------
@@ -1139,14 +1164,11 @@ def build_app(db_url: str | None = None) -> FastAPI:
                                         values=values)
         # 算子联动（ADR-007 迭代2）：制单成功 = 起草完成；直接提交 = 待审。
         # 状态机是进程内单点，本进程写本进程渲；非法转移（如当前 offline）静默忽略。
-        from kernel.operator import IllegalOperatorTransition, OperatorState, set_state
+        from kernel.operator import OperatorState
 
-        try:
-            set_state(OperatorState.DRAFTING)
-            if action == "submit":
-                set_state(OperatorState.PENDING)
-        except IllegalOperatorTransition:
-            pass
+        _op_event(OperatorState.DRAFTING)
+        if action == "submit":
+            _op_event(OperatorState.PENDING)
         return RedirectResponse(f"/voucher/{vid}", status_code=303)
 
     # ---------- 凭证详情 ----------
@@ -1281,7 +1303,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"{cf['reconcile']['net_increase']:,.2f} = 期末现金 "
                 f"{cf['reconcile']['closing_cash']:,.2f}</p>"
             )
-            return _page(f"{ls.name} 报表", body, request.state.subject_name)
+            return _page(f"{ls.name} 报表", body, request.state.subject_name,
+                         show_operator=True)
 
     # ---------- 三表预测（P1-01 Web 入口） ----------
 
@@ -1471,7 +1494,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     "营运资本变动连接权责与收付。假设调整请走 MCP "
                     "forecast_statements 工具（assumptions_json）。</p>"
                 )
-            return _page(f"{ls.name} 三表预测", body, request.state.subject_name)
+            return _page(f"{ls.name} 三表预测", body, request.state.subject_name,
+                         show_operator=True)
 
     @app.get("/ledger/{ls_id}/close", response_class=HTMLResponse)
     def close_page(request: Request, ls_id: str, year: int = 0, month: int = 0):
@@ -1548,7 +1572,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"<p>期间切换：{ptabs}</p>"
                 f"{banner}<ul class=check>{lis}</ul>{action}"
             )
-            return _page("月末结账", body, request.state.subject_name)
+            return _page("月末结账", body, request.state.subject_name,
+                         show_operator=True)
 
     @app.post("/ledger/{ls_id}/close")
     def do_close(

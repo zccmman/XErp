@@ -103,3 +103,19 @@
 **OFFLINE 保留**：代码库尚无 LLM 运行时（anomaly 双通道的 LLM 侧未落地），offline 信号的原语（`signal(OFFLINE)`）已就绪，触发点留待迭代 3 AI Runtime LLM 层接入。
 
 **红线重申**：算子仍是只读镜像——创建/审批/落账等终态动作永远由 Boss 显式确认，信号只反映已发生的事实。
+## 迭代 3（2026-09-09，commit 87b2a73）：MCP 暴露 ai_runtime_state
+
+- 新工具 `ai_runtime_state`（minimal 档，计数 18/33/53）：**无参=读**（state + label_zh/label_en + last_signal，AI 口述与用户眼里一致）；**带 state=写**（Agent 声明活动层，写桥 source=agent）。
+- **offline 触发路径打通**：会话结束/LLM 不可用由 Agent 手动声明（无 LLM 运行时不设自动探针，声明权在 Agent）。语义守卫：`pending` 拒绝手写（push_voucher 自动联动）、`idle` 拒绝手写（复位态归系统）。
+- kernel/operator.py 新增 `peek_bridge()`（读桥最近信号不应用）、`labels_for()`（全语言取词）。
+
+## 迭代 4（2026-09-09）：全页面常驻 + 到场听令
+
+- **页面常驻扩到 M1-M4 四类核心页**：首页/期初（dashboard）、制单、报表（reports）、三表预测（forecast）、月末结账（close）。`_page(show_operator=True)` 渲染前 `_operator_sync()` + `arrive()`。
+- **`arrive()`（用户到场听令，只升不压）**：仅 IDLE→LISTENING、OFFLINE→(IDLE)→LISTENING；DRAFTING/PENDING/ALERT 是有效信息，浏览页面不抹掉——期初导入后去报表页，算子仍显示「起草中」。
+- **新增联动 2 处**：期初导入成功 → `drafting`（存量起草完成；进程内 `_op_event` 直写）；页面带 `error=` 参数（期初/月结失败重定向回首页）→ `alert`（PENDING 态除外——待审信息比刚发生的报错更值得盯着）。
+- **月末结账成功不写 drafting**：结转凭证直接 POSTED（与期初导入同口径），无起草环节，如实呈现、不加戏。
+- webapp 收敛 `_op_event()` helper（非法转移静默），制单回调重复 try/except 一并归一。
+- 测试 +8（arrive 单元 4 + Web 联动 4，其中原「非制单页零改动」用例按本迭代语义更新为核心页常驻断言）。
+
+**红线重申不变**：算子只读镜像；结账/冲销/付款等终态动作永远由 Boss 显式确认。

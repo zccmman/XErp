@@ -77,14 +77,14 @@ def test_voucher_new_page_contains_operator_container(client, env):
     assert "算子" in r.text  # 中文标签出现
 
 
-def test_other_pages_do_not_contain_operator(client, env):
-    """非制单页零改动：不含算子容器（最小爆炸半径）。"""
-    r = client.get(f"/ledger/{env['ids']['ledger_set_id']}")
-    assert r.status_code == 200
-    assert 'class="op-container' not in r.text
-    r2 = client.get(f"/ledger/{env['ids']['ledger_set_id']}/reports")
-    assert r2.status_code == 200
-    assert 'class="op-container' not in r2.text
+def test_core_pages_show_operator(client, env):
+    """迭代4：M2 首页/期初、M4 报表、三表预测、M3 月结页接入算子常驻。"""
+    ls = env["ids"]["ledger_set_id"]
+    for url in (f"/ledger/{ls}", f"/ledger/{ls}/reports",
+                f"/ledger/{ls}/forecast", f"/ledger/{ls}/close"):
+        r = client.get(url)
+        assert r.status_code == 200, (url, r.text)
+        assert 'class="op-container' in r.text, url
 
 
 def test_hidden_switch_renders_empty_container(client, env, monkeypatch):
@@ -168,3 +168,54 @@ def test_page_syncs_mcp_bridge_signal(client, env):
     assert op.signal(op.OperatorState.PENDING, source="mcp") is True
     page = client.get(f"/ledger/{env['ids']['ledger_set_id']}/voucher/new")
     assert 'data-state="pending"' in page.text
+
+
+# ---------- 迭代4 · 全页面常驻 + 到场听令 + 期初/错误联动 ----------
+
+def test_dashboard_arrives_listening(client, env):
+    """首页（含期初表单）渲染 → 算子从 IDLE 升 LISTENING（用户到场听令）。"""
+    from kernel import operator as op
+
+    r = client.get(f"/ledger/{env['ids']['ledger_set_id']}")
+    assert r.status_code == 200, r.text
+    assert 'data-state="listening"' in r.text
+    assert op.current_state() == op.OperatorState.LISTENING
+
+
+def test_arrive_does_not_clobber_pending_on_page(client, env):
+    """PENDING 态浏览核心页：到场听令不抹掉待审信息（只升不压）。"""
+    from kernel import operator as op
+
+    op.set_state(op.OperatorState.DRAFTING)
+    op.set_state(op.OperatorState.PENDING)
+    page = client.get(f"/ledger/{env['ids']['ledger_set_id']}/reports")
+    assert 'data-state="pending"' in page.text
+
+
+def test_opening_import_sets_drafting(client, env):
+    """期初导入成功 → 算子 drafting（存量起草完成）；重定向回首页仍显示。"""
+    from kernel import operator as op
+
+    ls = env["ids"]["ledger_set_id"]
+    codes = _leaf_codes(client, ls)
+    # 期初试算须借贷平衡：借第一个末级科目 / 贷第二个各 100
+    lines = f"{codes[0]},100,0\n{codes[1]},0,100"
+    r = client.post(
+        f"/ledger/{ls}/opening",
+        data={"lines_text": lines, "force": ""},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, r.text
+    assert "error=" not in r.headers.get("location", ""), r.headers["location"]
+    assert op.current_state() == op.OperatorState.DRAFTING
+    page = client.get(f"/ledger/{ls}")
+    assert 'data-state="drafting"' in page.text  # arrive() 不抹掉起草态
+
+
+def test_dashboard_error_sets_alert(client, env):
+    """首页带 error 参数（期初导入失败重定向）→ 算子 ALERT。"""
+    from kernel import operator as op
+
+    page = client.get(f"/ledger/{env['ids']['ledger_set_id']}?error=期初格式不对")
+    assert 'data-state="alert"' in page.text
+    assert op.current_state() == op.OperatorState.ALERT

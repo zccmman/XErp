@@ -399,6 +399,21 @@ def sync_from_bridge() -> OperatorState | None:
     return current_state()
 
 
+def arrive() -> OperatorState:
+    """用户到场（页面渲染时调用）：仅从 IDLE/OFFLINE 升到 LISTENING。
+
+    DRAFTING/PENDING/ALERT 承载有效信息，浏览页面不抹掉——
+    期初导入后去报表页，算子仍显示「起草中」而不是被冲成听令
+    （ADR-007 迭代4：焦点听令只升不压）。
+    """
+    cur = current_state()
+    if cur is OperatorState.IDLE:
+        set_state(OperatorState.LISTENING)
+    elif cur is OperatorState.OFFLINE:
+        _walk_to(OperatorState.LISTENING)  # OFFLINE→IDLE→LISTENING 合法路径
+    return current_state()
+
+
 __all__ = [
     "OperatorState",
     "IllegalOperatorTransition",
@@ -415,4 +430,5 @@ __all__ = [
     "signal",
     "sync_from_bridge",
     "peek_bridge",
+    "arrive",
 ]

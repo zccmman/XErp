@@ -149,3 +149,29 @@ def test_locale_switch_roundtrip_and_unknown_raises():
     with pytest.raises(ValueError):
         op.set_locale("fr-FR")
     assert op.current_locale() == "zh-CN", "非法 locale 不应改变现值"
+
+# ---------- 迭代4 · 用户到场听令（arrive） ----------
+
+def test_arrive_from_idle_goes_listening():
+    """IDLE 页面到场 → LISTENING（听令只升不压）。"""
+    op.arrive()
+    assert op.current_state() == op.OperatorState.LISTENING
+
+
+def test_arrive_keeps_drafting():
+    """DRAFTING 是有效信息，浏览页面不抹掉。"""
+    op.set_state(op.OperatorState.DRAFTING)
+    assert op.arrive() == op.OperatorState.DRAFTING
+
+
+def test_arrive_keeps_pending():
+    """PENDING 同理——待审信息比「用户在看哪页」重要。"""
+    op.set_state(op.OperatorState.DRAFTING)
+    op.set_state(op.OperatorState.PENDING)
+    assert op.arrive() == op.OperatorState.PENDING
+
+
+def test_arrive_from_offline_walks_to_listening():
+    """OFFLINE→IDLE→LISTENING 合法路径唤醒。"""
+    op.set_state(op.OperatorState.OFFLINE)
+    assert op.arrive() == op.OperatorState.LISTENING
