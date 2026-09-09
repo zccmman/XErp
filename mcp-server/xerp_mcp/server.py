@@ -850,6 +850,46 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("FORECAST_BAD_ASSUMPTIONS", f"假设参数无效：{e}")
 
     @mcp.tool()
+    def preview_closing(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+        accounting_standard: str = "",
+    ) -> dict:
+        """期末结转预览（只读）：结账前先看清楚"点下去会发生什么"。
+
+        与 close_period 共用同一套取数与配平逻辑，所以**预览结果就是真执行结果**：
+
+            lines[]      将被结走的损益科目逐行明细（科目/金额/记借还是记贷）
+            net_profit   本期净利润（正=盈利），即结转进本年利润的金额
+            will_generate 执行后生成的凭证号（已结转或无损益时为 null）
+            already_closed / closing_voucher_no  已结转过则给出历史凭证号
+
+        典型用法：用户问"这个月结转会结多少"、"结完利润多少"——先调它回答，
+        确认无误后再调 close_period 真执行。只读、不写、不抛账务错误。
+
+        accounting_standard 默认留空 = 取账套设置；显式传值必须与账套一致。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.closing import preview_closing as _preview
+
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
+                return _ok(
+                    **_preview(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        year=period_year,
+                        month=period_month,
+                        standard=standard,
+                    )
+                )
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
     def close_period(
         ledger_set_id: str,
         period_year: int,

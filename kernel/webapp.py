@@ -256,6 +256,60 @@ def _guide_card(guide: dict | None, ls_id: str) -> str:
     return "".join(parts)
 
 
+def _closing_preview_block(session, pv: dict | None, ls_id: str) -> str:
+    """结转预览块：结账前先把「会结走什么、净利多少、生成什么凭证号」摊开。
+
+    老会计最在意的不是「结账」这个动作，而是结之前能不能先看清楚。
+    数据来自内核 preview_closing（与 close_period 共用取数与配平），
+    此处只做展示，不做任何二次计算——预览说多少就是多少。
+    """
+    if pv is None:
+        return ""
+    net = Decimal(str(pv["net_profit"]))
+    net_txt = f"净利润 {_fmt(net)}" if net >= 0 else f"净亏损 {_fmt(-net)}"
+
+    if pv["already_closed"]:
+        no = pv["closing_voucher_no"] or ""
+        vid = session.scalars(
+            select(Voucher.id).where(
+                Voucher.ledger_set_id == ls_id, Voucher.voucher_no == no
+            )
+        ).first()
+        link = (f'<a href="/voucher/{vid}">{html.escape(no)}</a>'
+                if vid else html.escape(no))
+        return (
+            "<h3>结转结果</h3>"
+            f'<div class=ok>本期已执行期末结转：凭证 {link}　{net_txt}</div>'
+        )
+
+    if pv["nothing_to_close"]:
+        return (
+            "<h3>结转预览</h3>"
+            '<div class=warn>本期无损益类科目发生额，结账不会生成结转凭证。</div>'
+        )
+
+    rows = ""
+    for ln in pv["lines"]:
+        is_profit = ln["side"] == "profit"
+        style = " style=font-weight:bold" if is_profit else ""
+        rows += (
+            f"<tr{style}><td>{html.escape(ln['account_code'])}</td>"
+            f"<td>{html.escape(ln['account_name'])}</td>"
+            f"<td>{html.escape(ln['direction'])}</td>"
+            f"<td style=text-align:right>{_fmt(Decimal(str(ln['amount'])))}</td></tr>"
+        )
+    return (
+        "<h3>结转预览</h3>"
+        f'<div class=hint>执行后将生成凭证 '
+        f'<code>{html.escape(pv["will_generate"] or "")}</code>：'
+        f'{len(pv["lines"]) - 1} 个损益科目结出，{net_txt} '
+        f'结转至 {html.escape(pv["profit_account"])} 本年利润。</div>'
+        "<table><tr><th>科目</th><th>名称</th><th>方向</th>"
+        "<th style=text-align:right>金额</th></tr>"
+        f"{rows}</table>"
+    )
+
+
 def _opening_form(ls_id: str, existing: list) -> str:
     """期初导入表单。已存在期初时切换为警告态：默认导入会被内核拒绝，
     必须显式勾选「覆盖」才走 force 红字冲销重导。"""
@@ -1742,6 +1796,18 @@ def build_app(db_url: str | None = None) -> FastAPI:
             result = precheck_close(
                 s, ledger_set_id=ls_id, year=period.year, month=period.month
             )
+            # 结转预览：与 close_period 同源取数，把"点下去会发生什么"摊开
+            from kernel.closing import preview_closing as _preview
+            from kernel.posting import PostingError
+
+            try:
+                pv = _preview(
+                    s, ledger_set_id=ls_id, year=period.year, month=period.month,
+                    standard=ls.accounting_standard,
+                )
+            except PostingError:      # 期间/科目异常时降级：不影响闸门清单展示
+                pv = None
+            preview_html = _closing_preview_block(s, pv, ls_id)
             lis = ""
             for c in result["checks"]:
                 cls = "pass" if c["passed"] else "fail"
@@ -1781,7 +1847,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"（{period_zh(period.status)}）</h2>"
                 f"<p>期间切换：{ptabs}</p>"
                 + (f'<p class="err">{html.escape(error)}</p>' if error else "")
-                + f"{banner}<ul class=check>{lis}</ul>{action}"
+                + f"{banner}<ul class=check>{lis}</ul>{preview_html}{action}"
             )
             return _page("月末结账", body, request.state.subject_name,
                          show_operator=True)

@@ -48,6 +48,7 @@ MINIMAL: tuple[str, ...] = (
     "report_income_statement",
     # 怀旧层：结账体检 + 常用摘要 + 账套状态引导（高频、只读、零风险）
     "precheck_close",
+    "preview_closing",
     "suggest_summaries",
     "month_end_guide",
     # 本体层（阶段1）：科目语义查询（高频、只读、零风险，AI 引导的依据）
