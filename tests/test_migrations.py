@@ -8,7 +8,7 @@ required_signers/signatures 两列但漏写迁移——测试库每次 create_al
 本文件钉死两件事：
 1. 全新库 alembic upgrade head 到最新 revision，关键模型列齐全；
 2. 旧库（只有 0001-0003 结构、alembic_version 为空）经
-   stamp + upgrade 补齐 0004-0006 的列，升级是幂等的。
+   stamp + upgrade 补齐 0004-0007 的列，升级是幂等的。
 """
 
 import os
@@ -57,12 +57,16 @@ def test_fresh_upgrade_head_has_all_model_columns():
         assert {"required_signers", "signatures"} <= v, "G1 签字列必须由迁移提供"
         assert "attrs" in _columns(db, "accounts"), "阶段1本体属性列"
         assert {"daily_voucher_limit", "quota_currency"} <= _columns(db, "subjects")
+        # ② 外币/数量核算列必须由迁移提供（漏写迁移会让老库查询 500）
+        _vl = _columns(db, "voucher_lines")
+        assert {"currency", "fx_rate", "foreign_debit", "foreign_credit",
+                "quantity", "unit"} <= _vl, "② 外币/数量列必须由迁移提供"
         con = sqlite3.connect(db)
         try:
             ver = con.execute("select version_num from alembic_version").fetchone()[0]
         finally:
             con.close()
-        assert ver == "0006_voucher_signers"
+        assert ver == "0007_voucher_foreign_quantity"
 
 
 def test_legacy_db_upgrade_is_idempotent():
@@ -91,13 +95,23 @@ def test_legacy_db_upgrade_is_idempotent():
             category VARCHAR(16), parent_code VARCHAR(32),
             aux_dim_defs JSON, is_leaf BOOLEAN)"""
         )
+        con.execute(
+            """CREATE TABLE voucher_lines (
+            id VARCHAR(32) PRIMARY KEY, voucher_id VARCHAR(32),
+            line_no INTEGER, account_id VARCHAR(32),
+            debit NUMERIC(18,2), credit NUMERIC(18,2),
+            summary VARCHAR(500), aux_dims JSON)"""
+        )
         con.commit()
         con.close()
         # 表结构等价于 0001-0003 已生效：stamp 0003 跳过建表迁移
         _alembic_stamp(f"sqlite:///{db}", "0003")
-        _alembic_upgrade(f"sqlite:///{db}")  # 0004-0006
+        _alembic_upgrade(f"sqlite:///{db}")  # 0004-0007
         assert {"required_signers", "signatures"} <= _columns(db, "vouchers")
         assert {"daily_voucher_limit", "quota_currency"} <= _columns(db, "subjects")
         assert "attrs" in _columns(db, "accounts")
+        _vl = _columns(db, "voucher_lines")
+        assert {"currency", "fx_rate", "foreign_debit", "foreign_credit",
+                "quantity", "unit"} <= _vl, "② 外币/数量列必须由迁移提供"
         # 再跑一遍 head：幂等，不抛异常
         _alembic_upgrade(f"sqlite:///{db}")
