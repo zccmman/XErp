@@ -193,7 +193,9 @@ def income_statement(session: Session, ledger_set_id: str, year: int, month: int
             hit = M.income_statement_item(mp, code)
             if hit is None or hit[0] != name:
                 continue
-            total += cr if side == "credit" else dr
+            # 净额口径：费用=借-贷，收入=贷-借。否则贷方冲减（销售退回/
+            # 红字发票/测试对冲）被忽略，净利润错报并污染资产负债表 np 注入。
+            total += (cr - dr) if side == "credit" else (dr - cr)
         items.append({"item": name, "amount": total, "side": side})
         if side == "credit":
             revenue += total

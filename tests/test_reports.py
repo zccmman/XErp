@@ -106,6 +106,26 @@ def test_income_statement_matches_manual_calc(ctx):
     assert inc["net_profit"] == Decimal("8000.00")        # 手工: 10,000 - 2,000
 
 
+def test_income_statement_nets_reversals_and_balance(ctx):
+    """净额口径：收入/费用的贷方冲减必须被扣减，否则对冲场景净利润错报、
+
+    资产负债表 np 注入失衡（P1-06 dogfood 真机撞到的 88 对冲对问题）。
+    """
+    _setup(ctx)
+    # 收入红字冲回：6001 借方 4,000
+    ctx["book"]("2026-08-25", "收入退回", [
+        ("6001", "4000.00", ""), ("100201", "", "4000.00")])
+    # 费用红字冲回：660202 贷方 500（原办公费 2,000 中退 500）
+    ctx["book"]("2026-08-26", "费用退回", [
+        ("100201", "500.00", ""), ("660202", "", "500.00")])
+    inc = income_statement(ctx["session"], ctx["ledger_set_id"], 2026, 8)
+    assert inc["revenue"] == Decimal("6000.00")    # 10,000 - 4,000
+    assert inc["expense"] == Decimal("1500.00")    # 2,000 - 500
+    assert inc["net_profit"] == Decimal("4500.00") # 手工: 6,000 - 1,500
+    bs = balance_sheet(ctx["session"], ctx["ledger_set_id"], 2026, 8)
+    assert bs["balanced"] is True and bs["check"]["diff"] == Decimal("0.00")
+
+
 def test_balance_sheet_balances_including_unclosed_profit(ctx):
     _setup(ctx)
     bs = balance_sheet(ctx["session"], ctx["ledger_set_id"], 2026, 8)
