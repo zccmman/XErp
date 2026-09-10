@@ -1047,6 +1047,74 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except RuleError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    # ---------- 业务语言向导（S1） ----------
+
+    @mcp.tool()
+    def wizard_scenarios() -> dict:
+        """列出业务语言向导的全部场景（自然语言 → 候选分录）。
+
+        用于 AI 应答式顾问：先调本工具了解有哪些业务场景及其所需字段，
+        再让用户填金额/日期等，最后用 wizard_propose 预览候选分录。
+        场景覆盖小微企业高频业务：现销收款 / 提现 / 发工资 / 办公用品 /
+        银行收息 / 付借款利息 / 收客户回款 / 付供应商 / 开票 / 报销 / 采购发票。
+        """
+        from kernel.biz_wizard import list_scenarios
+
+        return _ok(scenarios=list_scenarios())
+
+    @mcp.tool()
+    def wizard_propose(
+        ledger_set_id: str,
+        scenario_key: str,
+        amount: str = "",
+        biz_date: str = "",
+        party: str = "",
+        category: str = "",
+        pay_via: str = "",
+        invoice_no: str = "",
+        net_amount: str = "",
+        tax_amount: str = "",
+        total_amount: str = "",
+    ) -> dict:
+        """只读预览：给定业务场景 + 关键参数，返回候选分录、科目真名、逐行解释与借贷是否平衡。
+
+        对应「超级AI总账」的应答式顾问范式——AI 说业务，本工具给候选分录并解释
+        每一步为什么这么记；确认后才调 create_voucher / adapter_ingest 真落库。
+        所有参数按场景需要填写，无关参数留空即可；金额单位元、日期格式 YYYY-MM-DD。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.biz_wizard import WizardError, propose
+
+                form = {
+                    "amount": amount,
+                    "sale_date": biz_date,
+                    "withdraw_date": biz_date,
+                    "pay_date": biz_date,
+                    "buy_date": biz_date,
+                    "receive_date": biz_date,
+                    "claimed_at": biz_date,
+                    "paid_at": biz_date,
+                    "issued_at": biz_date,
+                    "invoice_date": biz_date,
+                    "customer": party,
+                    "supplier": party,
+                    "employee": party,
+                    "vendor": party,
+                    "category": category,
+                    "pay_via": pay_via,
+                    "invoice_no": invoice_no,
+                    "expense_category": category,
+                    "net_amount": net_amount,
+                    "tax_amount": tax_amount,
+                    "total_amount": total_amount,
+                }
+                return _ok(proposal=propose(s, ledger_set_id, scenario_key, form))
+        except WizardError as e:
+            return _err(e.code, e.message_zh, e.details)
+        except Exception as e:  # noqa: BLE001 兜底：规则/账套层异常统一成错误返回
+            return _err("WIZARD_FAILED", str(e))
+
     # ---------- 审计增强（P1-04） ----------
 
     @mcp.tool()

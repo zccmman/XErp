@@ -1,0 +1,18 @@
+{
+  "adapter": "biz",
+  "event_type": "office.supply",
+  "version": "v1",
+  "target_status": "DRAFT",
+  "summary": "采购办公用品 {vendor}",
+  "date_field": "buy_date",
+  "lines": [
+    {"side": "debit", "account": "660202", "amount": {"from": "amount"}},
+    {
+      "side": "credit",
+      "account_from": "pay_via",
+      "account_map": {"bank": "100201", "cash": "1001"},
+      "default_account": "100201",
+      "amount": {"from": "amount"}
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "adapter": "biz",
+  "event_type": "cash.withdraw",
+  "version": "v1",
+  "target_status": "DRAFT",
+  "summary": "提取备用金",
+  "date_field": "withdraw_date",
+  "lines": [
+    {"side": "debit", "account": "1001", "amount": {"from": "amount"}},
+    {"side": "credit", "account": "100201", "amount": {"from": "amount"}}
+  ]
+}

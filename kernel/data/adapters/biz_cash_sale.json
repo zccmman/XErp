@@ -1,0 +1,12 @@
+{
+  "adapter": "biz",
+  "event_type": "cash.sale",
+  "version": "v1",
+  "target_status": "DRAFT",
+  "summary": "现销收款 {customer}",
+  "date_field": "sale_date",
+  "lines": [
+    {"side": "debit", "account": "1001", "amount": {"from": "amount"}},
+    {"side": "credit", "account": "6001", "amount": {"from": "amount"}}
+  ]
+}

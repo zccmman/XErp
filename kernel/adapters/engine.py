@@ -339,7 +339,12 @@ def ingest_event(
 
 
 def preview(rule: dict, event: dict) -> dict:
-    """不落库地预览规则产出（供 UI/调试与规则编辑器使用）。"""
+    """不落库地预览规则产出（供 UI/调试与规则编辑器使用）。
+
+    与 :func:`build_lines` 共用 :func:`_resolve_account`——动态科目
+    （``account_from`` + ``account_map``）在这里也按事件字段解析出真实科目代码，
+    保证「预览看到的科目 = 真执行写入的科目」。
+    """
     lines = []
     total_debit = ZERO
     total_credit = ZERO
@@ -353,7 +358,7 @@ def preview(rule: dict, event: dict) -> dict:
         lines.append(
             {
                 "line_no": idx,
-                "account": spec["account"],
+                "account": _resolve_account(spec, event),
                 "side": spec["side"],
                 "amount": str(amount),
             }

@@ -136,6 +136,23 @@ select{font-family:inherit;width:100%;padding:4px;margin:4px 0;box-sizing:border
 .spark .sp-pos{background:#1f4e79}
 .spark .sp-neg{background:#b0413e}
 table.trend td{padding:4px 8px;border:none}
+/* 业务语言向导（S1） */
+.wiz-search input{width:420px;max-width:70vw;padding:7px 9px;border:1px solid #b9c8d8;border-radius:4px}
+.wiz-search a{margin-left:10px;color:#1f4e79}
+.wiz-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:14px}
+.wiz-card{border:1px solid #dde3ea;background:#fff;border-radius:8px;padding:12px 14px;text-decoration:none;color:#1f2d3d;display:block}
+.wiz-card:hover{border-color:#1f4e79;box-shadow:0 2px 10px rgba(31,78,121,.14)}
+.wiz-card b{font-size:15px}.wiz-card .tags{margin:7px 0}.wiz-card .tag{display:inline-block;background:#eef3f8;color:#1f4e79;border-radius:10px;padding:1px 8px;font-size:11px;margin-right:4px}
+.wiz-card small{color:#8a97a5}
+.wiz-form table{border-collapse:collapse;margin:10px 0}
+.wiz-form td{padding:7px 10px;vertical-align:middle}
+.wiz-form td:first-child{width:170px;color:#445}
+.wiz-preview{border-collapse:collapse;width:100%;margin:10px 0}
+.wiz-preview th,.wiz-preview td{border:1px solid #e3e8ee;padding:7px 10px;text-align:left;vertical-align:top}
+.wiz-preview th{background:#f4f7fb}
+.wiz-preview .why{color:#5a6b7b;font-size:13px;max-width:360px}
+p.note{background:#fff8e8;border-left:3px solid #e0a300;padding:9px 13px;color:#6b5400;margin:12px 0}
+.wiz-back{color:#1f4e79;font-size:13px}
 </style>"""
 
 
@@ -598,6 +615,7 @@ document.addEventListener('DOMContentLoaded', function(){{
     return f"""
 {_FORM_JS}
 <h2>填制凭证</h2>
+<p class=wiz-back>不想手填借贷？<a href="/ledger/{ls_id}/wizard">用业务语言向导 →</a></p>
 {head}
 <form method=post action="/ledger/{ls_id}/voucher/new">
 <p>凭证类别：<select name=voucher_type onchange="this.form.querySelector(
@@ -637,6 +655,133 @@ document.addEventListener('DOMContentLoaded', function(){{
 </form>
 {dl}
 {type_js}
+"""
+
+
+# ---------- 业务语言向导（S1） ----------
+
+def _wizard_catalog(ls_id: str, q: str, matches: list | None) -> str:
+    """场景目录：搜索框 + 场景卡片网格。matches 非空时只显示命中场景。"""
+    from kernel.biz_wizard import SCENARIOS
+
+    if matches:
+        keys = {m["key"] for m in matches}
+        scs = [sc for sc in SCENARIOS if sc["key"] in keys]
+    else:
+        scs = SCENARIOS
+    cards = ""
+    for sc in scs:
+        tags = " ".join(
+            f'<span class=tag>{html.escape(t)}</span>' for t in sc.get("tags", [])
+        )
+        alias = " / ".join(sc.get("aliases", [])[:3])
+        cards += (
+            f'<a class=wiz-card href="/ledger/{ls_id}/wizard?s={html.escape(sc["key"])}">'
+            f"<b>{html.escape(sc['name'])}</b>"
+            f'<div class=tags>{tags}</div>'
+            f"<small>例如：{html.escape(alias)}</small></a>"
+        )
+    return f"""
+<h2>业务语言向导</h2>
+<p class=ok>看不懂借贷？用大白话描述一笔业务，向导自动给出分录、解释每一步为什么这么记，<b>确认后才落库</b>。</p>
+<form method=get class=wiz-search>
+  <input name=q placeholder="说业务，如：发了3万工资 / 收了一笔现销 / 提了备用金"
+         value="{html.escape(q)}">
+  <button>匹配场景</button>
+  <a href="/ledger/{ls_id}/wizard">全部场景</a>
+</form>
+<div class=wiz-grid>{cards}</div>
+"""
+
+
+def _wizard_form(sc: dict, ls_id: str, error: str = "", values: dict | None = None) -> str:
+    """单个场景的填写表单。values 非空表示提交失败后的回填。"""
+    values = values or {}
+    err = f'<p class=err>{html.escape(error)}</p>' if error else ""
+    rows = ""
+    for f in sc["fields"]:
+        lbl = html.escape(f["label"])
+        req = " *" if f.get("required") else ""
+        key = f["key"]
+        val = html.escape(str(values.get(key, "") or ""))
+        if f["type"] == "select":
+            cur = values.get(key) or f.get("default", "")
+            opts = "".join(
+                f'<option value="{o[0]}"{" selected" if o[0] == cur else ""}>'
+                f"{html.escape(o[1])}</option>"
+                for o in f.get("options", [])
+            )
+            inp = f'<select name="{key}">{opts}</select>'
+        elif f["type"] == "date":
+            inp = f'<input type=date name="{key}" value="{val}">'
+        elif f["type"] == "amount":
+            inp = (f'<input name="{key}" inputmode=decimal '
+                   f'placeholder="{html.escape(f.get("placeholder", "") or "")}" '
+                   f'value="{val}" style="width:170px">')
+        else:
+            inp = (f'<input name="{key}" placeholder="{html.escape(f.get("placeholder", "") or "")}" '
+                   f'value="{val}" style="width:280px">')
+        rows += f"<tr><td>{lbl}{req}</td><td>{inp}</td></tr>"
+    return f"""
+<h2>业务向导：{html.escape(sc['name'])}</h2>
+<p class=wiz-back><a href="/ledger/{ls_id}/wizard">← 重选业务场景</a></p>
+{err}
+<form method=post action="/ledger/{ls_id}/wizard" class=wiz-form>
+<input type=hidden name=s value="{html.escape(sc['key'])}">
+<table>{rows}</table>
+<p><button type=submit>生成分录预览 →</button></p>
+</form>
+"""
+
+
+def _wizard_preview(proposal: dict, sc: dict, ls_id: str, values: dict) -> str:
+    """预览：逐行分录 + 科目真名 + 为什么这么记 + 借贷平衡 + 确认按钮。"""
+    lines = ""
+    for l in proposal["lines"]:
+        side = "借" if l["side"] == "debit" else "贷"
+        bg = ' style=background:#fff3f3' if l["missing"] else ""
+        lines += (
+            f"<tr{bg}><td>{side}</td>"
+            f"<td>{html.escape(l['account'])} {html.escape(l['account_name'])}</td>"
+            f"<td style=text-align:right>{html.escape(l['amount'])}</td>"
+            f"<td class=why>{html.escape(l['why'])}</td></tr>"
+        )
+    bal_cls = "ok" if proposal["balanced"] else "err"
+    bal_txt = "借贷平衡 ✓" if proposal["balanced"] else "借贷不平衡 ✗"
+    warn = ""
+    if proposal["missing_accounts"]:
+        warn = (
+            f'<p class="err">⚠️ 本账套缺少科目：{", ".join(proposal["missing_accounts"])}，'
+            "请先在「导入期初 / 科目设置」中补充对应科目后再生成。</p>"
+        )
+    note = f'<p class=note>{html.escape(proposal["note"])}</p>' if proposal["note"] else ""
+    hid = "".join(
+        f'<input type=hidden name="{k}" value="{html.escape(str(values.get(k, "")))}">'
+        for k in values
+    )
+    confirm = (
+        '<button type=submit>确认生成草稿 ✓</button>'
+        if not proposal["missing_accounts"]
+        else '<button type=submit disabled>请先补齐缺失科目</button>'
+    )
+    return f"""
+<h2>分录预览：{html.escape(proposal['scenario_name'])}</h2>
+<p class=wiz-back><a href="/ledger/{ls_id}/wizard?s={html.escape(sc['key'])}">← 修改填写</a></p>
+{warn}
+<p>摘要：<b>{html.escape(proposal['summary'])}</b></p>
+<table class=wiz-preview>
+<tr><th>方向</th><th>科目</th><th>金额</th><th>为什么这么记</th></tr>
+{lines}
+</table>
+<p>借贷合计：借 <b>{html.escape(proposal['debit'])}</b> / 贷 <b>{html.escape(proposal['credit'])}</b>
+ <span class="{bal_cls}">{bal_txt}</span></p>
+{note}
+<form method=post action="/ledger/{ls_id}/wizard/confirm">
+<input type=hidden name=s value="{html.escape(sc['key'])}">
+{hid}
+<p>{confirm}</p>
+</form>
+<p class=wiz-back><a href="/ledger/{ls_id}/wizard?s={html.escape(sc['key'])}">← 重新填写</a></p>
 """
 
 
@@ -1061,6 +1206,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"<h2>账套：{html.escape(ls.name)}</h2>"
                 + _toolbar(
                     f"<a href='/ledger/{ls_id}/voucher/new'>填制凭证</a>",
+                    f"<a href='/ledger/{ls_id}/wizard'>业务向导</a>",
                     f"<a href='/ledger/{ls_id}/reports'>账簿报表</a>",
                     f"<a href='/ledger/{ls_id}/forecast'>三表预测</a>",
                     f"<a href='/ledger/{ls_id}/close'>月末结账</a>",
@@ -1310,6 +1456,89 @@ def build_app(db_url: str | None = None) -> FastAPI:
         _op_event(OperatorState.DRAFTING)
         if action == "submit":
             _op_event(OperatorState.PENDING)
+        return RedirectResponse(f"/voucher/{vid}", status_code=303)
+
+    # ---------- 业务语言向导（S1） ----------
+
+    @app.get("/ledger/{ls_id}/wizard", response_class=HTMLResponse)
+    async def wizard_index(request: Request, ls_id: str, q: str = "", s: str = ""):
+        from kernel.biz_wizard import get_scenario, match_scenarios
+
+        with session() as sess:
+            ls = sess.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>", request.state.subject_name)
+            if s:
+                sc = get_scenario(s)
+                if sc is None:
+                    return RedirectResponse(f"/ledger/{ls_id}/wizard", status_code=303)
+                body = _wizard_form(sc, ls_id)
+                return _page(f"{ls.name} · 业务向导", body,
+                             request.state.subject_name, show_operator=True)
+            matches = match_scenarios(q) if q else None
+            body = _wizard_catalog(ls_id, q, matches)
+            return _page(f"{ls.name} · 业务向导", body,
+                         request.state.subject_name, show_operator=True)
+
+    @app.post("/ledger/{ls_id}/wizard", response_class=HTMLResponse)
+    async def wizard_preview(request: Request, ls_id: str):
+        from kernel.biz_wizard import get_scenario, propose, WizardError
+
+        form = await request.form()
+        key = form.get("s", "")
+        sc = get_scenario(key)
+        if sc is None:
+            return RedirectResponse(f"/ledger/{ls_id}/wizard", status_code=303)
+        fdict = {f["key"]: form.get(f["key"], "") for f in sc["fields"]}
+        with session() as sess:
+            try:
+                proposal = propose(sess, ls_id, key, fdict)
+            except WizardError as e:
+                body = _wizard_form(sc, ls_id, error=e.message_zh, values=fdict)
+                return _page("业务向导", body,
+                             request.state.subject_name, show_operator=True)
+        body = _wizard_preview(proposal, sc, ls_id, fdict)
+        return _page("业务向导", body,
+                     request.state.subject_name, show_operator=True)
+
+    @app.post("/ledger/{ls_id}/wizard/confirm", response_class=HTMLResponse)
+    async def wizard_confirm(request: Request, ls_id: str):
+        from kernel.adapters import ingest_event
+        from kernel.adapters.spec import EventFieldError, RuleError
+        from kernel.adapters.engine import AdapterError
+        from kernel.biz_wizard import get_scenario, build_event, WizardError
+
+        form = await request.form()
+        key = form.get("s", "")
+        sc = get_scenario(key)
+        if sc is None:
+            return RedirectResponse(f"/ledger/{ls_id}/wizard", status_code=303)
+        fdict = {f["key"]: form.get(f["key"], "") for f in sc["fields"]}
+        try:
+            event = build_event(sc, fdict)
+        except WizardError as e:
+            body = _wizard_form(sc, ls_id, error=e.message_zh, values=fdict)
+            return _page("业务向导", body, request.state.subject_name, show_operator=True)
+        actor = {"type": "user", "id": request.state.subject_id}
+        with session() as sess:
+            try:
+                # 复用 ingest_event（与第三方事件同源）：biz 规则 target_status=DRAFT，
+                # ar/ap/ocr 规则=PUSHED（待人审）。绝不自动过账——human-as-a-boss。
+                res = ingest_event(
+                    sess,
+                    ledger_set_id=ls_id,
+                    adapter=sc["adapter"],
+                    event_type=sc["event_type"],
+                    event=event,
+                    actor=actor,
+                    event_id=None,  # 内容哈希幂等：相同业务重复提交不会重复入账
+                )
+                sess.commit()
+                vid = res["voucher"]["id"]
+            except (AdapterError, RuleError, EventFieldError) as e:
+                # 典型：账套缺科目（防乱引导护栏在落库时才硬拦截）
+                body = _wizard_form(sc, ls_id, error=e.message_zh, values=fdict)
+                return _page("业务向导", body, request.state.subject_name, show_operator=True)
         return RedirectResponse(f"/voucher/{vid}", status_code=303)
 
     # ---------- 凭证详情 ----------

@@ -1,0 +1,12 @@
+{
+  "adapter": "biz",
+  "event_type": "payroll.paid",
+  "version": "v1",
+  "target_status": "DRAFT",
+  "summary": "发放工资",
+  "date_field": "pay_date",
+  "lines": [
+    {"side": "debit", "account": "221101", "amount": {"from": "amount"}},
+    {"side": "credit", "account": "100201", "amount": {"from": "amount"}}
+  ]
+}

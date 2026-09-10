@@ -84,6 +84,9 @@ STANDARD_EXTRA: tuple[str, ...] = (
     "ocr_ingest_invoice",
     # 三表前向预测（P1-01 预测）：以实际数为种子外推未来，best/base/worst 多情景
     "forecast_statements",
+    # 业务语言向导（S1）：自然语言场景 → 候选分录 + 逐行解释（只读、零风险）
+    "wizard_scenarios",
+    "wizard_propose",
 )
 
 

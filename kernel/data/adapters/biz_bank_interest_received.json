@@ -1,0 +1,12 @@
+{
+  "adapter": "biz",
+  "event_type": "bank.interest.received",
+  "version": "v1",
+  "target_status": "DRAFT",
+  "summary": "收到银行存款利息",
+  "date_field": "receive_date",
+  "lines": [
+    {"side": "debit", "account": "100201", "amount": {"from": "amount"}},
+    {"side": "credit", "account": "660302", "amount": {"from": "amount"}}
+  ]
+}
