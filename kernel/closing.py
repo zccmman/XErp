@@ -238,18 +238,15 @@ def preview_closing(
 
 def close_period(session: Session, *, ledger_set_id: str, year: int, month: int,
                  actor: dict, standard: str = "small_business") -> Voucher:
-    """执行期末结转：损益类科目余额 → 本年利润（3103）。
+    """执行期末结转并锁期：损益类科目余额 → 本年利润（3103），期间置 CLOSED。
 
-    返回结转凭证（POSTED）。重复执行抛 ALREADY_CLOSED。
+    结转即结账：生成 POSTED 结转凭证后把期间状态置为 CLOSED（precheck_close
+    闸门1 依赖上月 = CLOSED 才能连续闭合）。返回结转凭证。
+    幂等：同期间已有结转凭证 → ALREADY_CLOSED；已锁期 → PERIOD_NOT_OPEN。
     """
     mp = M.get_mapping(standard)
     profit_code = mp["closing"]["profit_account"]
     period = _pick_period(session, ledger_set_id, year, month)
-    if period.status != "OPEN":
-        raise PostingError(
-            "PERIOD_NOT_OPEN",
-            f"期间 {year}-{month:02d} 状态为 {period.status}，仅未结账期间可结转",
-        )
     prefix = f"结转-{year}{month:02d}-"
     exists = session.scalars(
         select(Voucher.id).where(
@@ -258,9 +255,19 @@ def close_period(session: Session, *, ledger_set_id: str, year: int, month: int,
         )
     ).first()
     if exists is not None:
+        # 历史兼容：修复前 close_period 只生成结转凭证、从不锁期，导致已结转
+        # 期间仍 OPEN。此处补锁（幂等），保证「有结转凭证即 CLOSED」单一事实，
+        # precheck_close 闸门1 才能连续闭合。仍抛 ALREADY_CLOSED 保留契约。
+        period.status = "CLOSED"
+        session.flush()
         raise PostingError(
             "ALREADY_CLOSED",
             f"{year}-{month:02d} 已执行期末结转（{prefix}…），不可重复",
+        )
+    if period.status != "OPEN":
+        raise PostingError(
+            "PERIOD_NOT_OPEN",
+            f"期间 {year}-{month:02d} 状态为 {period.status}，仅未结账期间可结转",
         )
 
     accounts = {a.code: a for a in session.scalars(
@@ -343,5 +350,8 @@ def close_period(session: Session, *, ledger_set_id: str, year: int, month: int,
         if b.debit_total == b.credit_total:
             session.delete(b)
 
+    # 锁期：结转完成即结账，期间置 CLOSED（单一真源；precheck_close 闸门1
+    # 依赖上月 = CLOSED 才能连续闭合，否则期间链在次月断裂）。
+    period.status = "CLOSED"
     session.flush()
     return voucher

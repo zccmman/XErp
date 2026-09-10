@@ -118,6 +118,21 @@ def test_close_period_idempotent(ctx):
     assert ei.value.code == "ALREADY_CLOSED"
 
 
+def test_close_period_locks_period(ctx):
+    """P1-06 真机抓出的缺陷修复：结转即结账，期间须置 CLOSED（锁期）。
+
+    否则 precheck_close 闸门1（上月须 CLOSED）在次月必然失败，期间链断裂。
+    """
+    s, ids = ctx["s"], ctx["ids"]
+    close_period(s, ledger_set_id=ids["ledger_set_id"], year=2026, month=8,
+                 actor=ctx["actor"])
+    s.commit()
+    p = s.scalars(select(Period).where(
+        Period.ledger_set_id == ids["ledger_set_id"],
+        Period.year == 2026, Period.month == 8)).first()
+    assert p is not None and p.status == "CLOSED"
+
+
 def test_income_statement_preserved_after_closing(ctx):
     """可回放核心：结转后历史利润表不丢（分录取数，排除结转凭证）。"""
     s, ids = ctx["s"], ctx["ids"]

@@ -12,11 +12,12 @@ from sqlalchemy.orm import Session
 
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
-from kernel.db.models import Account, Event, Subject, Voucher, VoucherLine
+from kernel.db.models import Account, Event, Period, Subject, Voucher, VoucherLine
 from kernel.events import E
 from kernel.monthend import MonthendError, run_monthend
 from kernel.seed import seed_demo_ledger
 from kernel.state import transition
+from kernel.classic import precheck_close
 
 
 class _SpyNotifier:
@@ -129,21 +130,48 @@ def test_full_monthend_happy_path(ctx):
         Event.event_type == E.AGENT_MONTHEND_RUN)).all()
     assert len(run_events) == 1
     assert run_events[0].payload["net_profit"] == "-800.00"
+    # 结账锁期：期间须置 CLOSED（P1-06 修复）
+    p = s.scalars(select(Period).where(
+        Period.ledger_set_id == ids["ledger_set_id"],
+        Period.year == 2026, Period.month == 8)).first()
+    assert p.status == "CLOSED"
 
 
 def test_monthend_idempotent_on_rerun(ctx):
-    """重复执行：结转/开账幂等（ALREADY_*），报表照常输出。"""
+    """重复执行：已结账期间不可再关账（PERIOD_NOT_OPEN），锁期幂等。"""
     s, ids = ctx["s"], ctx["ids"]
     _book(s, ids, ctx, "记-7301", __import__("datetime").date(2026, 8, 9),
           "已过账", __import__("decimal").Decimal("30.00"), status="POSTED")
     run_monthend(s, ledger_set_id=ids["ledger_set_id"], year=2026, month=8,
                  actor=ctx["actor"], notifier=_SpyNotifier())
     s.commit()
-    rep2 = run_monthend(s, ledger_set_id=ids["ledger_set_id"], year=2026,
-                        month=8, actor=ctx["actor"], notifier=_SpyNotifier())
+    p = s.scalars(select(Period).where(
+        Period.ledger_set_id == ids["ledger_set_id"],
+        Period.year == 2026, Period.month == 8)).first()
+    assert p.status == "CLOSED"
+    with pytest.raises(MonthendError) as ei:
+        run_monthend(s, ledger_set_id=ids["ledger_set_id"], year=2026,
+                     month=8, actor=ctx["actor"], notifier=_SpyNotifier())
+    assert ei.value.code == "PERIOD_NOT_OPEN"
+
+
+def test_monthend_locks_period_and_next_month_precheck_passes(ctx):
+    """P1-06 核心回归：结账锁期后，次月 precheck_close 闸门1（上月须 CLOSED）通过。
+
+    此前期间永不被锁，闸门1 在次月必然失败，期间链断裂。
+    """
+    s, ids = ctx["s"], ctx["ids"]
+    _book(s, ids, ctx, "记-7401", __import__("datetime").date(2026, 8, 12),
+          "已过账", __import__("decimal").Decimal("60.00"), status="POSTED")
+    run_monthend(s, ledger_set_id=ids["ledger_set_id"], year=2026, month=8,
+                 actor=ctx["actor"], notifier=_SpyNotifier())
     s.commit()
-    assert rep2["steps"]["closing"]["status"] == "ALREADY_CLOSED"
-    assert rep2["steps"]["open_next"]["status"] == "ALREADY_OPENED"
+    # 次月（2026-09）关账前体检：闸门1 上月已结账须通过（P1-06 修复点）。
+    # 注：can_close 可能为 False 仅因 9 月是刚开出的空新期间、闸门4「损益已结转」
+    # 要求 结转-202609 凭证而空月份 close_period 抛 NOTHING_TO_CLOSE，此边界与锁期无关。
+    rep = precheck_close(s, ledger_set_id=ids["ledger_set_id"], year=2026, month=9)
+    gate1 = next((c for c in rep["checks"] if c["item"] == "上月已结账"), None)
+    assert gate1 is not None and gate1["passed"] is True
 
 
 def test_monthend_requires_open_period(ctx):
