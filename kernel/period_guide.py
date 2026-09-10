@@ -57,6 +57,126 @@ def _phase_zh(phase: str) -> str:
     return _PHASE_ZH.get(phase, phase)
 
 
+#: 月末结账向导卡的固定步骤序列（机器可读，Web / MCP 同源共享）。
+GUIDE_STEPS: list[tuple[str, str]] = [
+    ("open_period", "建立本期"),
+    ("opening", "录入期初余额"),
+    ("daily", "日常记账"),
+    ("clear_pending", "处理待办凭证"),
+    ("close", "月末结账（含损益结转）"),
+]
+
+_STATUS_ZH = {"done": "已完成", "active": "下一步", "blocked": "受阻", "pending": "未开始"}
+
+
+def _step(key, label, status, detail, actions=None, gates=None):
+    return {
+        "key": key,
+        "label": label,
+        "status": status,
+        "status_zh": _STATUS_ZH.get(status, status),
+        "detail": detail,
+        "actions": actions or [],
+        "gates": gates,
+    }
+
+
+def _build_steps(*, has_period, period_status, has_opening, counts, close, ls_id):
+    """构造月末结账向导卡的步骤状态机（确定性、只读）。
+
+    每个步骤给出 status(done/active/blocked/pending) + 中文 detail + 可选动作
+    （Web 直链、MCP 给 AI 指路），Web 与 MCP 消费同一份，口径永远一致。
+    """
+    if not has_period:
+        return [
+            _step("open_period", "建立本期", "blocked",
+                  "本期会计期间尚未建立，需初始化期间（首次建账）后再记账。"),
+            _step("opening", "录入期初余额", "pending", "待建立本期后再录入。"),
+            _step("daily", "日常记账", "pending", "待建立本期后再记账。"),
+            _step("clear_pending", "处理待办凭证", "pending", "待建立本期。"),
+            _step("close", "月末结账（含损益结转）", "pending", "待建立本期。"),
+        ]
+
+    if period_status == "CLOSED":
+        # 已结账期间：结账即终点，所有步骤视为完成。
+        return [
+            _step("open_period", "建立本期", "done", "本期已结账。"),
+            _step("opening", "录入期初余额", "done", "本期已结账。"),
+            _step("daily", "日常记账", "done", "本期已结账。"),
+            _step("clear_pending", "处理待办凭证", "done", "本期已结账。"),
+            _step("close", "月末结账（含损益结转）", "done", "本期已结账。"),
+        ]
+
+    posted = counts.get("posted", 0)
+    draft = counts.get("draft", 0)
+    pushed = counts.get("pushed", 0)
+    approved = counts.get("approved", 0)
+    unfinished_n = draft + pushed + approved
+
+    steps = [
+        _step("open_period", "建立本期", "done", "本期已开账，可正常记账。"),
+    ]
+
+    if has_opening or posted > 0:
+        steps.append(_step("opening", "录入期初余额", "done",
+                           "期初已就绪（已录期初或已有业务凭证）。"))
+    else:
+        steps.append(_step("opening", "录入期初余额", "active",
+                           "尚未录入期初余额，建议先录入再开始记账。",
+                           [{"label": "导入期初余额",
+                             "href": f"/ledger/{ls_id}#opening"}]))
+
+    if posted > 0:
+        steps.append(_step("daily", "日常记账", "done", f"已记账 {posted} 张。"))
+    elif has_opening:
+        steps.append(_step("daily", "日常记账", "active",
+                           "本期尚无业务凭证，请开始日常记账。",
+                           [{"label": "用业务向导记账",
+                             "href": f"/ledger/{ls_id}/wizard"},
+                            {"label": "继续制单",
+                             "href": f"/ledger/{ls_id}/voucher/new"}]))
+    else:
+        steps.append(_step("daily", "日常记账", "pending", "待录入期初后再开始记账。"))
+
+    if posted == 0:
+        steps.append(_step("clear_pending", "处理待办凭证", "pending", "先完成日常记账。"))
+    elif unfinished_n > 0:
+        steps.append(_step("clear_pending", "处理待办凭证", "blocked",
+                           f"还有 {unfinished_n} 张凭证未处理完：未审核草稿 {draft} 张 · "
+                           f"待审核 {pushed} 张 · 已审待记账 {approved} 张 · "
+                           f"已记账 {posted} 张。",
+                           [{"label": "去审批待办", "href": "/todo"},
+                            {"label": "继续制单",
+                             "href": f"/ledger/{ls_id}/voucher/new"}]))
+    else:
+        steps.append(_step("clear_pending", "处理待办凭证", "done", "所有凭证均已记账，无待办。"))
+
+    if period_status == "CLOSED":
+        steps.append(_step("close", "月末结账（含损益结转）", "done", "本期已结账。"))
+    elif posted == 0 or unfinished_n > 0:
+        steps.append(_step("close", "月末结账（含损益结转）", "pending",
+                           "完成前面步骤后再做月末结账。"))
+    else:
+        checks = (close or {}).get("checks")
+        if close and close.get("can_close"):
+            steps.append(_step("close", "月末结账（含损益结转）", "active",
+                               "结账条件已满足，可执行月末结账（含损益结转）。",
+                               [{"label": "去月末结账",
+                                 "href": f"/ledger/{ls_id}/close"}],
+                               gates=checks))
+        else:
+            failed = [c for c in (checks or []) if not c["passed"]]
+            steps.append(_step("close", "月末结账（含损益结转）", "blocked",
+                               "结账前还差 "
+                               + (f"{len(failed)} 项："
+                                  + "；".join(c["item"] for c in failed)
+                                  if failed else "若干项，请查看结账体检。"),
+                               [{"label": "查看结账体检",
+                                 "href": f"/ledger/{ls_id}/close"}],
+                               gates=checks))
+    return steps
+
+
 def month_end_guide(
     session: Session,
     *,
@@ -89,20 +209,45 @@ def month_end_guide(
             "counts": {},
             "next_action": f"{year}-{month:02d} 会计期间尚未建立，请先初始化期间（首次建账）再开始记账。",
             "close": None,
+            "steps": _build_steps(has_period=False, period_status=None,
+                                  has_opening=False, counts={}, close=None,
+                                  ls_id=ledger_set_id),
         }
 
     if period.status != "OPEN":
+        _v = session.scalars(
+            select(Voucher).where(
+                Voucher.ledger_set_id == ledger_set_id,
+                Voucher.period_id == period.id,
+            )
+        ).all()
+        _c = Counter(v.status for v in _v)
+        _counts = {"draft": _c.get("DRAFT", 0), "pushed": _c.get("PUSHED", 0),
+                   "approved": _c.get("APPROVED", 0), "posted": _c.get("POSTED", 0),
+                   "total": len(_v)}
+        _opening = bool(
+            session.scalars(
+                select(Voucher.id).where(
+                    Voucher.ledger_set_id == ledger_set_id,
+                    Voucher.period_id == period.id,
+                    Voucher.voucher_no.like(OPENING_PREFIX + "%"),
+                )
+            ).first()
+        )
         return {
             "year": year, "month": month,
             "period_status_zh": period_zh(period.status),
             "phase": PHASE_CLOSED,
             "phase_zh": _phase_zh(PHASE_CLOSED),
-            "counts": {},
+            "counts": _counts,
             "next_action": (
                 f"{year}-{month:02d} 已{period_zh(period.status)}，本期不再接受记账；"
                 "需要新业务请打开下一期间。"
             ),
             "close": None,
+            "steps": _build_steps(has_period=True, period_status=period.status,
+                                  has_opening=_opening, counts=_counts,
+                                  close=None, ls_id=ledger_set_id),
         }
 
     vouchers = session.scalars(
@@ -119,18 +264,18 @@ def month_end_guide(
         "posted": counter.get("POSTED", 0),
         "total": len(vouchers),
     }
+    has_opening = bool(
+        session.scalars(
+            select(Voucher.id).where(
+                Voucher.ledger_set_id == ledger_set_id,
+                Voucher.period_id == period.id,
+                Voucher.voucher_no.like(OPENING_PREFIX + "%"),
+            )
+        ).first()
+    )
 
     # 本期有已记账凭证才谈"期末收尾/结账"；一张都没记过 → 先记账/录期初，别催结转。
     if counts["posted"] == 0:
-        has_opening = bool(
-            session.scalars(
-                select(Voucher.id).where(
-                    Voucher.ledger_set_id == ledger_set_id,
-                    Voucher.period_id == period.id,
-                    Voucher.voucher_no.like(OPENING_PREFIX + "%"),
-                )
-            ).first()
-        )
         hint = (
             "本期尚无任何记账。未发现期初凭证——请先录入期初余额"
             "（或直接开始日常记账）。"
@@ -145,6 +290,9 @@ def month_end_guide(
             "counts": counts,
             "next_action": hint,
             "close": None,
+            "steps": _build_steps(has_period=True, period_status="OPEN",
+                                  has_opening=has_opening, counts=counts,
+                                  close=None, ls_id=ledger_set_id),
         }
 
     # 有已记账凭证，但仍存在未处理完的（草稿/待审/待记账）→ 先收尾
@@ -164,6 +312,9 @@ def month_end_guide(
             "counts": counts,
             "next_action": "本月还有未处理完的凭证：" + "；".join(parts) + "。请先处理完再进入期末结账。",
             "close": None,
+            "steps": _build_steps(has_period=True, period_status="OPEN",
+                                  has_opening=has_opening, counts=counts,
+                                  close=None, ls_id=ledger_set_id),
         }
 
     # 全部凭证已记账 → 进入期末结账闸门（复用 precheck_close，不重复造轮子）
@@ -183,4 +334,7 @@ def month_end_guide(
                              for c in close["checks"] if not c["passed"])
         ),
         "close": close,
+        "steps": _build_steps(has_period=True, period_status="OPEN",
+                              has_opening=has_opening, counts=counts,
+                              close=close, ls_id=ledger_set_id),
     }

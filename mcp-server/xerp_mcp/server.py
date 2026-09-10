@@ -1778,6 +1778,10 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             counts    本期间各状态凭证数（草稿/待审/已审/已记账）
             next_action 一句话：现在最该做的那件事（新人可直接照着做）
             close     结账闸门明细（复用 precheck_close；仅在进入期末阶段时给出）
+            steps     月末结账向导卡状态机（5 步：建立本期→录入期初→日常记账
+                     →处理待办→月末结账），每步含 status(done/active/blocked/
+                     pending)+中文 detail+可选动作链接+结账闸门子清单。Web 端
+                     引导卡与本工具同源消费它，AI 可据此一步步驱动用户走完月末。
 
         设计要点：刚建账、本期还没记过任何凭证的账套，会被引导去**录期初/记账**，
         而不是被误导去做损益结转——那是 precheck_close 单点会犯的错。

@@ -115,6 +115,34 @@ select{font-family:inherit;width:100%;padding:4px;margin:4px 0;box-sizing:border
 .check li.fail{border-left:4px solid #a32d2d;background:#fdf4f4}
 .check .item{font-weight:bold}
 .check .hint{color:#8a5d00}
+/* 月末结账向导卡 · 交互式状态机（超级AI总账） */
+.guide{background:#fbfdff;border:1px solid #c3d4e6;padding:12px 16px;margin:8px 0;
+  font-size:13px;line-height:1.7}
+.guide-counts{color:#456;margin:4px 0 8px;font-size:12px}
+.steps{list-style:none;padding:0;margin:6px 0 0}
+.step{display:flex;gap:10px;padding:8px 10px;margin:6px 0;border-left:4px solid #cbd5e0;
+  background:#fff}
+.step.s-done{border-left-color:#2e7d32}
+.step.s-active{border-left-color:#1f4e79;background:#eef4fb}
+.step.s-blocked{border-left-color:#a32d2d;background:#fdf5f5}
+.step.s-pending{border-left-color:#cbd5e0;opacity:.72}
+.step-no{flex:0 0 22px;height:22px;line-height:22px;text-align:center;border-radius:50%;
+  background:#cbd5e0;color:#fff;font-weight:bold;font-size:12px}
+.step.s-done .step-no{background:#2e7d32}
+.step.s-active .step-no{background:#1f4e79}
+.step.s-blocked .step-no{background:#a32d2d}
+.step-body{flex:1}
+.step-head{margin-bottom:2px}
+.step-detail{color:#345;font-size:12.5px}
+.step-badge{display:inline-block;padding:0 6px;border-radius:2px;font-size:11px;
+  border:1px solid #999;color:#555;background:#f2f2f2}
+.sb-done{color:#1b5e20;background:#e8f5e9;border-color:#a5d6a7}
+.sb-active{color:#1f4e79;background:#e3edf8;border-color:#9bb8de}
+.sb-blocked{color:#a32d2d;background:#fcebeb;border-color:#e5b4b4}
+.sb-pending{color:#888;background:#f0f0f0;border-color:#ccc}
+.step-btn{display:inline-block;margin:6px 10px 0 0;padding:3px 12px;background:#1f4e79;
+  color:#fff !important;border-radius:2px;font-size:12px}
+.step-btn:hover{text-decoration:none;background:#2b62a3}
 /* 算子 · 账本精灵（产品方案 §8）；右上角常驻 24×24；hover 展开 80×80 详情卡。
    五条红线在 operator.py docstring 中钉死。 */
 .op-container{position:fixed;top:8px;right:16px;z-index:1000;display:inline-block}
@@ -211,66 +239,65 @@ def _toolbar(*items: str) -> str:
     return '<div class=toolbar>' + '<span class=sep>|</span>'.join(items) + '</div>'
 
 
-def _guide_card(guide: dict | None, ls_id: str) -> str:
-    """本月引导卡（超级AI总账 · 阶段0）：把 month_end_guide 的结论讲给人听。
+def _guide_step(st: dict, idx: int) -> str:
+    """渲染单步：编号 + 标题 + 状态徽章 + 说明 + 动作 + 闸门子清单。"""
+    status = st["status"]
+    badge = (f'<span class="step-badge sb-{status}">'
+             f'{html.escape(st.get("status_zh", status))}</span>')
+    acts = ""
+    for a in st.get("actions") or []:
+        acts += (f'<a class=step-btn href="{a["href"]}">'
+                 f'{html.escape(a["label"])} →</a>')
+    gates = ""
+    if st.get("gates"):
+        lis = ""
+        for g in st["gates"]:
+            cls = "pass" if g["passed"] else "fail"
+            mark = "√" if g["passed"] else "×"
+            hint = g.get("hint") or ""
+            hint_html = (f'<div class=hint>→ {html.escape(hint)}</div>'
+                         if hint else "")
+            lis += (f'<li class={cls}><span class=item>{mark} '
+                    f'{html.escape(g["item"])}</span>　'
+                    f'{html.escape(g.get("detail", ""))}{hint_html}</li>')
+        gates = f'<ul class=check>{lis}</ul>'
+    return (
+        f'<li class="step s-{status}"><span class=step-no>{idx}</span>'
+        f'<div class=step-body><div class=step-head><b>'
+        f'{html.escape(st["label"])}</b>　{badge}</div>'
+        f'<div class=step-detail>{html.escape(st["detail"])}</div>'
+        f'{acts}{gates}</div></li>'
+    )
 
-    会计一进账套，最先看到的不是凭证流水，而是「这个月还差什么、下一步干嘛」。
-    本卡片只复用内核 phase/counts/next_action/close 的结论做展示与跳转，
+
+def _guide_card(guide: dict | None, ls_id: str) -> str:
+    """本月引导卡（超级AI总账 · 阶段0/2）：把 month_end_guide 的状态机讲给人听。
+
+    会计一进账套，最先看到的不是凭证流水，而是「这个月走到哪步、下一步干嘛、
+    哪步卡住了、点哪能继续」。卡片只消费内核 guide['steps'] 的结论做展示与跳转，
     不做任何二次推断——文案与 MCP 工具 month_end_guide 同源，两端口径永远一致。
     """
     if guide is None:
         # 账套连期间都没有：与内核 no_phase 口径一致，指向建账向导。
         return ('<div class=warn><b>本账套尚未建账</b>——请先初始化期间，'
                 "再开始记账。</div>")
-    head = (
-        f'<b>{html.escape(guide["phase_zh"])}</b>　'
-        f'{html.escape(guide["next_action"])}'
-    )
-    if guide["phase"] == "closed":
-        return f'<div class=ok>{head}</div>'
-    if guide["phase"] == "closing_ready":
-        return (
-            f'<div class=ok>{head}　'
-            f'<a href="/ledger/{ls_id}/close">去月末结账 →</a></div>'
-        )
-    parts = [f'<div class=warn>{head}']
+    steps = guide.get("steps") or []
+    head = (f'<b>{html.escape(guide["phase_zh"])}</b>　'
+            f'{html.escape(guide["next_action"])}')
+    # 凭证盘点行（保留既有词汇，便于一眼看清分布）
     c = guide.get("counts") or {}
+    counts_html = ""
     if c:
-        parts.append(
-            '<div style=margin-top:6px>'
-            f'凭证盘点：未审核草稿 {c.get("draft", 0)} 张 · '
-            f'待审核 {c.get("pushed", 0)} 张 · '
-            f'已审待记账 {c.get("approved", 0)} 张 · '
-            f'已记账 {c.get("posted", 0)} 张</div>'
+        counts_html = (
+            '<div class=guide-counts>凭证盘点：未审核草稿 '
+            f'{c.get("draft", 0)} 张 · 待审核 {c.get("pushed", 0)} 张 · '
+            f'已审待记账 {c.get("approved", 0)} 张 · 已记账 '
+            f'{c.get("posted", 0)} 张</div>'
         )
-    if guide["phase"] == "daily_pending":
-        parts.append(
-            '<div style=margin-top:6px>'
-            f'<a href="/todo">去审批待办 →</a>　'
-            f'<a href="/ledger/{ls_id}/voucher/new">继续制单 →</a></div>'
-        )
-    close = guide.get("close")
-    if close:
-        lis = ""
-        for chk in close["checks"]:
-            cls = "pass" if chk["passed"] else "fail"
-            mark = "√" if chk["passed"] else "×"
-            hint = chk.get("hint") or ""
-            hint_html = (
-                f'<div class=hint>→ {html.escape(hint)}</div>' if hint else ""
-            )
-            lis += (
-                f'<li class={cls}><span class=item>{mark} '
-                f'{html.escape(chk["item"])}</span>　'
-                f'{html.escape(chk["detail"])}{hint_html}</li>'
-            )
-        parts.append(
-            f'<ul style="list-style:none;padding:0;margin:8px 0 0">{lis}</ul>'
-            '<div style=margin-top:6px>'
-            f'<a href="/ledger/{ls_id}/close">查看结账体检 →</a></div>'
-        )
-    parts.append("</div>")
-    return "".join(parts)
+    steps_html = "".join(_guide_step(st, i + 1) for i, st in enumerate(steps))
+    cls = "guide closed" if guide["phase"] == "closed" else "guide"
+    return (f'<div class="{cls}">{head}{counts_html}'
+            f'<ol class=steps>{steps_html}</ol></div>')
 
 
 def _closing_preview_block(session, pv: dict | None, ls_id: str) -> str:

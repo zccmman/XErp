@@ -202,3 +202,87 @@ def test_period_guide_module_pure_read_only(ctx):
     s.commit()
     after = len(s.scalars(select(Voucher)).all())
     assert before == after
+
+
+# ------------------------------------------------------- 8. 向导卡状态机（阶段2）
+
+_STEP_KEYS = ["open_period", "opening", "daily", "clear_pending", "close"]
+
+
+def _steps(ctx, year=2026, month=8):
+    return [s["key"] for s in _guide(ctx, year, month)["steps"]]
+
+
+def test_steps_keys_are_the_fixed_five(ctx):
+    assert _steps(ctx) == _STEP_KEYS
+
+
+def test_steps_no_period_blocks_at_open(ctx):
+    r = _guide(ctx, year=2025, month=1)
+    steps = {s["key"]: s["status"] for s in r["steps"]}
+    assert steps["open_period"] == "blocked"
+    # 未建账时其余步骤均未开始（不应出现"下一步/受阻"误导）
+    assert steps["opening"] == "pending"
+    assert steps["daily"] == "pending"
+    assert steps["clear_pending"] == "pending"
+    assert steps["close"] == "pending"
+
+
+def test_steps_empty_no_opening_opening_is_next(ctx):
+    """演示账套（seed 不造凭证）尚无任何记账、也未录期初 → 下一步是录入期初。"""
+    r = _guide(ctx)
+    steps = {s["key"]: s["status"] for s in r["steps"]}
+    assert steps["open_period"] == "done"
+    assert steps["opening"] == "active"   # 尚未录期初 → 录入期初是下一步
+    assert steps["daily"] == "pending"
+    assert steps["clear_pending"] == "pending"
+    assert steps["close"] == "pending"
+    opening = next(s for s in r["steps"] if s["key"] == "opening")
+    assert any(a["href"].endswith("#opening") for a in opening["actions"])
+
+
+def test_build_steps_empty_with_opening_makes_daily_next():
+    """已录期初、无业务 → 录入期初完成，下一步是日常记账（直接验状态机）。"""
+    from kernel.period_guide import _build_steps
+
+    steps = {s["key"]: s["status"] for s in _build_steps(
+        has_period=True, period_status="OPEN", has_opening=True,
+        counts={"posted": 0, "draft": 0, "pushed": 0, "approved": 0},
+        close=None, ls_id="LS1")}
+    assert steps["opening"] == "done"
+    assert steps["daily"] == "active"
+    daily = next(s for s in _build_steps(
+        has_period=True, period_status="OPEN", has_opening=True,
+        counts={"posted": 0, "draft": 0, "pushed": 0, "approved": 0},
+        close=None, ls_id="LS1") if s["key"] == "daily")
+    assert any(a["href"].endswith("/wizard") for a in daily["actions"])
+
+
+def test_steps_daily_pending_blocks_at_clear(ctx):
+    _post_business(ctx)
+    s, ids = ctx
+    create_draft_voucher(
+        s, ledger_set_id=ids["ledger_set_id"], actor=ids["maker_actor"],
+        voucher_date="2026-08-11", summary="还没处理的",
+        lines=[{"account_code": "6602", "debit": "30"},
+               {"account_code": "1001", "credit": "30"}],
+    )
+    s.commit()
+    r = _guide(ctx)
+    steps = {s["key"]: s["status"] for s in r["steps"]}
+    assert steps["daily"] == "done"          # 已有记账凭证
+    assert steps["clear_pending"] == "blocked"  # 还有草稿未处理
+    assert steps["close"] == "pending"
+    clear = next(s for s in r["steps"] if s["key"] == "clear_pending")
+    assert any(a["href"] == "/todo" for a in clear["actions"])
+
+
+def test_steps_closed_marks_close_done(ctx):
+    s, ids = ctx
+    p = s.get(Period, ids["period_id"])
+    p.status = "CLOSED"
+    s.commit()
+    r = _guide(ctx)
+    steps = {s["key"]: s["status"] for s in r["steps"]}
+    assert steps["close"] == "done"
+    assert all(st == "done" for st in steps.values())
