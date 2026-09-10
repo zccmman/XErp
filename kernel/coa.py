@@ -75,6 +75,20 @@ def parse_attrs(raw: str | None) -> dict[str, str]:
     return out
 
 
+def attr_is(attrs: dict | None, key: str) -> bool:
+    """科目属性是否为开启（值为 'yes'/'true'/非空）。
+
+    消费端统一入口：``account.attrs`` 为 None 时返回 False，
+    值为 'no'/'false'/空 亦返回 False。
+    """
+    if not attrs:
+        return False
+    val = attrs.get(key)
+    if val is None:
+        return False
+    return str(val).strip().lower() in ("yes", "true", "1")
+
+
 def import_chart_of_accounts(
     session: Session,
     ledger_set_id: str,
@@ -144,10 +158,13 @@ def import_chart_of_accounts(
             want_dims = _parse_dims(r.get("aux_dims"))
             if want_dims and not acc0.aux_dim_defs:
                 acc0.aux_dim_defs = want_dims
-            # attrs 同理：模板是权威定义，旧种子科目缺本体属性则补齐。
+            # attrs 同理：模板是权威定义，**模板优先合并**——既补齐缺省属性
+            # （如给 100203 加 foreign=yes），又保留已存在科目上模板没有的属性
+            # （如既有 cash_flow=yes 不被清空）。
             want_attrs = parse_attrs(r.get("attrs"))
-            if want_attrs and not acc0.attrs:
-                acc0.attrs = want_attrs
+            if want_attrs:
+                merged = {**(acc0.attrs or {}), **want_attrs}
+                acc0.attrs = merged
             continue
         if parent_code and parent_code not in existing:
             raise CoaImportError(f"{code}: 父科目 {parent_code} 不存在（须先定义父级）")

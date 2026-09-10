@@ -210,6 +210,20 @@ class VoucherLine(Base):
     credit: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
     summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
     aux_dims: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    # —— 外币核算（②）：原币金额 + 记账汇率，本币 debit/credit 仍为权威账面值 ——
+    # currency 为 None/空 = 本币（账套 functional_currency），不另存；
+    # 非本币时必须同时给 fx_rate 与原币借/贷（foreign_debit/foreign_credit）。
+    currency: Mapped[str | None] = mapped_column(String(8), nullable=True, default=None)
+    fx_rate: Mapped[decimal.Decimal | None] = mapped_column(
+        Numeric(18, 6), nullable=True, default=None
+    )
+    foreign_debit: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
+    foreign_credit: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
+    # —— 数量核算（②）：数量金额式明细账所需，仅 quantity=yes 科目必填 ——
+    quantity: Mapped[decimal.Decimal | None] = mapped_column(
+        Numeric(18, 3), nullable=True, default=None
+    )
+    unit: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
 
     voucher: Mapped[Voucher] = relationship(back_populates="lines")
 

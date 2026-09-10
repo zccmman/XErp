@@ -795,6 +795,73 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("REPORT_ERROR", str(e))
 
     @mcp.tool()
+    def report_aux(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+        dim: str,
+        party_name: str = "",
+        account_code: str = "",
+        mode: str = "ledger",
+    ) -> dict:
+        """辅助核算报表：按维度（客户/供应商/部门/项目/其他）透视余额。
+
+        dim 可选 customer/supplier/department/project/other；
+        party_name 只看某个辅助对象（按名称匹配，不强制存在往来单位）；
+        account_code 只看某科目（前缀匹配，末级优先）；
+        mode=ledger 返回「维度值 × 科目」明细，mode=summary 返回各维度值跨科目净额合计。
+        数据来自 POSTED 余额投影，按辅助维度切片聚合，可被账账核对独立验证。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.auxiliary import (
+                    AuxReportError,
+                    aux_ledger,
+                    aux_summary,
+                )
+
+                fn = aux_summary if mode == "summary" else aux_ledger
+                report = fn(
+                    s,
+                    ledger_set_id=ledger_set_id,
+                    dim=dim,
+                    party_name=party_name or None,
+                    account_code=account_code or None,
+                    year=period_year,
+                    month=period_month,
+                )
+                return _ok(report=report)
+        except AuxReportError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def foreign_trial_balance(
+        ledger_set_id: str,
+        period_year: int,
+        period_month: int,
+    ) -> dict:
+        """外币试算平衡：按（科目 × 币种）汇总本月 POSTED 凭证的本币与原币借/贷。
+
+        仅含带币种的凭证明细（外币户/外汇交易），本币科目不混入。
+        口径：本币借/贷 = ln.debit/credit，原币借/贷 = ln.foreign_debit/credit；
+        同一科目跨多币种时按币种分行展示。与三大报表同源取数，可被账账核对验证。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.foreign import foreign_trial_balance as _ftb
+
+                return _ok(
+                    report=_ftb(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        year=period_year,
+                        month=period_month,
+                    )
+                )
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+
+    @mcp.tool()
     def forecast_statements(
         ledger_set_id: str,
         base_year: int,

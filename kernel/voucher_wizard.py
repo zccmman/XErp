@@ -23,7 +23,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kernel.db.models import Account, Period, Voucher, VoucherLine
+from kernel.db.models import Account, LedgerSet, Period, Voucher, VoucherLine
 from kernel.events import E
 from kernel.ledger import append_event
 from kernel.posting import (
@@ -49,6 +49,19 @@ def _amount(value, field: str) -> Decimal:
     return d
 
 
+def _amount_or_none(value) -> Decimal | None:
+    """同 _amount，但空/None/0 返回 None（用于可选的原币/数量字段）。"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, Decimal):
+        return value if value != ZERO else None
+    try:
+        d = Decimal(str(value)).quantize(Decimal("0.01"))
+    except Exception:
+        raise PostingError("AMOUNT_INVALID", f"非法金额: {value!r}") from None
+    return d if d != ZERO else None
+
+
 def voucher_snapshot(session: Session, v: Voucher) -> dict:
     """凭证快照（写进 VOUCHER_CREATED 事件 payload）。
 
@@ -72,6 +85,12 @@ def voucher_snapshot(session: Session, v: Voucher) -> dict:
                 "debit": _fmt(ln.debit),
                 "credit": _fmt(ln.credit),
                 "aux_dims": ln.aux_dims or {},
+                "currency": ln.currency,
+                "fx_rate": str(ln.fx_rate) if ln.fx_rate is not None else None,
+                "foreign_debit": _fmt(ln.foreign_debit),
+                "foreign_credit": _fmt(ln.foreign_credit),
+                "quantity": str(ln.quantity) if ln.quantity is not None else None,
+                "unit": ln.unit,
             }
             for ln in v.lines
         ],
@@ -158,7 +177,23 @@ def create_draft_voucher(
         dr = _amount(ln.get("debit"), f"第{i}行借方")
         cr = _amount(ln.get("credit"), f"第{i}行贷方")
         dims = ln.get("aux_dims") or {}
-        posting_lines.append(PostingLine(acc.id, dr, cr, dims))
+        # ② 外币/数量核算：从行 dict 透传补充字段（带默认值，向后兼容）。
+        currency = (ln.get("currency") or None)
+        if currency is not None:
+            currency = str(currency).strip() or None
+        fx_rate = _amount_or_none(ln.get("fx_rate"))
+        fdebit = _amount(ln.get("foreign_debit"), f"第{i}行原币借方") if ln.get("foreign_debit") not in (None, "", 0) else ZERO
+        fcredit = _amount(ln.get("foreign_credit"), f"第{i}行原币贷方") if ln.get("foreign_credit") not in (None, "", 0) else ZERO
+        quantity = _amount_or_none(ln.get("quantity"))
+        unit = (ln.get("unit") or None)
+        if unit is not None:
+            unit = str(unit).strip() or None
+        posting_lines.append(PostingLine(
+            acc.id, dr, cr, dims,
+            currency=currency, fx_rate=fx_rate,
+            foreign_debit=fdebit, foreign_credit=fcredit,
+            quantity=quantity, unit=unit,
+        ))
         orm_lines.append(
             VoucherLine(
                 line_no=i,
@@ -166,9 +201,17 @@ def create_draft_voucher(
                 debit=dr,
                 credit=cr,
                 aux_dims=dims or None,
+                currency=currency,
+                fx_rate=fx_rate,
+                foreign_debit=fdebit,
+                foreign_credit=fcredit,
+                quantity=quantity,
+                unit=unit,
             )
         )
 
+    ledger_set = session.get(LedgerSet, ledger_set_id)
+    functional_currency = (ledger_set.functional_currency if ledger_set else "CNY")
     validate_voucher(
         lines=posting_lines,
         accounts_by_id={a.id: a for a in accounts.values()},
@@ -176,6 +219,7 @@ def create_draft_voucher(
         period_year=d.year,
         period_month=d.month,
         voucher_date=d,
+        functional_currency=functional_currency,
     )
     if period is None:
         raise PostingError(

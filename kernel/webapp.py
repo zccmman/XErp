@@ -1235,6 +1235,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"<a href='/ledger/{ls_id}/voucher/new'>填制凭证</a>",
                     f"<a href='/ledger/{ls_id}/wizard'>业务向导</a>",
                     f"<a href='/ledger/{ls_id}/reports'>账簿报表</a>",
+                    f"<a href='/ledger/{ls_id}/aux'>辅助核算</a>",
+                    f"<a href='/ledger/{ls_id}/foreign-tb'>外币试算</a>",
                     f"<a href='/ledger/{ls_id}/forecast'>三表预测</a>",
                     f"<a href='/ledger/{ls_id}/close'>月末结账</a>",
                 )
@@ -1690,7 +1692,10 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 f"<h2>{html.escape(ls.name)} · {yr}-{mo:02d} 三大报表</h2>"
                 f"<p><a href=/ledger/{ls_id}>← 返回账套</a> · "
                 f"<a href='/ledger/{ls_id}/forecast?year={yr}&month={mo}'>"
-                f"三表预测</a></p>{err}<p>{close_ui}</p>"
+                f"三表预测</a> · "
+                f"<a href='/ledger/{ls_id}/aux'>辅助核算</a> · "
+                f"<a href='/ledger/{ls_id}/foreign-tb'>外币试算</a></p>"
+                f"{err}<p>{close_ui}</p>"
                 f"<h3>利润表</h3>{table(inc_rows, '项目', '金额')}"
                 f"<h3>资产负债表 <span class=badge>{badge}</span> {reclass_ui}</h3>"
                 f"{reclass_block}{table(bs_rows, '项目', '金额')}"
@@ -1702,6 +1707,201 @@ def build_app(db_url: str | None = None) -> FastAPI:
             )
             return _page(f"{ls.name} 报表", body, request.state.subject_name,
                          show_operator=True)
+
+    # ---------- 辅助核算报表（② Web 入口） ----------
+
+    @app.get("/ledger/{ls_id}/aux", response_class=HTMLResponse)
+    def aux_page(request: Request, ls_id: str, year: int = 0, month: int = 0,
+                 dim: str = "", party: str = "", account: str = "",
+                 mode: str = "ledger"):
+        """辅助核算报表页：先选维度（客户/供应商/部门/项目/其他），再按维度值透视。"""
+        from decimal import Decimal as _D
+
+        from kernel.reporting.auxiliary import (
+            AuxReportError,
+            DIMENSIONS,
+            aux_ledger,
+            aux_summary,
+        )
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>",
+                             request.state.subject_name)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc())
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"),
+                          None) or (periods[0] if periods else None)
+            if period is None:
+                return _page(f"{ls.name}", "<p class=err>尚无期间</p>",
+                             request.state.subject_name)
+            yr, mo = period.year, period.month
+            if not dim:
+                opts = "".join(
+                    f'<option value="{d}">{html.escape(d)}</option>'
+                    for d in DIMENSIONS
+                )
+                body = (
+                    f"<h2>{html.escape(ls.name)} · 辅助核算报表</h2>"
+                    f"<p><a href=/ledger/{ls_id}>← 返回账套</a> · "
+                    f"<a href='/ledger/{ls_id}/reports'>账簿报表</a></p>"
+                    f"<form method=get action='/ledger/{ls_id}/aux' class=ops>"
+                    f"<input type=hidden name=year value={yr}>"
+                    f"<input type=hidden name=month value={mo}>"
+                    f"<p>辅助维度：<select name=dim>{opts}</select></p>"
+                    f"<p>辅助对象（可选，按名称匹配）："
+                    f"<input name=party placeholder='如 甲公司'></p>"
+                    f"<p>科目编码前缀（可选）：<input name=account placeholder='如 1122'></p>"
+                    f"<p>视图：<select name=mode>"
+                    f"<option value=ledger>明细（维度值 × 科目）</option>"
+                    f"<option value=summary>汇总（各维度值净额）</option></select></p>"
+                    f"<button type=submit>生成报表</button></form>"
+                )
+                return _page(f"{ls.name} 辅助核算", body,
+                             request.state.subject_name, show_operator=True)
+            try:
+                fn = aux_summary if mode == "summary" else aux_ledger
+                rep = fn(s, ledger_set_id=ls_id, dim=dim,
+                         party_name=party or None, account_code=account or None,
+                         year=yr, month=mo)
+            except AuxReportError as e:
+                return _page(f"{ls.name} 辅助核算",
+                             f"<p class=err>{html.escape(e.message_zh)}</p>",
+                             request.state.subject_name)
+            if mode == "summary":
+                rows = [(i["dim_value"], None, None, _D(i["net"]))
+                        for i in rep["items"]]
+                total_net = _D(rep["total_net"])
+                table_html = (
+                    "<table><tr><th>维度值</th>"
+                    "<th style=text-align:right>净额</th></tr>"
+                    + "".join(
+                        f"<tr><td>{html.escape(str(n))}</td>"
+                        f"<td style=text-align:right>{amt:,.2f}</td></tr>"
+                        for n, _, _, amt in rows
+                    )
+                    + "</table>"
+                )
+            else:
+                rows = [
+                    (f'{r["dim_value"]} · {r["account_code"]} {r["account_name"]}',
+                     _D(r["debit"]), _D(r["credit"]), _D(r["net"]))
+                    for r in rep["rows"]
+                ]
+                total_net = _D(rep["totals"]["net"])
+                table_html = (
+                    "<table><tr><th>维度值 / 科目</th>"
+                    "<th style=text-align:right>借方</th>"
+                    "<th style=text-align:right>贷方</th>"
+                    "<th style=text-align:right>净额</th></tr>"
+                    + "".join(
+                        f"<tr><td>{html.escape(str(n))}</td>"
+                        f"<td style=text-align:right>{d:,.2f}</td>"
+                        f"<td style=text-align:right>{c:,.2f}</td>"
+                        f"<td style=text-align:right>{amt:,.2f}</td></tr>"
+                        for n, d, c, amt in rows
+                    )
+                    + "</table>"
+                )
+            scope = rep["scope"]
+            body = (
+                f"<h2>{html.escape(ls.name)} · 辅助核算（{html.escape(dim)}）</h2>"
+                f"<p><a href=/ledger/{ls_id}>← 返回账套</a> · "
+                f"<a href='/ledger/{ls_id}/aux'>重新选择</a> · "
+                f"<a href='/ledger/{ls_id}/reports'>账簿报表</a></p>"
+                f"<p class=ok>范围：{scope['year'] or '全期'}-{scope['month'] or ''}"
+                f" · 口径：{html.escape(rep['basis'])}</p>"
+                f"{table_html}"
+                f"<p>合计净额：<b>{total_net:,.2f}</b></p>"
+            )
+            return _page(f"{ls.name} 辅助核算", body,
+                         request.state.subject_name, show_operator=True)
+
+    # ---------- 外币试算平衡（② Web 入口） ----------
+
+    @app.get("/ledger/{ls_id}/foreign-tb", response_class=HTMLResponse)
+    def foreign_tb_page(request: Request, ls_id: str, year: int = 0,
+                        month: int = 0):
+        """外币试算平衡页：按（科目 × 币种）列示本月 POSTED 凭证的本币与原币借/贷。"""
+        from decimal import Decimal as _D
+
+        from kernel.reporting.foreign import foreign_trial_balance
+        from kernel.reporting.statements import ReportError
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>",
+                             request.state.subject_name)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc())
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"),
+                          None) or (periods[0] if periods else None)
+            if period is None:
+                return _page(f"{ls.name}", "<p class=err>尚无期间</p>",
+                             request.state.subject_name)
+            yr, mo = period.year, period.month
+            try:
+                rep = foreign_trial_balance(s, ledger_set_id=ls_id, year=yr, month=mo)
+            except ReportError as e:
+                return _page(f"{ls.name} 外币试算",
+                             f"<p class=err>{html.escape(str(e))}</p>",
+                             request.state.subject_name)
+            rows = rep["rows"]
+            if not rows:
+                body = (
+                    f"<h2>{html.escape(ls.name)} · 外币试算平衡 {yr}-{mo:02d}</h2>"
+                    f"<p><a href=/ledger/{ls_id}>← 返回账套</a> · "
+                    f"<a href='/ledger/{ls_id}/reports'>账簿报表</a></p>"
+                    f"<p class=warn>本期无外币（带币种）凭证，外币试算表为空。"
+                    f"需在「外币户（如 100203）」科目记账时指定币种、汇率与原币金额。</p>"
+                )
+                return _page(f"{ls.name} 外币试算", body,
+                             request.state.subject_name, show_operator=True)
+            t = rep["totals"]
+            table_html = (
+                "<table><tr><th>科目</th><th>币种</th>"
+                "<th style=text-align:right>本币借</th>"
+                "<th style=text-align:right>本币贷</th>"
+                "<th style=text-align:right>原币借</th>"
+                "<th style=text-align:right>原币贷</th></tr>"
+            )
+            for r in rows:
+                table_html += (
+                    f"<tr><td>{html.escape(r['account_code'])} "
+                    f"{html.escape(r['account_name'])}</td>"
+                    f"<td>{html.escape(r['currency'])}</td>"
+                    f"<td style=text-align:right>{_D(r['debit']):,.2f}</td>"
+                    f"<td style=text-align:right>{_D(r['credit']):,.2f}</td>"
+                    f"<td style=text-align:right>{_D(r['foreign_debit']):,.2f}</td>"
+                    f"<td style=text-align:right>{_D(r['foreign_credit']):,.2f}</td>"
+                    f"</tr>"
+                )
+            table_html += (
+                f"<tr style='font-weight:bold'><td>合计</td><td></td>"
+                f"<td style=text-align:right>{_D(t['debit']):,.2f}</td>"
+                f"<td style=text-align:right>{_D(t['credit']):,.2f}</td>"
+                f"<td style=text-align:right>{_D(t['foreign_debit']):,.2f}</td>"
+                f"<td style=text-align:right>{_D(t['foreign_credit']):,.2f}</td>"
+                f"</tr></table>"
+            )
+            body = (
+                f"<h2>{html.escape(ls.name)} · 外币试算平衡 {yr}-{mo:02d}</h2>"
+                f"<p>记账本位币：{html.escape(rep['functional_currency'])}</p>"
+                f"<p><a href=/ledger/{ls_id}>← 返回账套</a> · "
+                f"<a href='/ledger/{ls_id}/reports'>账簿报表</a></p>"
+                f"{table_html}"
+                f"<p class=ok>口径：{html.escape(rep['basis'])}</p>"
+                f"<p class=warn>提示：原币与本位币差异由账面汇率折算；"
+                f"如需确认汇兑损益请走月末结账/三表预测。</p>"
+            )
+            return _page(f"{ls.name} 外币试算", body,
+                         request.state.subject_name, show_operator=True)
 
     # ---------- 三表预测（P1-01 Web 入口） ----------
 

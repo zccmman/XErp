@@ -13,7 +13,16 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kernel.db.models import Account, Balance, Event, Period, Voucher, utcnow
+from kernel.db.models import (
+    Account,
+    Balance,
+    Event,
+    LedgerSet,
+    Period,
+    Voucher,
+    utcnow,
+)
+from kernel.coa import attr_is
 from kernel.events import E
 from kernel.ledger import append_event
 from kernel.ledger.canonical import canonical_json
@@ -33,12 +42,24 @@ class PostingError(Exception):
 
 @dataclass(frozen=True)
 class PostingLine:
-    """凭证明细行的纯数据形态（金额必须是 Decimal）。"""
+    """凭证明细行的纯数据形态（金额必须是 Decimal）。
+
+    fcy/qty 为外币/数量核算的补充字段（②）：本币 debit/credit 仍是权威账面值，
+    原币与数量只作备查记录，不参与借贷平衡判断。
+    """
 
     account_id: str
     debit: Decimal
     credit: Decimal
     aux_dims: dict | None = None
+    # 外币：currency 为 None/空=本币；非本币须带 fx_rate 与原币借/贷
+    currency: str | None = None
+    fx_rate: Decimal | None = None
+    foreign_debit: Decimal = Decimal("0")
+    foreign_credit: Decimal = Decimal("0")
+    # 数量：quantity=yes 科目必带 quantity + unit
+    quantity: Decimal | None = None
+    unit: str | None = None
 
 
 def validate_voucher(
@@ -49,6 +70,7 @@ def validate_voucher(
     period_year: int,
     period_month: int,
     voucher_date,
+    functional_currency: str = "CNY",
 ) -> None:
     """凭证硬校验：通过则静默返回，否则抛 PostingError。"""
     if len(lines) < 2:
@@ -119,6 +141,49 @@ def validate_voucher(
                     {"line_no": no, "account": getattr(account, "code", "?"),
                      "illegal": sorted(illegal)},
                 )
+        # ② 外币核算：foreign=yes 科目必须带非本币币种 + 汇率 + 原币借/贷。
+        # 本币 debit/credit 仍是权威账面值；原币仅作备查，不重算。
+        if attr_is(getattr(account, "attrs", None), "foreign"):
+            cur = (line.currency or "").strip()
+            has_fcy = (line.foreign_debit > ZERO) or (line.foreign_credit > ZERO)
+            if not cur or cur == functional_currency:
+                raise PostingError(
+                    "FOREIGN_CCY_REQUIRED",
+                    f"第 {no} 行科目 {getattr(account, 'code', '?')} 为外币核算科目，"
+                    f"必须指定非本币币种（当前账套本币 {functional_currency}）",
+                    {"line_no": no, "account": getattr(account, "code", "?"),
+                     "currency": cur},
+                )
+            if line.fx_rate is None:
+                raise PostingError(
+                    "FX_RATE_REQUIRED",
+                    f"第 {no} 行科目 {getattr(account, 'code', '?')} 为外币核算科目，"
+                    f"必须填写记账汇率",
+                    {"line_no": no, "account": getattr(account, "code", "?")},
+                )
+            if not has_fcy:
+                raise PostingError(
+                    "FOREIGN_AMOUNT_REQUIRED",
+                    f"第 {no} 行科目 {getattr(account, 'code', '?')} 为外币核算科目，"
+                    f"必须填写原币借方或贷方金额",
+                    {"line_no": no, "account": getattr(account, "code", "?")},
+                )
+        # ② 数量核算：quantity=yes 科目必须带数量 + 计量单位。
+        if attr_is(getattr(account, "attrs", None), "quantity"):
+            if line.quantity is None or line.quantity <= ZERO:
+                raise PostingError(
+                    "QUANTITY_REQUIRED",
+                    f"第 {no} 行科目 {getattr(account, 'code', '?')} 为数量核算科目，"
+                    f"必须填写数量（大于 0）",
+                    {"line_no": no, "account": getattr(account, "code", "?")},
+                )
+            if not (line.unit or "").strip():
+                raise PostingError(
+                    "UNIT_REQUIRED",
+                    f"第 {no} 行科目 {getattr(account, 'code', '?')} 为数量核算科目，"
+                    f"必须填写计量单位",
+                    {"line_no": no, "account": getattr(account, "code", "?")},
+                )
         total_debit += debit
         total_credit += credit
 
@@ -144,6 +209,8 @@ def post_voucher(session: Session, *, voucher_id: str, actor: dict) -> Event:
         )
 
     period = session.get(Period, voucher.period_id)
+    ledger_set = session.get(LedgerSet, voucher.ledger_set_id)
+    functional_currency = (ledger_set.functional_currency if ledger_set else "CNY")
     accounts_by_id = {
         a.id: a
         for a in session.scalars(
@@ -156,6 +223,12 @@ def post_voucher(session: Session, *, voucher_id: str, actor: dict) -> Event:
             debit=line.debit,
             credit=line.credit,
             aux_dims=line.aux_dims,
+            currency=line.currency,
+            fx_rate=line.fx_rate,
+            foreign_debit=line.foreign_debit,
+            foreign_credit=line.foreign_credit,
+            quantity=line.quantity,
+            unit=line.unit,
         )
         for line in voucher.lines
     ]
@@ -166,6 +239,7 @@ def post_voucher(session: Session, *, voucher_id: str, actor: dict) -> Event:
         period_year=period.year,
         period_month=period.month,
         voucher_date=voucher.voucher_date,
+        functional_currency=functional_currency,
     )
 
     voucher.status = "POSTED"

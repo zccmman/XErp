@@ -3,7 +3,7 @@
 1002,银行存款,debit,asset,,,cash_flow=yes
 100201,基本存款户,debit,asset,1002,,cash_flow=yes
 100202,一般存款户,debit,asset,1002,,cash_flow=yes
-100203,外币户,debit,asset,1002,,cash_flow=yes
+100203,外币户,debit,asset,1002,,cash_flow=yes;foreign=yes
 1012,其他货币资金,debit,asset,,,cash_flow=yes
 101201,外埠存款,debit,asset,1012,,cash_flow=yes
 101202,银行汇票存款,debit,asset,1012,,cash_flow=yes
@@ -29,9 +29,9 @@
 1231,坏账准备,credit,asset,,
 1301,在途物资,debit,asset,,
 1401,材料采购,debit,asset,,
-1403,原材料,debit,asset,,
+1403,原材料,debit,asset,,,quantity=yes
 1404,材料成本差异,debit,asset,,
-1405,库存商品,debit,asset,,
+1405,库存商品,debit,asset,,,quantity=yes
 1407,商品进销差价,credit,asset,,
 1408,委托加工物资,debit,asset,,
 1411,周转材料,debit,asset,,
@@ -116,11 +116,11 @@
 5301,研发支出,debit,cost,,
 530101,费用化支出,debit,cost,5301,,
 530102,资本化支出,debit,cost,5301,,
-6001,主营业务收入,credit,pnl,,
+6001,主营业务收入,credit,pnl,,,cash_flow_item=销售商品、提供劳务收到的现金
 6051,其他业务收入,credit,pnl,,
 6101,投资收益,credit,pnl,,
 6301,营业外收入,credit,pnl,,
-6401,主营业务成本,debit,pnl,,
+6401,主营业务成本,debit,pnl,,,cash_flow_item=购买商品、接受劳务支付的现金
 6402,其他业务成本,debit,pnl,,
 6403,税金及附加,debit,pnl,,
 6601,销售费用,debit,pnl,,department,

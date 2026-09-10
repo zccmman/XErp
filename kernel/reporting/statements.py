@@ -225,12 +225,31 @@ def _flow_label(mp: dict, code: str, inflow: bool) -> str:
     return "经营活动-流入" if inflow else "经营活动-流出"
 
 
+def _cat_of(label: str) -> str:
+    """现金流项目名 → 三大类别键。"""
+    if "投资" in label:
+        return "investing"
+    if "筹资" in label:
+        return "financing"
+    return "operating"
+
+
 def cash_flow(session: Session, ledger_set_id: str, year: int, month: int,
               standard: str = "small_business") -> dict:
-    """现金流量表（直接法）：遍历 POSTED 凭证，按对方科目归类现金收支。"""
+    """现金流量表（直接法）：遍历 POSTED 凭证，按对方科目归类现金收支。
+
+    现金流项目语义（②）：科目可通过 attrs ``cash_flow_item`` 声明式指定所属
+    现金流项目名（如 6001 主营业务收入 → 「销售商品、提供劳务收到的现金」），
+    优先于按对方科目前缀的默认归类；类别（经营/投资/筹资）仍由映射口径推导，
+    保证与准则模板一致。期初凭证单独计入「期初现金」，不参与本期三类流量。
+    """
     mp = M.get_mapping(standard)
     period = _period(session, ledger_set_id, year, month)
     accounts = {a.id: a.code for a in session.scalars(select(Account)).all()}
+    # 科目 attrs（用于 cash_flow_item 声明式覆盖）
+    attrs_by_code = {
+        a.code: (a.attrs or {}) for a in session.scalars(select(Account)).all()
+    }
 
     vouchers = session.scalars(
         select(Voucher).where(
@@ -240,7 +259,12 @@ def cash_flow(session: Session, ledger_set_id: str, year: int, month: int,
         )
     ).all()
 
-    buckets: dict[str, Decimal] = {}
+    items: dict[str, Decimal] = {}
+    categories: dict[str, dict] = {
+        "operating": {"in": ZERO, "out": ZERO, "items": {}},
+        "investing": {"in": ZERO, "out": ZERO, "items": {}},
+        "financing": {"in": ZERO, "out": ZERO, "items": {}},
+    }
     opening_cash = ZERO
     for v in vouchers:
         lines = session.scalars(
@@ -262,25 +286,68 @@ def cash_flow(session: Session, ledger_set_id: str, year: int, month: int,
             continue
         inflow = delta > ZERO
         target = others[0] if others else None
-        label = (
-            _flow_label(mp, accounts.get(target.account_id, ""), inflow)
-            if target
-            else ("经营活动-流入" if inflow else "经营活动-流出")
-        )
-        buckets[label] = buckets.get(label, ZERO) + delta
+        target_code = accounts.get(target.account_id, "") if target else ""
+        custom = attrs_by_code.get(target_code, {}).get("cash_flow_item")
+        if custom:
+            label = str(custom)
+        elif target:
+            label = _flow_label(mp, target_code, inflow)
+        else:
+            label = "经营活动-流入" if inflow else "经营活动-流出"
+        items[label] = items.get(label, ZERO) + delta
+        # 类别：优先从项目名识别，否则回退到对方科目的映射类别
+        cat = _cat_of(label)
+        if cat == "operating" and not custom and target_code:
+            mb = M.cash_flow_bucket(mp, target_code)
+            if mb:
+                cat = _cat_of(mb)
+        if inflow:
+            categories[cat]["in"] += delta
+        else:
+            categories[cat]["out"] += -delta
+        cat_items = categories[cat]["items"]
+        cat_items[label] = cat_items.get(label, ZERO) + delta
 
-    def total(kind: str) -> Decimal:
-        return sum(
-            amt for lbl, amt in buckets.items() if lbl.startswith(kind)
-        )
-
-    op, inv, fin = total("经营活动"), total("投资活动"), total("筹资活动")
+    op = categories["operating"]["in"] - categories["operating"]["out"]
+    inv = categories["investing"]["in"] - categories["investing"]["out"]
+    fin = categories["financing"]["in"] - categories["financing"]["out"]
     net_increase = op + inv + fin
     return {
         "ledger_set": ledger_set_id,
         "period": {"year": year, "month": month},
         "standard": standard,
-        "items": [{"item": k, "amount": v} for k, v in sorted(buckets.items())],
+        # 扁平列表（兼容 a2ui / 旧消费方）
+        "items": [{"item": k, "amount": v} for k, v in sorted(items.items())],
+        # 结构化：经营/投资/筹资 分流入、流出与项目明细
+        "categories": {
+            "operating": {
+                "in": categories["operating"]["in"],
+                "out": categories["operating"]["out"],
+                "net": op,
+                "items": [
+                    {"item": k, "amount": v}
+                    for k, v in sorted(categories["operating"]["items"].items())
+                ],
+            },
+            "investing": {
+                "in": categories["investing"]["in"],
+                "out": categories["investing"]["out"],
+                "net": inv,
+                "items": [
+                    {"item": k, "amount": v}
+                    for k, v in sorted(categories["investing"]["items"].items())
+                ],
+            },
+            "financing": {
+                "in": categories["financing"]["in"],
+                "out": categories["financing"]["out"],
+                "net": fin,
+                "items": [
+                    {"item": k, "amount": v}
+                    for k, v in sorted(categories["financing"]["items"].items())
+                ],
+            },
+        },
         "operating": op,
         "investing": inv,
         "financing": fin,

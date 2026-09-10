@@ -70,7 +70,8 @@ def test_template_attrs_spot_checks():
     assert attrs["160101"] == {"depreciate": "yes"}
     assert attrs["170102"] == {"amortize": "yes"}
     assert attrs["660204"] == {"deduction": "catering60"}
-    assert attrs["6001"] == {}  # 未声明即空 dict，不是 None
+    # ② 现金流项目语义：6001 主营业务收入声明式指定所属现金流项目（覆盖按对方科目前缀默认归类）
+    assert attrs["6001"] == {"cash_flow_item": "销售商品、提供劳务收到的现金"}
 
 
 def test_parse_attrs_format_guards():
@@ -171,7 +172,8 @@ def test_import_persists_attrs(session):
     assert acc.attrs == {"cash_flow": "yes"}
     acc2 = s.scalar(select(Account).where(Account.ledger_set_id == ls_id,
                                           Account.code == "6001"))
-    assert acc2.attrs == {}
+    # ② 现金流项目语义：6001 经模板导入后保留 cash_flow_item 声明
+    assert acc2.attrs == {"cash_flow_item": "销售商品、提供劳务收到的现金"}
 
 
 def test_reimport_backfills_attrs_for_legacy_seeded_account(session):
