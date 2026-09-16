@@ -2019,7 +2019,8 @@ body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backg
 <span class=tag>{health_badge}</span>
 <div class=cmt>{html.escape(comment)}</div>
 </div>
-<div class=ft>由 XErp 生成 · AI 产草稿 · 人是 Boss · 数据自持</div>
+<div class=ft>由 XErp 生成 · AI 产草稿 · 人是 Boss · 数据自持
+<div style="margin-top:6px">📱 手机/企微看账：本卡片链接直接发微信或企微即可在手机打开；也可对 AI 说「把本月财报发我企微」，由连接器推送（推送≠执行）</div></div>
 </div></body></html>'''
             return HTMLResponse(card)
 
