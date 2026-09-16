@@ -71,6 +71,8 @@ STANDARD_EXTRA: tuple[str, ...] = (
     # 明细与勾稽
     "ledger_detail",
     "reconcile_ledger",
+    # GB/T 24589.1-2024 审计数据接口导出（合规护城河，只读、零风险）
+    "export_gbt24589",
     # 月结
     "report_cash_flow",
     "close_period",

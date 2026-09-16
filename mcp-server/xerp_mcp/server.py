@@ -1242,6 +1242,64 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except ReconcileError as e:
             return _err("RECONCILE_ERROR", str(e))
 
+    # ---------- GB/T 24589.1-2024 审计导出（合规护城河） ----------
+
+    @mcp.tool()
+    def export_gbt24589(
+        ledger_set_id: str,
+        year: int,
+        month: int = 0,
+        fmt: str = "json",
+    ) -> dict:
+        """导出 GB/T 24589.1-2024 会计核算软件数据接口标准账表（审计/税务/监管采集用）。
+
+        从不可篡改事件链派生国标账表——既合规可审计，又自带密码学可追溯：
+        电子账簿（含事件总数与链尾哈希 provenance）、会计期间、会计科目、币种、
+        科目余额及发生额、记账凭证、记账凭证分录。JSON（2024 版附录 E）或 XML（附录 C）。
+
+        - 仅 POSTED 凭证参与（法定账簿口径），严格继承 ledgerbook 的「期初是存量」语义；
+          期初 = 开账至期初的全部 POSTED 净额累计，期末 = 期初滚动；
+        - 记账人/审核人从 VOUCHER_POSTED/APPROVED 事件链追溯（兼容历史小写事件串）；
+        - month=0 导出全年，非 0 仅导该月。
+
+        返回 {standard, content（序列化账表）, summary（各表记录数 + provenance）}。
+        需落盘为文件时，把 content 写入 .json/.xml 即可交给审计/监管机关。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.gbt24589 import GbtError, build_export
+
+                content = build_export(
+                    s,
+                    ledger_set_id=ledger_set_id,
+                    year=year,
+                    month=month or 0,
+                    fmt=fmt,
+                )
+                import json as _json
+
+                if fmt == "json":
+                    parsed = _json.loads(content)
+                    tables = parsed.get("tables", {})
+                    counts = {t: len(v.get("records", [])) for t, v in tables.items()}
+                    prov = tables.get("电子账簿", {}).get("records", [{}])[0]
+                else:
+                    counts = {}
+                    prov = {}
+                return _ok(
+                    standard="GB/T 24589.1-2024",
+                    fmt=fmt,
+                    content=content,
+                    summary={
+                        "table_record_counts": counts,
+                        "event_total": prov.get("事件总数"),
+                        "chain_hash": prov.get("链尾哈希"),
+                        "data_period": f"{prov.get('数据期间起始')}-{prov.get('数据期间终止')}",
+                    },
+                )
+        except GbtError as e:
+            return _err(e.code, str(e))
+
     # ---------- 往来余额（P2-02） ----------
 
     @mcp.tool()
