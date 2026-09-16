@@ -812,6 +812,177 @@ def _wizard_preview(proposal: dict, sc: dict, ls_id: str, values: dict) -> str:
 """
 
 
+# ---------- v1.3 老板经营看板 / 财报卡片 · 可视化 helper ----------
+# 纯前端 SVG 渲染（私有化部署无外网，不引第三方图表库）；
+# 取数一律复用内核 statements / reconcile，不复制配平逻辑（ADR-002）。
+
+def _svg_line_chart(title: str, series: list, labels: list | None = None) -> str:
+    """多折线图。series: [(名称, [数值...]), ...]；labels: x 轴标签。"""
+    if not series or all(len(v) == 0 for _, v in series):
+        return f'<p class=note>{html.escape(title)}：数据不足</p>'
+    n = max(len(v) for _, v in series)
+    labels = labels or [str(i + 1) for i in range(n)]
+    W, H, pad = 640, 220, 38
+    plot_w, plot_h = W - pad * 2, H - pad * 2
+    all_vals = [x for _, vals in series for x in vals]
+    vmax, vmin = max(all_vals), min(all_vals)
+    if vmax == vmin:
+        vmax, vmin = vmax + 1, vmin - 1
+    rng = vmax - vmin
+
+    def x(i):
+        return pad + (plot_w * i / max(1, n - 1))
+
+    def y(v):
+        return pad + plot_h - (plot_h * (v - vmin) / rng)
+
+    colors = ['#1f4e79', '#b0413e', '#2e7d32', '#e0a300', '#6a5acd']
+    svg = [f'<svg viewBox="0 0 {W} {H}" width=100% style="max-width:640px">']
+    for g in range(5):
+        gy = pad + plot_h * g / 4
+        svg.append(f'<line x1={pad} y1={gy:.1f} x2={W-pad} y2={gy:.1f} stroke=#e3e8ee />')
+        val = vmax - rng * g / 4
+        svg.append(f'<text x=2 y={gy+3:.1f} font-size=9 fill=#8a97a5>{val:,.0f}</text>')
+    for idx, (name, vals) in enumerate(series):
+        c = colors[idx % len(colors)]
+        pts = ' '.join(f'{x(i):.1f},{y(v):.1f}' for i, v in enumerate(vals))
+        svg.append(f'<polyline points="{pts}" fill=none stroke={c} stroke-width=2 />')
+        for i, v in enumerate(vals):
+            svg.append(f'<circle cx={x(i):.1f} cy={y(v):.1f} r=2.5 fill={c} />')
+    for i, lb in enumerate(labels):
+        svg.append(f'<text x={x(i):.1f} y={H-8} font-size=9 fill=#8a97a5 text-anchor=middle>{html.escape(str(lb))}</text>')
+    svg.append('</svg>')
+    legend = ' '.join(
+        f'<span style="color:{colors[idx % len(colors)]}">● {html.escape(name)}</span>'
+        for idx, (name, _) in enumerate(series)
+    )
+    return f'<h3>{html.escape(title)}</h3><div>{legend}</div>' + ''.join(svg)
+
+
+def _svg_donut(title: str, segments: list) -> str:
+    """环图。segments: [(名称, 数值), ...]。"""
+    segs = [(str(n), float(v)) for n, v in segments if v]
+    total = sum(v for _, v in segs)
+    if total <= 0:
+        return f'<p class=note>{html.escape(title)}：无数据</p>'
+    W = 240
+    r, cx, cy = 70, 120, 90
+    circ = 2 * 3.1415926 * r
+    colors = ['#1f4e79', '#e0a300', '#2e7d32', '#b0413e', '#6a5acd', '#3d7ab8']
+    svg = [f'<svg viewBox="0 0 {W} 180" width=100% style="max-width:240px">']
+    offset = 0.0
+    for i, (name, val) in enumerate(segs):
+        frac = val / total
+        len_ = circ * frac
+        col = colors[i % len(colors)]
+        svg.append(
+            f'<circle cx={cx} cy={cy} r={r} fill=none stroke={col} stroke-width=22 '
+            f'stroke-dasharray="{len_:.1f} {circ-len_:.1f}" stroke-dashoffset={-offset:.1f} '
+            f'transform="rotate(-90 {cx} {cy})" />'
+        )
+        offset += len_
+    svg.append(f'<text x={cx} y={cy-4} font-size=14 fill=#1f4e79 text-anchor=middle font-weight=bold>合计</text>')
+    svg.append(f'<text x={cx} y={cy+14} font-size=12 fill=#1f4e79 text-anchor=middle>{total:,.0f}</text>')
+    svg.append('</svg>')
+    legend = ''.join(
+        f'<div style="font-size:12px"><span style="color:{colors[i % len(colors)]}">●</span> '
+        f'{html.escape(name)} {val:,.0f}（{val/total*100:.0f}%）</div>'
+        for i, (name, val) in enumerate(segs)
+    )
+    return f'<h3>{html.escape(title)}</h3>' + ''.join(svg) + legend
+
+
+def _mini_progress(done: int, total: int, label: str) -> str:
+    pct = (done * 100 // total) if total else 0
+    return (
+        f'<div style="margin:6px 0"><div style="font-size:12px">{html.escape(label)} '
+        f'<b>{done}/{total}</b>（{pct}%）</div>'
+        f'<div style="background:#e3e8ee;height:10px;border-radius:5px;overflow:hidden">'
+        f'<div style="background:#1f4e79;height:100%;width:{pct}%"></div></div></div>'
+    )
+
+
+def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
+    """聚合老板看板所需全部数据；取数复用内核 statements，绝不复制配平逻辑。"""
+    from sqlalchemy import func, select
+    from kernel.db.models import Period, Voucher
+    from kernel.period_guide import month_end_guide
+    from kernel.reconcile import reconcile_ledger
+    from kernel.reporting.statements import balance_sheet, cash_flow, income_statement
+
+    periods = s.scalars(
+        select(Period).where(Period.ledger_set_id == ls_id)
+    ).all()
+    yps = sorted((p for p in periods if p.year == yr), key=lambda p: (p.year, p.month))
+    if not yps:
+        yps = [next((p for p in periods if p.year == yr and p.month == mo), None) or periods[0]]
+
+    asset_t, liab_t, eq_t, rev_t, prof_t, cf_t = [], [], [], [], [], []
+    for p in yps:
+        bs = balance_sheet(s, ls_id, p.year, p.month, standard)
+        inc = income_statement(s, ls_id, p.year, p.month, standard)
+        cf = cash_flow(s, ls_id, p.year, p.month, standard)
+        asset_t.append(float(bs['assets']['total']))
+        liab_t.append(float(bs['liabilities']['total']))
+        eq_t.append(float(bs['equity']['total']))
+        rev_t.append(float(inc['revenue']))
+        prof_t.append(float(inc['net_profit']))
+        op = cf['operating']
+        cf_t.append(float(op['in'] - op['out']) if isinstance(op, dict) else float(op))
+    labels = [f'{p.month}月' for p in yps]
+
+    bs_now = balance_sheet(s, ls_id, yr, mo, standard)
+    inc_now = income_statement(s, ls_id, yr, mo, standard)
+    cf_now = cash_flow(s, ls_id, yr, mo, standard)
+    asset_segs = [(it['group'], float(it['amount'])) for it in bs_now['assets']['items'] if it['amount']]
+
+    rec = reconcile_ledger(s, ls_id, yr, mo, standard)
+    period = next((p for p in periods if p.year == yr and p.month == mo), None)
+    unposted = posted = total_v = 0
+    closed = False
+    if period is not None:
+        total_v = s.scalars(
+            select(func.count(Voucher.id)).where(
+                Voucher.ledger_set_id == ls_id, Voucher.period_id == period.id
+            )
+        ).first() or 0
+        unposted = s.scalars(
+            select(func.count(Voucher.id)).where(
+                Voucher.ledger_set_id == ls_id, Voucher.period_id == period.id,
+                Voucher.status != 'POSTED',
+            )
+        ).first() or 0
+        posted = total_v - unposted
+        closed = s.scalars(
+            select(Voucher.id).where(
+                Voucher.ledger_set_id == ls_id,
+                Voucher.voucher_no.like(f'结转-{yr}{mo:02d}-%'),
+            )
+        ).first() is not None
+
+    guide = month_end_guide(s, ledger_set_id=ls_id, year=yr, month=mo) if period else None
+
+    tips = []
+    if unposted:
+        tips.append(f'还有 <b>{unposted}</b> 笔凭证未过账，建议尽快换人审批过账。')
+    if period is not None and not closed and period.status == 'OPEN':
+        tips.append(f'{yr}-{mo:02d} 尚未期末结转，月结前请先完成对账与过账。')
+    if not rec['ok']:
+        tips.append(f'账账核对发现 {len(rec['issues'])} 项异常，请先处理再月结。')
+    if not tips:
+        tips.append('本月账目健康，随时可一键月结 ✅')
+
+    return {
+        'labels': labels,
+        'asset_t': asset_t, 'liab_t': liab_t, 'eq_t': eq_t,
+        'rev_t': rev_t, 'prof_t': prof_t, 'cf_t': cf_t,
+        'asset_segs': asset_segs,
+        'bs_now': bs_now, 'inc_now': inc_now, 'cf_now': cf_now,
+        'rec': rec, 'unposted': unposted, 'posted': posted, 'total_v': total_v,
+        'closed': closed, 'guide': guide, 'tips': tips,
+    }
+
+
 def build_app(db_url: str | None = None) -> FastAPI:
     url = db_url or os.environ.get("XERP_DB") or f"sqlite:///{_REPO_ROOT / 'ledgeros_dev.db'}"
     from sqlalchemy import create_engine
@@ -1238,6 +1409,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"<a href='/ledger/{ls_id}/aux'>辅助核算</a>",
                     f"<a href='/ledger/{ls_id}/foreign-tb'>外币试算</a>",
                     f"<a href='/ledger/{ls_id}/forecast'>三表预测</a>",
+                    f"<a href='/ledger/{ls_id}/boss'>经营看板</a>",
                     f"<a href='/ledger/{ls_id}/close'>月末结账</a>",
                 )
                 + f"<p>期间切换：{ptabs}</p>{err}"
@@ -1707,6 +1879,149 @@ def build_app(db_url: str | None = None) -> FastAPI:
             )
             return _page(f"{ls.name} 报表", body, request.state.subject_name,
                          show_operator=True)
+
+    # ---------- v1.3 老板经营看板（可视化 + 趣味 + 精灵提醒 O18 雏形） ----------
+    @app.get("/ledger/{ls_id}/boss", response_class=HTMLResponse)
+    def boss_view(request: Request, ls_id: str, year: int = 0, month: int = 0):
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>", request.state.subject_name)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc()
+                )
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"), None) or (
+                periods[0] if periods else None
+            )
+            if period is None:
+                return _page(f"{ls.name}", "<p class=err>尚无期间</p>", request.state.subject_name)
+            yr, mo = period.year, period.month
+            d = _boss_data(s, ls_id, yr, mo, ls.accounting_standard)
+            fin_svg = _svg_line_chart(
+                "资产 / 负债 / 权益（期末）",
+                [("资产", d["asset_t"]), ("负债", d["liab_t"]), ("权益", d["eq_t"])],
+                d["labels"],
+            )
+            pl_svg = _svg_line_chart(
+                "收入 / 净利润（本年累计）",
+                [("收入", d["rev_t"]), ("净利润", d["prof_t"])],
+                d["labels"],
+            )
+            donut = _svg_donut(f"{yr}-{mo:02d} 资产结构", d["asset_segs"])
+            health = [
+                ("资产负债表平衡", d["bs_now"]["balanced"],
+                 "资产=负债+权益" if d["bs_now"]["balanced"] else f"差 {d['bs_now']['check']['diff']}"),
+                ("账账核对", d["rec"]["ok"],
+                 "一致" if d["rec"]["ok"] else f"{len(d['rec']['issues'])} 项异常"),
+                ("本期凭证过账", d["unposted"] == 0,
+                 f"已入账 {d['posted']}/{d['total_v']}" if d["unposted"] == 0 else f"{d['unposted']} 笔待过账"),
+                ("期末结转", d["closed"], "已结转" if d["closed"] else "未结转"),
+            ]
+            health_html = "<div style='display:flex;flex-wrap:wrap;gap:10px'>"
+            for name, ok, hint in health:
+                color = "#2e7d32" if ok else "#a32d2d"
+                dot = "🟢" if ok else "🔴"
+                health_html += (
+                    f"<div style='border:1px solid {color};border-radius:8px;padding:8px 12px;min-width:150px'>"
+                    f"<div style='font-size:20px'>{dot}</div>"
+                    f"<div style='font-weight:bold'>{html.escape(name)}</div>"
+                    f"<div style='font-size:12px;color:#555'>{html.escape(hint)}</div></div>"
+                )
+            health_html += "</div>"
+            tips_html = "".join(f"<li>{t}</li>" for t in d["tips"])
+            fun = (
+                _mini_progress(d["posted"], d["total_v"] or 1, "本月凭证入账进度")
+                + f"<p>💡 账本精灵已为你盯账：本月共 {d['total_v']} 笔业务，"
+                + ("全部入账 ✅" if d["unposted"] == 0 else f"{d['unposted']} 笔待处理 ⏳")
+                + "。坚持自己记账，省下代账费 💰</p>"
+            )
+            guide_html = (
+                "<h3>距月结还差</h3>" + _guide_card(d["guide"], ls_id)
+            ) if d["guide"] else ""
+            body = (
+                f"<h2>{html.escape(ls.name)} · 经营看板</h2>"
+                + _toolbar(
+                    f"<a href='/ledger/{ls_id}'>账套</a>",
+                    f"<a href='/ledger/{ls_id}/reports'>三大报表</a>",
+                    f"<a href='/ledger/{ls_id}/card?year={yr}&month={mo}'>财报卡片</a>",
+                    f"<a href='/ledger/{ls_id}/close'>月末结账</a>",
+                )
+                + "<h3>账本精灵 · 主动提醒</h3><ul class=check>" + tips_html + "</ul>"
+                + health_html
+                + "<div style='display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start'>"
+                + "<div style='flex:1;min-width:300px'>" + fin_svg + "</div>"
+                + "<div style='flex:1;min-width:300px'>" + pl_svg + "</div></div>"
+                + "<div style='display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start'>"
+                + "<div style='flex:1;min-width:260px'>" + donut + "</div>"
+                + "<div style='flex:1;min-width:260px'><h3>本月小成就</h3>" + fun + "</div></div>"
+                + guide_html
+            )
+            return _page(f"{ls.name} 经营看板", body, request.state.subject_name, show_operator=True)
+
+    # ---------- v1.3 月度财报卡片（可分享 · O16 趣味） ----------
+    @app.get("/ledger/{ls_id}/card", response_class=HTMLResponse)
+    def month_card(request: Request, ls_id: str, year: int = 0, month: int = 0):
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>", request.state.subject_name)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc()
+                )
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"), None) or (
+                periods[0] if periods else None
+            )
+            if period is None:
+                return _page(f"{ls.name}", "<p class=err>尚无期间</p>", request.state.subject_name)
+            yr, mo = period.year, period.month
+            d = _boss_data(s, ls_id, yr, mo, ls.accounting_standard)
+            bs, inc = d["bs_now"], d["inc_now"]
+            rec_ok = d["rec"]["ok"] and bool(bs["balanced"])
+            health_badge = "🟢 账目健康" if rec_ok else "🔴 待处理"
+            comment = (
+                f"本月营收 {inc['revenue']:,.0f}，净利润 {inc['net_profit']:,.0f}，"
+                f"资产规模 {bs['assets']['total']:,.0f}。"
+            )
+            if d["unposted"]:
+                comment += f"还有 {d['unposted']} 笔待过账，建议尽快处理。"
+            rev_cls = "pos" if inc["revenue"] >= 0 else "neg"
+            np_cls = "pos" if inc["net_profit"] >= 0 else "neg"
+            cf_net = d["cf_t"][-1] if d["cf_t"] else 0
+            card = f'''<!doctype html><html lang=zh><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>{html.escape(ls.name)} 财报卡片</title>
+<style>
+body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#eef1f5;margin:0;padding:20px;display:flex;justify-content:center}}
+.card{{background:#fff;max-width:380px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 6px 24px rgba(31,78,121,.18)}}
+.hd{{background:linear-gradient(135deg,#1f4e79,#3d7ab8);color:#fff;padding:18px 20px}}
+.hd .nm{{font-size:18px;font-weight:bold}}
+.hd .pd{{font-size:13px;opacity:.85;margin-top:2px}}
+.bd{{padding:18px 20px}}
+.row{{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #eef1f5;font-size:14px}}
+.row .k{{color:#5a6b7b}}.row .v{{font-weight:bold;color:#1f2d3d}}
+.v.pos{{color:#2e7d32}}.v.neg{{color:#a32d2d}}
+.tag{{display:inline-block;background:#e8f5e9;color:#1b5e20;border-radius:10px;padding:2px 10px;font-size:12px;margin-top:10px}}
+.cmt{{font-size:13px;color:#345;background:#f4f7fb;border-radius:8px;padding:10px;margin-top:12px;line-height:1.6}}
+.ft{{font-size:11px;color:#9aa7b5;text-align:center;padding:12px}}
+</style></head><body><div class=card>
+<div class=hd><div class=nm>{html.escape(ls.name)}</div><div class=pd>{yr} 年 {mo} 月 · 经营月报</div></div>
+<div class=bd>
+<div class=row><span class=k>营业收入</span><span class="v {rev_cls}">{inc['revenue']:,.2f}</span></div>
+<div class=row><span class=k>净利润</span><span class="v {np_cls}">{inc['net_profit']:,.2f}</span></div>
+<div class=row><span class=k>资产总计</span><span class=v>{bs['assets']['total']:,.2f}</span></div>
+<div class=row><span class=k>负债合计</span><span class=v>{bs['liabilities']['total']:,.2f}</span></div>
+<div class=row><span class=k>所有者权益</span><span class=v>{bs['equity']['total']:,.2f}</span></div>
+<div class=row><span class=k>经营现金流净额</span><span class=v>{cf_net:,.2f}</span></div>
+<span class=tag>{health_badge}</span>
+<div class=cmt>{html.escape(comment)}</div>
+</div>
+<div class=ft>由 XErp 生成 · AI 产草稿 · 人是 Boss · 数据自持</div>
+</div></body></html>'''
+            return HTMLResponse(card)
 
     # ---------- 辅助核算报表（② Web 入口） ----------
 
