@@ -20,6 +20,7 @@ Thumbs.db
 .DS_Store
 .coverage
 ledgeros_dev.db
+ledgeros_dev.db.dogfood_bak*
 deploy/demo_state.json
 logs/
 web/node_modules/
