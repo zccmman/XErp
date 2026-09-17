@@ -2037,6 +2037,68 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except Exception as e:  # pragma: no cover
             return _err("SUGGEST_FAILED", f"摘要推荐失败：{e}")
 
+    @mcp.tool()
+    def sprite_push(
+        ledger_set_id: str,
+        channel: str = "console",
+        user: str = "",
+        period_year: int = 0,
+        period_month: int = 0,
+    ) -> dict:
+        """账本精灵 7×24 主动推送（O18）：把该账套该期间的主动提醒清单推给 Boss。
+
+        只读生成、绝不执行——只把「该做什么」的建议卡片发出去，不制单、不过账、
+        不结账。任何终态动作仍由 Boss 在 Web / 对话里显式确认（人是 Boss 不破）。
+
+        channel:
+            wecom    经企业微信推送 markdown 卡片（agent 主动汇报用；user 可指定接收人）
+            console  仅返回结构化 payload（不真正发送，便于预览 / 落自动化日志）
+            web      返回 Web 可消费的卡片数据（前端 /card、/boss 同源消费）
+
+        不传 period_year/month 则自动取账套最新 OPEN 期间。返回 {ok, channel,
+        summary, items, sent_to, period}。
+        """
+        try:
+            from kernel.sprite_push import (
+                format_wecom_card,
+                latest_open_period,
+                sprite_push_items,
+            )
+            from kernel import wecom
+
+            with repo.session() as s:
+                ls = s.get(LedgerSet, ledger_set_id)
+                if ls is None:
+                    return _err("LEDGER_NOT_FOUND", f"账套 {ledger_set_id} 不存在")
+                std = ls.accounting_standard or "small_business"
+                yr, mo = period_year, period_month
+                if not yr or not mo:
+                    lp = latest_open_period(s, ledger_set_id)
+                    if lp is None:
+                        return _err("NO_PERIOD", f"账套 {ledger_set_id} 无任何期间")
+                    yr, mo = lp
+                payload = sprite_push_items(s, ledger_set_id, yr, mo, std)
+                payload["period"] = {"year": yr, "month": mo}
+
+            if channel == "wecom":
+                card = format_wecom_card(payload)
+                to_user = user or wecom.default_user()
+                wecom.send_markdown(to_user, card)
+                return _ok(
+                    channel="wecom", summary=payload["summary"],
+                    items=payload["items"], sent_to=to_user,
+                    period=payload["period"],
+                )
+            # console / web：返回 payload 本身（不发送），供预览或前端同源消费
+            return _ok(
+                channel=channel, summary=payload["summary"],
+                items=payload["items"], period=payload["period"],
+            )
+        except wecom.WecomError as e:
+            return _err("WECOM_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("SPRITE_PUSH_FAILED", f"主动推送失败：{e}")
+
     # ---------- 助手 ----------
 
     def _ontology_findings(s: Session, ledger_set_id: str, lines) -> list[dict]:
