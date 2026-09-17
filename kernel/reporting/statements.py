@@ -53,6 +53,17 @@ def _amounts_by_code(session: Session, period: Period) -> dict[str, tuple[Decima
     return out
 
 
+def amounts_by_code(session: Session, ledger_set_id: str, year: int, month: int
+                    ) -> dict[str, tuple[Decimal, Decimal]]:
+    """公共取数入口：某账套某期间的 科目code → (本期借方发生额, 本期贷方发生额)。
+
+    合并报表（v2.0）按 code 级别聚合时复用此函数，保证与单主体三表
+    取数口径完全一致（ADR-002）。内部直接走 ``_amounts_by_code``，无副作用。
+    """
+    period = _period(session, ledger_set_id, year, month)
+    return _amounts_by_code(session, period)
+
+
 def ending_balance(code: str, debits: Decimal, credits: Decimal) -> Decimal:
     """期末余额：资产/成本/费用类借方为正，其余贷方为正。
 
