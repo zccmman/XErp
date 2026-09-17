@@ -962,15 +962,14 @@ def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
 
     guide = month_end_guide(s, ledger_set_id=ls_id, year=yr, month=mo) if period else None
 
-    tips = []
-    if unposted:
-        tips.append(f'还有 <b>{unposted}</b> 笔凭证未过账，建议尽快换人审批过账。')
-    if period is not None and not closed and period.status == 'OPEN':
-        tips.append(f'{yr}-{mo:02d} 尚未期末结转，月结前请先完成对账与过账。')
-    if not rec['ok']:
-        tips.append(f'账账核对发现 {len(rec['issues'])} 项异常，请先处理再月结。')
-    if not tips:
-        tips.append('本月账目健康，随时可一键月结 ✅')
+    # 账本精灵主动提醒：单一推送源（O18）。Web 提醒 / MCP 推送 / CLI / 企微
+    # 全部消费 kernel.sprite_push.sprite_push_items，口径永远一致（守 ADR-002）。
+    # 只取 month_end / anomaly / health 三类作为「提醒」，report_card 由看板卡片呈现。
+    from kernel.sprite_push import sprite_push_items
+
+    _sp = sprite_push_items(s, ls_id, yr, mo, standard)
+    tips = [it["html"] for it in _sp["items"]
+            if it["type"] in ("month_end", "anomaly", "health")]
 
     return {
         'labels': labels,
