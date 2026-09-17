@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, Form, Request, Response
+from fastapi import FastAPI, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -181,6 +181,13 @@ table.trend td{padding:4px 8px;border:none}
 .wiz-preview .why{color:#5a6b7b;font-size:13px;max-width:360px}
 p.note{background:#fff8e8;border-left:3px solid #e0a300;padding:9px 13px;color:#6b5400;margin:12px 0}
 .wiz-back{color:#1f4e79;font-size:13px}
+/* v2.0 集团合并报表视图 */
+.muted{color:#6b7785;font-size:12.5px}
+.rep{margin:10px 0 16px}
+.rep tr.tot td{background:#dbe5f1;font-weight:bold;border-top:2px solid #1f4e79}
+.chk{display:block;margin:4px 0;padding:4px 8px;border:1px solid #d5dde6;background:#fff}
+.chks{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;margin:8px 0 14px}
+.repwrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:22px;align-items:start}
 </style>"""
 
 
@@ -210,7 +217,8 @@ def _page(title: str, body: str, user: str | None = None,
             pass
     operator_html = _render_operator() if show_operator else ''
     nav = ('<div class=nav><a href="/">工作区</a> · '
-           '<a href="/todo">审批待办</a></div>')
+           '<a href="/todo">审批待办</a> · '
+           '<a href="/group">集团合并</a></div>')
     return HTMLResponse(
         f"<!doctype html><html lang=zh><head><meta charset=utf-8>"
         f"<title>{html.escape(title)} · XErp</title>{_CSS}</head>"
@@ -1958,6 +1966,113 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + guide_html
             )
             return _page(f"{ls.name} 经营看板", body, request.state.subject_name, show_operator=True)
+
+    # ---------- v2.0 多主体合并报表（只读视图 · 集团合并） ----------
+    @app.get("/group", response_class=HTMLResponse)
+    def group_consolidate(request: Request, ids: list[str] = Query(default=[]),
+                          year: int = 0, month: int = 0, ownership: str = ""):
+        """集团合并报表只读视图：选账套 + 期间 → 合并资产负债表 + 利润表。
+
+        完全只读，复用 kernel.reporting.consolidation（与 MCP 同源）。
+        合并在科目 code 级聚合、复用单主体映射，口径一致；抵消项/结账仍由 Boss 确认。
+        """
+        from decimal import Decimal as _D
+        import json as _json
+
+        from kernel.reporting import consolidation as CONS
+
+        with session() as s:
+            lss = s.scalars(select(LedgerSet).order_by(LedgerSet.created_at)).all()
+
+            own: dict[str, _D] = {}
+            if ownership:
+                try:
+                    for k, v in _json.loads(ownership).items():
+                        own[k] = _D(str(v)) / _D("100")  # 百分比 → 比例
+                except Exception:  # noqa: BLE001  非法 ownership 静默忽略（按全资处理）
+                    own = {}
+
+            # 归一化：兼容 ?ids=a,b（单参数逗号串）与 ?ids=a&ids=b（多参数列表）
+            selected = [x for part in ids for x in part.split(",") if x]
+            if not selected:
+                opts = "".join(
+                    f'<label class=chk><input type=checkbox name=ids value="{ls.id}"> '
+                    f'{html.escape(ls.name)} <span class=muted>({ls.id[:8]})</span></label>'
+                    for ls in lss
+                ) or '<p class=muted>暂无账套，请先在建账页创建。</p>'
+                body = (
+                    "<h2>集团合并报表</h2>"
+                    "<p class=muted>只读聚合多个账套为集团合并资产负债表 + 利润表。"
+                    "合并在科目 code 级别求和、再复用单主体同一套准则映射，口径一致、零漂移。</p>"
+                    "<form method=get>"
+                    "<p><b>选择参与合并的账套</b>（应包含母公司自身账套 + 各子公司）：</p>"
+                    f"<div class=chks>{opts}</div>"
+                    "<p>合并期间（年/月）：<input name=year size=6 placeholder=2026> "
+                    "<input name=month size=4 placeholder=9></p>"
+                    "<p class=muted>可选 ownership（JSON，各账套持股比例%，如 "
+                    '{"账套ID":"80"}）：<br><textarea name=ownership rows=2 cols=40 '
+                    'placeholder=\'{"id":"80"}\'></textarea></p>'
+                    "<button type=submit>合并</button></form>"
+                )
+                return _page("集团合并", body, request.state.subject_name)
+
+            if not year or not month:
+                body = "<p class=err>请指定合并期间（年/月）</p>"
+                return _page("集团合并", body, request.state.subject_name)
+
+            try:
+                res = CONS.consolidate(
+                    s, selected, year, month, ownership=own or None
+                )
+            except CONS.ConsolidationError as e:
+                return _page(
+                    "集团合并", f"<p class=err>{html.escape(str(e))}</p>",
+                    request.state.subject_name,
+                )
+
+            bs = res["balance_sheet"]["consolidated"]
+            inc = res["income_statement"]
+
+            def _grp(items):
+                return "".join(
+                    f"<tr><td>{html.escape(it['group'])}</td>"
+                    f"<td class=num>{_fmt(it['amount'])}</td></tr>"
+                    for it in items
+                )
+
+            bs_html = (
+                "<table class=rep><tr><th>资产</th><th class=num>金额</th></tr>"
+                + _grp(bs["assets"]["items"])
+                + f"<tr class=tot><td>资产总计</td><td class=num>{_fmt(bs['assets']['total'])}</td></tr>"
+                "<tr><th>负债</th><th class=num>金额</th></tr>"
+                + _grp(bs["liabilities"]["items"])
+                + f"<tr class=tot><td>负债合计</td><td class=num>{_fmt(bs['liabilities']['total'])}</td></tr>"
+                "<tr><th>所有者权益</th><th class=num>金额</th></tr>"
+                + _grp(bs["equity"]["items"])
+                + f"<tr class=tot><td>所有者权益合计</td><td class=num>{_fmt(bs['equity']['total'])}</td></tr>"
+                "</table>"
+            )
+            is_html = (
+                "<table class=rep><tr><th>利润表项目</th><th class=num>金额</th></tr>"
+                + "".join(
+                    f"<tr><td>{html.escape(it['item'])}</td><td class=num>{_fmt(it['amount'])}</td></tr>"
+                    for it in inc["items"]
+                )
+                + f"<tr class=tot><td>净利润（100% 口径）</td><td class=num>{_fmt(inc['net_profit'])}</td></tr>"
+                f"<tr><td>其中：少数股东损益</td><td class=num>{_fmt(inc['minority_interest'])}</td></tr>"
+                f"<tr class=tot><td>归属于母公司净利润</td><td class=num>{_fmt(inc['net_profit_parent'])}</td></tr>"
+                "</table>"
+            )
+            chk = res["balance_sheet"]["check"]
+            badge = ("🟢 表内平衡" if res["balance_sheet"]["balanced"]
+                     else f"🔴 差 {chk['diff']}")
+            body = (
+                f"<h2>集团合并报表 · {year}-{month:02d}（{res['currency']}）</h2>"
+                f"<p class=muted>参与主体 {len(res['entities'])} 个 · {badge} · "
+                "合并为只读聚合，内部抵消项与结账仍需你确认（人是 Boss）</p>"
+                "<div class=repwrap>" + bs_html + is_html + "</div>"
+            )
+            return _page("集团合并", body, request.state.subject_name, show_operator=True)
 
     # ---------- v1.3 月度财报卡片（可分享 · O16 趣味） ----------
     @app.get("/ledger/{ls_id}/card", response_class=HTMLResponse)
