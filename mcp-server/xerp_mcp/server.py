@@ -2099,6 +2099,76 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except Exception as e:  # pragma: no cover
             return _err("SPRITE_PUSH_FAILED", f"主动推送失败：{e}")
 
+    @mcp.tool()
+    def consolidate_reports(
+        ledger_set_ids: list[str],
+        period_year: int,
+        period_month: int,
+        standard: str = "small_business",
+        ownership: dict | None = None,
+        eliminations: list | None = None,
+        fx_rates: dict | None = None,
+        channel: str = "console",
+    ) -> dict:
+        """多主体合并报表（v2.0）：把多个账套按 code 级聚合为集团合并资产负债表 + 利润表。
+
+        完全只读——只复用单主体三表取数与同一套标准映射，绝不写凭证 / 过账 / 结账。
+
+        合并方法：全额合并 + 少数股权。各子公司资产/负债/收入/费用按 100% 并入，
+        持股 <100% 的部分计入「少数股东权益 / 少数股东损益」并单列披露。
+        内部往来 / 内部交易抵消（eliminations）必须由 Boss 显式提供（HITL），
+        本工具不臆测任何抵消金额——守住「人是 Boss」。
+
+        ledger_set_ids：参与合并的账套 ID 列表（应包含母公司自身账套 + 各子公司）。
+        period_year/period_month：合并期间（必填）。
+        ownership：可选 {账套ID: 持股比例(0~1)}，缺省全部按 1.0（全资）。
+        eliminations：可选抵消项列表，每项 {dr_code, cr_code, amount}，把 dr_code 借方、
+            cr_code 贷方各减 amount（配对归零内部往来 / 长投与子公司权益）。
+        fx_rates：可选 {账套ID: 汇率}，多币种集团时把非基准币种折算到报告币种。
+        channel：console 仅返回结构化合并结果；wecom 经企微推送 markdown 卡片。
+
+        返回 {ok, channel, period, currency, entities, balance_sheet, income_statement,
+        minority_interest, eliminations}。
+        """
+        try:
+            from kernel.reporting import consolidation as CONS
+
+            if not ledger_set_ids:
+                return _err("NO_LEDGERS", "ledger_set_ids 不能为空")
+
+            with repo.session() as s:
+                result = CONS.consolidate(
+                    s, ledger_set_ids, year, month, standard,
+                    ownership=ownership, eliminations=eliminations,
+                    fx_rates=fx_rates,
+                )
+
+            if channel == "wecom":
+                from kernel import wecom
+
+                card = CONS.format_wecom_card(result)
+                to_user = wecom.default_user()
+                wecom.send_markdown(to_user, card)
+                return _ok(
+                    channel="wecom", period=result["period"],
+                    currency=result["currency"], sent_to=to_user,
+                    balance_sheet=result["balance_sheet"],
+                    income_statement=result["income_statement"],
+                )
+            return _ok(
+                channel=channel, period=result["period"],
+                currency=result["currency"],
+                entities=result["entities"],
+                balance_sheet=result["balance_sheet"],
+                income_statement=result["income_statement"],
+                minority_interest=result["balance_sheet"]["minority_interest"],
+                eliminations=result["eliminations"],
+            )
+        except CONS.ConsolidationError as e:
+            return _err("CONSOLIDATION_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("CONSOLIDATE_FAILED", f"合并报表失败：{e}")
+
     # ---------- 助手 ----------
 
     def _ontology_findings(s: Session, ledger_set_id: str, lines) -> list[dict]:
