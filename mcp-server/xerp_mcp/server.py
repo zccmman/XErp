@@ -1000,6 +1000,51 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("REPORT_ERROR", str(e))
 
     @mcp.tool()
+    def audit_trail(
+        ledger_set_id: str,
+        period_year: int = 0,
+        period_month: int = 0,
+        accounting_standard: str = "",
+    ) -> dict:
+        """审计追踪（v2.1 / B2）：把不可篡改事件账本变成人类可读、可证明的审计报告。
+
+        基于内核既有能力（复用 chain.verify_chain 做完整性密码学证明 +
+        events.DESCRIPTIONS 做中文事件名，单一真源、不重复实现）生成：
+        - tamper_proof 审计链是否完整可信（逐条 sha256 重算，检出篡改/断链）
+        - by_type     各事件类型计数（制单/审批/过账/驳回/结转/期初导入…）
+        - timeline    人类可读事件时间线（中文名+执行人+时间+关联对象，按期间可过滤）
+        - summary     一句话结论（✅完整 / ⚠️被篡改 / ℹ️暂无事件）
+
+        铁律：本工具**只读、零副作用**，绝不修改事件链、绝不制单/过账/结账——
+        审计追踪本身也必须"可审计"。期间参数对齐全系统约定用
+        period_year/period_month（0 表示不限期间，列出全部事件）。
+
+        返回 {ledger_set_id, tamper_proof, chain_problem, integrity_severity,
+        total_events, by_type, period_scope, timeline, summary}。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.audit_trail import build_audit_report
+
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
+                r = build_audit_report(s, ledger_set_id, period_year, period_month)
+                return _ok(
+                    ledger_set_id=r["ledger_set_id"],
+                    tamper_proof=r["tamper_proof"],
+                    chain_problem=r["chain_problem"],
+                    integrity_severity=r["integrity_severity"],
+                    total_events=r["total_events"],
+                    by_type=r["by_type"],
+                    period_scope=r["period_scope"],
+                    timeline=r["timeline"],
+                    summary=r["summary"],
+                )
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+
+    @mcp.tool()
     def preview_closing(
         ledger_set_id: str,
         period_year: int,
