@@ -12,7 +12,12 @@ from kernel.ocr.model import (
     low_confidence_fields,
     validate_invoice,
 )
-from kernel.ocr.pipeline import PipelineError, accuracy_report, ingest_invoice
+from kernel.ocr.pipeline import (
+    PipelineError,
+    accuracy_report,
+    ingest_invoice,
+    preview_invoice,
+)
 
 __all__ = [
     "CompositeExtractor",
@@ -25,5 +30,6 @@ __all__ = [
     "compare_fields",
     "ingest_invoice",
     "low_confidence_fields",
+    "preview_invoice",
     "validate_invoice",
 ]

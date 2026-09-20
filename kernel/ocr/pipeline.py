@@ -117,6 +117,107 @@ def ingest_invoice(
     }
 
 
+def preview_invoice(
+    session: Session,
+    *,
+    ledger_set_id: str,
+    source: Any,
+    extractor: InvoiceExtractor,
+    confidence_threshold: float = CONFIDENCE_THRESHOLD,
+) -> dict:
+    """只读预览：一张发票若现在入账，会发生什么（与 ingest_invoice 共用决策与取数）。
+
+    与 :func:`ingest_invoice` 的唯一差异是「不落库」：抽取→查重→校验→
+    按同一 ``ocr/invoice.received`` 规则 ``build_lines``（即真执行写入的分录）。
+    因此**预览的 proposed_voucher 与实际入账凭证逐行一致**（除并发写入外）、
+    **预览的 disposition 与真实处置矩阵完全对齐**。
+
+    这正是 O9「统一预览-确认-执行」在票据识别这条风险最高、最易盲入账的
+    路径上的落地——把"点下去会发生什么"在入账前摊开给人看，复用了与
+    closing.py 完全一致的单一直源范式（预览与执行共用同一取数 helper，
+    而非复制一份逻辑）。
+
+    返回：
+        {invoice_no, extracted, problems, low_confidence, duplicate,
+         disposition(ingested/flagged/duplicate), proposed_voucher(可能 None),
+         build_error(可能 None), note}
+    """
+    try:
+        inv = extractor.extract(source)
+    except ExtractError as e:
+        raise PipelineError(e.code, e.message_zh) from e
+
+    duplicate = _invoice_no_seen(session, inv.invoice_no) is not None
+    problems = validate_invoice(inv)
+    low_conf = low_confidence_fields(inv, confidence_threshold)
+
+    proposed_voucher = None
+    build_error = None
+    if not duplicate and not problems and not low_conf:
+        # 与 ingest_invoice 真路径共用同一个 build_lines（单一真源，ADR-002）
+        from kernel.adapters.engine import AdapterError, build_lines
+        from kernel.adapters.registry import RuleNotFoundError, get_rule
+        from kernel.adapters.spec import ZERO, render_summary
+        from kernel.db.models import Account
+
+        try:
+            rule = get_rule("ocr", "invoice.received")
+            if rule is None:
+                raise RuleNotFoundError("ocr", "invoice.received")
+            lines = build_lines(
+                session, ledger_set_id=ledger_set_id,
+                rule=rule, event=inv.to_event(),
+            )
+            total_debit = ZERO
+            total_credit = ZERO
+            out_lines = []
+            for ln in lines:
+                acc = session.get(Account, ln.account_id)
+                total_debit += ln.debit
+                total_credit += ln.credit
+                out_lines.append({
+                    "line_no": ln.line_no,
+                    "account_code": acc.code if acc else None,
+                    "account_name": acc.name if acc else None,
+                    "debit": str(ln.debit),
+                    "credit": str(ln.credit),
+                })
+            proposed_voucher = {
+                "summary": render_summary(
+                    rule.get("summary", ""), inv.to_event()),
+                "lines": out_lines,
+                "debit": str(total_debit),
+                "credit": str(total_credit),
+                "balanced": total_debit == total_credit,
+            }
+        except (AdapterError, RuleNotFoundError) as e:
+            build_error = {"code": e.code, "message_zh": e.message_zh}
+
+    if duplicate:
+        disposition = "duplicate"
+    elif problems or low_conf:
+        disposition = "flagged"
+    else:
+        disposition = "ingested"
+
+    notes = {
+        "duplicate": "发票号已处理过，入账将报 DUPLICATE_INVOICE（防重复报销）",
+        "flagged": "校验不过或存在低置信度字段，将进人工复核队列（不入账）",
+        "ingested": "校验通过，将自动生成 PUSHED 凭证待人审（绝不自动过账）",
+    }
+    return {
+        "invoice_no": inv.invoice_no,
+        "extracted": asdict(inv),
+        "problems": problems,
+        "low_confidence": low_conf,
+        "duplicate": duplicate,
+        "disposition": disposition,
+        "proposed_voucher": proposed_voucher,
+        "build_error": build_error,
+        "note": notes.get(disposition, ""),
+    }
+
+
 def accuracy_report(
     session: Session,
     *,

@@ -1496,6 +1496,34 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err(code, msg, getattr(e, "details", None))
 
     @mcp.tool()
+    def ocr_preview(
+        ledger_set_id: str,
+        invoice: dict | None = None,
+        image_base64: str | None = None,
+    ) -> dict:
+        """只读预览：一张发票若现在入账会怎样（抽取→查重→校验→拟生成凭证）。
+
+        与 ocr_ingest_invoice 共用同一决策矩阵与取数（build_lines 单一真源），
+        因此预览的分录 = 真入账分录、预览的处置（ingested/flagged/duplicate）
+        与真实处置完全一致。用于"先看清楚再点入账"的人审前置门禁：把盲入账
+        变成"所见即所入账"（O9 统一预览-确认-执行）。返回 disposition、
+        抽取字段、问题项、低置信度字段、拟生成凭证（借贷合计与是否平衡）。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.ocr import CompositeExtractor, PipelineError
+                from kernel.ocr import preview_invoice as _preview
+
+                res = _preview(
+                    s, ledger_set_id=ledger_set_id,
+                    source=invoice if invoice is not None else image_base64,
+                    extractor=CompositeExtractor(),
+                )
+                return _ok(**res)
+        except PipelineError as e:
+            return _err(e.code, e.message_zh, getattr(e, "details", None))
+
+    @mcp.tool()
     def ocr_accuracy_report(samples: list[dict]) -> dict:
         """字段级准确率抽检报告（DoD：抽检 ≥95%）。
 
