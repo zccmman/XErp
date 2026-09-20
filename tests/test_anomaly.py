@@ -125,6 +125,11 @@ def test_normal_voucher_no_findings(ctx):
     s, ids = ctx["s"], ctx["ids"]
     v = _voucher(s, ids, ctx["bot"].id, "记-8103",
                  __import__("decimal").Decimal("100.00"))
+    # 固定 created_at 到北京时间周一 11:00（UTC 03:00），保证与墙钟无关
+    # （off_hours 规则对周末/夜间亮 info，依赖 utcnow 会让测试在周末必红）
+    import datetime as dt
+
+    v.created_at = dt.datetime(2026, 8, 10, 3, 0)   # UTC 03:00 = 北京周一 11:00
     findings = scan_voucher(s, v, actor=ctx["actor"])
     s.commit()
     assert findings == []

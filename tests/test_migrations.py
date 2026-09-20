@@ -66,7 +66,7 @@ def test_fresh_upgrade_head_has_all_model_columns():
             ver = con.execute("select version_num from alembic_version").fetchone()[0]
         finally:
             con.close()
-        assert ver == "0007_voucher_foreign_quantity"
+        assert ver == "0008_autonomy_grants"
 
 
 def test_legacy_db_upgrade_is_idempotent():
