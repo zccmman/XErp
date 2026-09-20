@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from kernel.anomaly import breaker_is_open, release_breaker, trip_breaker
+from kernel.anomaly import AnomalyError, breaker_is_open, release_breaker, trip_breaker
 from kernel.db.base import Base
 from kernel.db.models import AgentBreaker, Event, Subject
 
@@ -90,3 +90,15 @@ def test_repeated_trip_is_idempotent_on_state(session):
     assert state is not None
     assert set(state["reasons"]) == {"b", "c"}  # 后者覆盖
     assert len(session.scalars(select(AgentBreaker)).all()) == 1
+
+
+def test_agent_cannot_release_breaker(session):
+    """O11 红线（内核级）：Agent 主体永远不能自解断路器，必须人类。"""
+    trip_breaker(session, subject_id="bot", reasons=["x"], actor=_actor())
+    session.commit()
+    with pytest.raises(AnomalyError) as ei:
+        release_breaker(session, subject_id="bot",
+                        actor={"type": "agent", "id": "bot"}, note="AI 自救")
+    assert ei.value.code == "AGENT_CANNOT_RELEASE"
+    # 状态仍为冻结（未被自解）
+    assert breaker_is_open(session, "bot") is not None
