@@ -956,6 +956,50 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("REPORT_ERROR", str(e))
 
     @mcp.tool()
+    def tax_vat_prep(
+        ledger_set_id: str,
+        period_year: int = 0,
+        period_month: int = 0,
+        accounting_standard: str = "",
+    ) -> dict:
+        """小规模纳税人增值税及附加税费季报准备（v2.1 / B3）：只读生成申报草稿。
+
+        基于内核既有只读取数（amounts_by_code / ending_balance / 风险扫描）生成：
+        - sales    季度应税销售额（6001+6051 本期净额，跨 3 个月聚合）
+        - vat      应纳税额（征收率 1%；季销售额 ≤30万自动免征）
+        - surcharge 城建税/教育费附加/地方教育附加（以实际缴纳增值税为计税依据）
+        - precheck 申报前置检查（复用 B1 风险扫描，alert 级阻断申报）
+
+        铁律：本工具**只读、零副作用**，绝不制单/过账/结账/替 Boss 报税。
+        输出是申报草稿，最终申报动作仍由人类（Boss）在税局端确认。
+        期间参数对齐全系统约定用 period_year/period_month（0 表示取最新 OPEN 期间，
+        并按其所属季度计算）。
+
+        返回 {ok, period, quarter_months, sales, vat, surcharge, precheck, summary}。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.tax_vat_small import prep_vat_small
+
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
+                r = prep_vat_small(
+                    s, ledger_set_id, period_year, period_month, standard
+                )
+                return _ok(
+                    period=r["period"],
+                    quarter_months=r["quarter_months"],
+                    sales=r["sales"],
+                    vat=r["vat"],
+                    surcharge=r["surcharge"],
+                    precheck=r["precheck"],
+                    summary=r["summary"],
+                )
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+
+    @mcp.tool()
     def preview_closing(
         ledger_set_id: str,
         period_year: int,
