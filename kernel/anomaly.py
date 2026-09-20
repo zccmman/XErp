@@ -125,6 +125,17 @@ def trip_breaker(session: Session, *, subject_id: str, reasons: list[str],
 
 def release_breaker(session: Session, *, subject_id: str, actor: dict,
                     note: str = "") -> None:
+    """人工解除 Agent 断路器（恢复自治）。
+
+    O11 红线（内核级硬保证）：**Agent 永远不能自解**——执行主体必须是人类
+    （type=='user'），否则直接拒绝。熔断只能人类（且 MCP 工具层进一步要求 admin）
+    解除，杜绝"AI 自己把自己放出来"的失控路径。
+    """
+    if (actor or {}).get("type") != "user":
+        raise AnomalyError(
+            "AGENT_CANNOT_RELEASE",
+            "断路器只能由人类解除，Agent 主体不能自解（O11 红线）",
+        )
     row = session.get(AgentBreaker, subject_id)
     if row is None:
         row = AgentBreaker(subject_id=subject_id)

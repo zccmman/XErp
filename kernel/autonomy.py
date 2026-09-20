@@ -13,15 +13,17 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kernel.anomaly import AnomalyError, check_breaker
-from kernel.db.models import Account, Event, Subject, Voucher, VoucherLine, utcnow
+from kernel.anomaly import AnomalyError, GLOBAL_LEDGER_SET_ID, check_breaker
+from kernel.db.models import (
+    Account, AutonomyGrant, Event, Subject, Voucher, VoucherLine, utcnow,
+)
 from kernel.events import E
 from kernel.ledger import append_event
 from kernel.posting import PostingLine, _accumulate_balances
@@ -54,6 +56,125 @@ def _quota_used_today(session: Session, agent_id: str, today: date) -> Decimal:
     return used
 
 
+# ---------- L3 自治授权令牌（O11 红线：每会话显式授权，人是 Boss 硬门禁） ----------
+
+def issue_grant(
+    session: Session, *, ledger_set_id: str, agent_subject_id: str,
+    admin_subject_id: str, budget: Decimal, expires_at: datetime, note: str = "",
+) -> dict:
+    """签发 L3 自治授权令牌。
+
+    仅人类 admin 可签发（MCP 工具层 enforce ledger:manage）。令牌代表
+    「人授权该 Agent 在预算 budget、到期 expires_at 前可自执行过账」——
+    把"人是 Boss"从口号落为可审计的硬门禁。
+    """
+    grant = AutonomyGrant(
+        ledger_set_id=ledger_set_id, agent_subject_id=agent_subject_id,
+        admin_subject_id=admin_subject_id, budget=budget, remaining=budget,
+        expires_at=expires_at, note=note or None,
+    )
+    session.add(grant)
+    session.flush()
+    append_event(
+        session, ledger_set_id=ledger_set_id,
+        event_type=E.AUTONOMY_GRANT_ISSUED, aggregate_id=grant.id,
+        payload={
+            "agent_subject_id": agent_subject_id,
+            "admin_subject_id": admin_subject_id,
+            "budget": str(budget),
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        },
+        actor={"type": "user", "id": admin_subject_id},
+    )
+    session.flush()
+    return {
+        "grant_id": grant.id,
+        "agent_subject_id": agent_subject_id,
+        "budget": f"{budget:,.2f}",
+        "remaining": f"{budget:,.2f}",
+        "expires_at": expires_at.isoformat() if expires_at else None,
+    }
+
+
+def validate_grant(
+    session: Session, *, grant_id: str, agent_subject_id: str,
+    ledger_set_id: str, amount: Decimal,
+) -> AutonomyGrant:
+    """校验授权令牌：存在 / 未吊销 / 未过期 / 主体账套匹配 / 预算充足。
+
+    预算不足抛 GRANT_BUDGET（由调用方据此触发自动暂停）；
+    其余缺漏抛 GRANT_NOT_FOUND / GRANT_REVOKED / GRANT_EXPIRED / GRANT_MISMATCH。
+    """
+    grant = session.get(AutonomyGrant, grant_id)
+    if grant is None:
+        raise AutonomyError("GRANT_NOT_FOUND", "自治授权令牌不存在或已失效")
+    if grant.is_revoked:
+        raise AutonomyError("GRANT_REVOKED", "该自治授权令牌已被人类吊销")
+    if grant.expires_at is not None:
+        # SQLite 不存时区，读回为 naive；统一按 UTC 比较，避免 naive/aware 报错。
+        exp = grant.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp <= utcnow():
+            raise AutonomyError("GRANT_EXPIRED", "该自治授权令牌已过期，请重新向人类申请授权")
+    if grant.agent_subject_id != agent_subject_id or grant.ledger_set_id != ledger_set_id:
+        raise AutonomyError(
+            "GRANT_MISMATCH",
+            "授权令牌与该主体/账套不匹配（令牌仅对签发时指定的 Agent 与账套生效）",
+        )
+    if grant.remaining < amount:
+        raise AutonomyError(
+            "GRANT_BUDGET",
+            f"授权令牌剩余额度不足：剩余 {grant.remaining:,.2f} < 本次 {amount:,.2f}"
+            f"（请人类追加授权或改走人工审批通道）",
+            {"remaining": str(grant.remaining), "this": str(amount)},
+        )
+    return grant
+
+
+def revoke_grant(
+    session: Session, *, grant_id: str, admin_subject_id: str, note: str = "",
+) -> dict:
+    """吊销授权令牌（人类 admin 主动收回授权）。"""
+    grant = session.get(AutonomyGrant, grant_id)
+    if grant is None:
+        raise AutonomyError("GRANT_NOT_FOUND", "自治授权令牌不存在")
+    grant.is_revoked = True
+    grant.updated_at = utcnow()
+    append_event(
+        session, ledger_set_id=grant.ledger_set_id,
+        event_type=E.AUTONOMY_GRANT_REVOKED, aggregate_id=grant.id,
+        payload={"agent_subject_id": grant.agent_subject_id, "note": note or ""},
+        actor={"type": "user", "id": admin_subject_id},
+    )
+    session.flush()
+    return {"grant_id": grant.id, "revoked": True}
+
+
+def _auto_pause_on_budget(session: Session, *, actor_id: str,
+                          ledger_set_id: str) -> None:
+    """令牌预算用尽 → 自动跳闸冻结该 Agent 并通知人类（O11：额度用尽自动暂停）。
+
+    复用 anomaly.trip_breaker（单一真源：冻结仅作用于 agent 主体，人类永不受影响）；
+    同时追加一条 AGENT_AUTONOMY_PAUSED 全局事件，供账本精灵/审计时间线推送给人类。
+    """
+    from kernel.anomaly import trip_breaker
+
+    reasons = ["AUTONOMY_GRANT_BUDGET_EXHAUSTED: 授权令牌预算用尽，按 O11 自动暂停"]
+    trip_breaker(
+        session, subject_id=actor_id, reasons=reasons,
+        actor={"type": "user", "id": "SYSTEM"},   # 系统自动触发，非 Agent 自解
+    )
+    append_event(
+        session, ledger_set_id=GLOBAL_LEDGER_SET_ID,
+        event_type=E.AGENT_AUTONOMY_PAUSED, aggregate_id=actor_id,
+        payload={"subject_id": actor_id, "ledger_set_id": ledger_set_id,
+                 "reason": "授权令牌预算用尽，已自动暂停该 Agent 自治并通知人类"},
+        actor={"type": "user", "id": "SYSTEM"},
+    )
+    session.flush()
+
+
 def autonomous_post(
     session: Session,
     *,
@@ -62,10 +183,16 @@ def autonomous_post(
     actor_id: str,
     summary: str,
     lines: list[tuple[str, Decimal, Decimal]],   # (account_code, debit, credit)
+    grant_id: str,                               # O11：每会话显式授权令牌（必填）
 ) -> dict:
-    """L3 自治过账：额度内 + 断路器闭合 → 直接 POSTED。
+    """L3 自治过账：有效授权令牌 + 额度内 + 断路器闭合 → 直接 POSTED。
 
-    任一前置不满足抛 AutonomyError（L3_REQUIRED / BREAKER_OPEN / QUOTA_EXCEEDED）。
+    任一前置不满足抛 AutonomyError：
+    - L3_REQUIRED      非 L3 Agent 主体
+    - BREAKER_OPEN     断路器已跳闸（Agent 已被冻结）
+    - AUTH_TOKEN_REQUIRED / GRANT_*   授权令牌缺失/吊销/过期/不匹配
+    - QUOTA_EXCEEDED   令牌预算或当日额度不足（令牌预算耗尽会**自动跳闸冻结**
+                       该 Agent 并通知人类，见下方 _auto_pause_on_budget）
     """
     subject = session.scalars(
         select(Subject).where(Subject.id == actor_id)
@@ -81,6 +208,19 @@ def autonomous_post(
         raise AutonomyError("BREAKER_OPEN", e.message_zh) from e
 
     total = sum((d for _c, d, _cr in lines), ZERO)
+
+    # O11 红线：自治过账必须持有效授权令牌——无令牌 AI 即便 L3 也绝不可自执行。
+    try:
+        grant = validate_grant(
+            session, grant_id=grant_id, agent_subject_id=actor_id,
+            ledger_set_id=ledger_set_id, amount=total,
+        )
+    except AutonomyError as e:
+        if e.code == "GRANT_BUDGET":
+            # 令牌预算用尽 → 自动暂停该 Agent（跳闸）+ 通知人类，再拒绝本次。
+            _auto_pause_on_budget(session, actor_id=actor_id, ledger_set_id=ledger_set_id)
+        raise
+
     limit = subject.daily_voucher_limit
     used = _quota_used_today(session, actor_id, utcnow().date())
     if limit is not None and used + total > Decimal(str(limit)):
@@ -172,6 +312,7 @@ def autonomous_post(
         },
         actor={"type": "agent", "id": actor_id},
     )
+    grant.remaining -= total
     _accumulate_balances(
         session, voucher=voucher,
         lines=[
@@ -184,6 +325,8 @@ def autonomous_post(
         "voucher": {"id": voucher.id, "voucher_no": voucher.voucher_no,
                     "status": voucher.status, "summary": summary},
         "autonomous": True,
+        "grant_id": grant.id,
+        "grant_remaining": f"{grant.remaining:,.2f}",
         "quota_used_today": f"{(used + total):,.2f}",
         "quota_limit": f"{Decimal(str(limit)):,.2f}" if limit is not None else None,
     }
