@@ -152,6 +152,23 @@ def sprite_push_items(
         "action_hint": "点开 Web /card 看完整卡片，或转发团队。",
     })
 
+    # 5) AI 风险预警（risk）——复用 risk_scan 只读分析，作为 anomaly 通道同源消费
+    #    推送 ≠ 执行：只展示风险与建议，绝不替 Boss 改账（守 sprite_push 铁律）。
+    from kernel.reporting.risk_scan import scan_risks
+
+    risk = scan_risks(s, ls_id, yr, mo, standard)
+    for f in risk.get("findings") or []:
+        if f["code"] == "NO_PERIOD":
+            continue
+        items.append({
+            "type": "anomaly",
+            "severity": f["severity"],
+            "title": f"风险·{f['title']}",
+            "text": f["detail"],
+            "html": f["detail"],
+            "action_hint": f["suggestion"],
+        })
+
     # 4) 健康（health）——无任何待办时给正向反馈
     actionable = any(it["type"] in ("month_end", "anomaly") for it in items)
     if not actionable:
