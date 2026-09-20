@@ -917,6 +917,45 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("FORECAST_BAD_ASSUMPTIONS", f"假设参数无效：{e}")
 
     @mcp.tool()
+    def risk_scan(
+        ledger_set_id: str,
+        period_year: int = 0,
+        period_month: int = 0,
+        accounting_standard: str = "",
+    ) -> dict:
+        """AI 风险预警（v2.1 / B1）：只读扫描小微企业常见财务风险，只告警不执行。
+
+        基于内核既有只读取数（amounts_by_code / balance_sheet / 受控 SQL）分析：
+        - BS_UNBALANCED    资产负债表不平衡（alert）
+        - NEGATIVE_CASH     现金/银行存款为负（alert）
+        - AR/AP 方向异常    应收出现贷方余额 / 应付出现借方余额（warn，重分类疑似）
+        - LARGE_AMOUNT      异常大额凭证行（warn）
+        - UNCLOSED_HISTORY  历史期间仍未结账（warn）
+
+        铁律：本工具**只读、零副作用**，绝不制单/过账/结账。每条发现带 code /
+        severity / title / detail / suggestion，severity ∈ alert|warn|info。
+        期间参数对齐全系统约定用 period_year/period_month（0 表示取最新 OPEN 期间）。
+
+        返回 {ok, period_status, severity_counts, findings, summary}。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.risk_scan import scan_risks
+
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
+                r = scan_risks(s, ledger_set_id, period_year, period_month, standard)
+                return _ok(
+                    period_status=r["period_status"],
+                    severity_counts=r["severity_counts"],
+                    findings=r["findings"],
+                    summary=r["summary"],
+                )
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+
+    @mcp.tool()
     def preview_closing(
         ledger_set_id: str,
         period_year: int,
