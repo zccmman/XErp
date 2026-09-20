@@ -1247,8 +1247,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
     @mcp.tool()
     def export_gbt24589(
         ledger_set_id: str,
-        year: int,
-        month: int = 0,
+        period_year: int,
+        period_month: int = 0,
         fmt: str = "json",
     ) -> dict:
         """导出 GB/T 24589.1-2024 会计核算软件数据接口标准账表（审计/税务/监管采集用）。
@@ -1260,7 +1260,7 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         - 仅 POSTED 凭证参与（法定账簿口径），严格继承 ledgerbook 的「期初是存量」语义；
           期初 = 开账至期初的全部 POSTED 净额累计，期末 = 期初滚动；
         - 记账人/审核人从 VOUCHER_POSTED/APPROVED 事件链追溯（兼容历史小写事件串）；
-        - month=0 导出全年，非 0 仅导该月。
+        - period_month=0 导出全年，非 0 仅导该月。
 
         返回 {standard, content（序列化账表）, summary（各表记录数 + provenance）}。
         需落盘为文件时，把 content 写入 .json/.xml 即可交给审计/监管机关。
@@ -1272,8 +1272,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                 content = build_export(
                     s,
                     ledger_set_id=ledger_set_id,
-                    year=year,
-                    month=month or 0,
+                    year=period_year,
+                    month=period_month or 0,
                     fmt=fmt,
                 )
                 import json as _json
