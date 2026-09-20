@@ -8,7 +8,7 @@
 
     minimal  极简  19 个：建账 → 制单 → 审核 → 记账 → 查账 → 两张主表 + 状态引导 + 科目本体 + 算子状态
     standard 标准  43 个：+ 驳回/撤回/反记账/多级签字/月结/往来/银行/OCR/三表预测/专项核算/账本精灵主动推送/AI风险预警/报税准备/审计追踪
-    pro      专业  64 个：全量（自治过账、异常扫描、适配器、转账模板、双审批通道、多主体合并报表）
+    pro      专业  65 个：全量（自治授权/过账、异常扫描、适配器、转账模板、双审批通道、多主体合并报表）
 
 归类铁律（由 tests/test_tool_profiles.py 钉死）：
 
@@ -124,6 +124,7 @@ PRO_ONLY: tuple[str, ...] = (
     "transfer_list",
     "transfer_run",
     # 自治与风控（会自行过账，属"授权后才开"的能力）
+    "autonomy_authorize",
     "autonomy_post",
     "autonomy_audit_list",
     "autonomy_audit_review",

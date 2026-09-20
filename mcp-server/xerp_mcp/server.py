@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from fastmcp import FastMCP
@@ -1664,19 +1664,73 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         subject_id: str,
         note: str = "",
     ) -> dict:
-        """人工解除 Agent 断路器（恢复自治）。Agent 不能自解，需人类 admin 操作。"""
+        """人工解除 Agent 断路器（恢复自治）。
+
+        O11 红线（双重保险）：内核层 release_breaker 已硬拒 Agent 自解；本工具层再强制
+        admin 鉴权（ledger:manage）——只有人类 admin 才能把被冻结的 Agent 放出来。
+        """
         try:
             with repo.session() as s:
-                from kernel.anomaly import release_breaker
+                from kernel.anomaly import (
+                    GLOBAL_LEDGER_SET_ID, release_breaker,
+                )
+                from kernel.authz import AuthzError, enforce
 
+                # 断路器是全局态（ledger_set_id='*'），admin 对任意账套均有权解除。
+                enforce(s, actor_id=actor_id, ledger_set_id=GLOBAL_LEDGER_SET_ID,
+                        action="ledger:manage")
                 release_breaker(s, subject_id=subject_id,
                                 actor={"type": "user", "id": actor_id}, note=note)
                 s.commit()
                 return _ok(released=subject_id)
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
         except Exception as e:  # noqa: BLE001
             return _err("RELEASE_FAILED", str(e))
 
     # ---------- L3 自治档（P3-03） ----------
+
+    @mcp.tool()
+    def autonomy_authorize(
+        ledger_set_id: str,
+        admin_actor_id: str,
+        agent_subject_id: str,
+        budget: str,
+        expires_at: str,
+        note: str = "",
+    ) -> dict:
+        """签发 L3 自治授权令牌（O11 红线：每会话显式授权，人是 Boss 硬门禁）。
+
+        仅人类 admin 可签发（强制 ledger:manage 鉴权）。令牌代表「人授权该 Agent
+        在预算 budget、到期 expires_at（ISO8601，UTC）前可自执行过账」——把"人是 Boss"
+        从口号落为可审计的硬门禁。返回 grant_id，自治过账必须持此令牌。
+        预算用尽会自动跳闸冻结该 Agent 并通知人类；可随时调 autonomy_revoke 吊销。
+        """
+        try:
+            from decimal import Decimal as _D
+
+            from kernel.authz import AuthzError, enforce
+            from kernel.autonomy import AutonomyError, issue_grant
+
+            with repo.session() as s:
+                enforce(s, actor_id=admin_actor_id, ledger_set_id=ledger_set_id,
+                        action="ledger:manage")  # 仅 admin 可签发授权
+                res = issue_grant(
+                    s, ledger_set_id=ledger_set_id,
+                    agent_subject_id=agent_subject_id,
+                    admin_subject_id=admin_actor_id,
+                    budget=_D(budget), expires_at=datetime.fromisoformat(expires_at),
+                    note=note,
+                )
+                s.commit()
+                return _ok(**res, summary=(
+                    f"✅ 已授权 Agent {agent_subject_id} 在预算 ¥{res['budget']}、"
+                    f"到期 {res['expires_at']} 前可自执行过账（人是 Boss：此授权人类可随时吊销）"
+                ))
+        except AuthzError as e:
+            return _err("FORBIDDEN", str(e))
+        except AutonomyError as e:
+            return _err(e.code, e.message_zh, e.details)
 
     @mcp.tool()
     def autonomy_post(
@@ -1685,11 +1739,15 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         voucher_date: str,
         summary: str,
         lines: list[dict],
+        grant_id: str,
     ) -> dict:
-        """L3 自治过账：autonomy_level≥3 且断路器闭合且单日额度内 → 直接 POSTED。
+        """L3 自治过账：有效授权令牌 + 额度内 + 断路器闭合 → 直接 POSTED。
 
         不是 Agent 自审——是系统规则执行（额度内），全部凭证进入抽检池。
-        超额度 QUOTA_EXCEEDED / 断路器开 BREAKER_OPEN / 非 L3 主体 L3_REQUIRED。
+        **必须持 autonomy_authorize 签发的有效令牌（grant_id）**：无令牌 / 已吊销 /
+        已过期 / 预算不足均拒绝（AUTH_TOKEN_REQUIRED / GRANT_*）；令牌预算用尽会
+        自动跳闸冻结该 Agent 并通知人类。超额度 QUOTA_EXCEEDED / 断路器开 BREAKER_OPEN
+        / 非 L3 主体 L3_REQUIRED。
         """
         try:
             with repo.session() as s:
@@ -1703,7 +1761,7 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                 res = autonomous_post(
                     s, ledger_set_id=ledger_set_id,
                     voucher_date=date.fromisoformat(voucher_date),
-                    actor_id=actor_id, summary=summary,
+                    actor_id=actor_id, summary=summary, grant_id=grant_id,
                     lines=[(ln["account_code"],
                             _D(ln.get("debit") or "0"),
                             _D(ln.get("credit") or "0")) for ln in lines],
