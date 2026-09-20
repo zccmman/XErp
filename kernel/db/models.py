@@ -141,6 +141,34 @@ class AgentBreaker(Base):
     )
 
 
+class AutonomyGrant(Base):
+    """L3 自治授权令牌（O11 红线：每会话显式授权令牌）。
+
+    自治过账（autonomous_post）**必须**持有一张有效、未过期、预算充足的授权令牌，
+    否则一律拒绝（AUTH_TOKEN_REQUIRED）。令牌由人类 admin 显式签发，代表
+    「人这一刻授权 AI 在预算 X、到期 Y 前可自执行过账」——把"人是 Boss"从
+    口号落为可审计的硬门禁。令牌预算用尽自动跳闸冻结 Agent（见 autonomy.py）。
+    """
+
+    __tablename__ = "autonomy_grants"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ledger_set_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent_subject_id: Mapped[str] = mapped_column(String(32), index=True)
+    admin_subject_id: Mapped[str] = mapped_column(String(32))
+    budget: Mapped[Decimal] = mapped_column(Numeric(14, 2))      # 签发总预算（CNY）
+    remaining: Mapped[Decimal] = mapped_column(Numeric(14, 2))    # 剩余可用（每次过账扣减）
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class Period(Base):
     """会计期间：OPEN | CLOSING | CLOSED（ADR-004 cancel_post 窗口依据）。"""
 
