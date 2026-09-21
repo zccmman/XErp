@@ -1711,9 +1711,14 @@ def build_app(db_url: str | None = None) -> FastAPI:
 
     @app.post("/ledger/{ls_id}/wizard/confirm", response_class=HTMLResponse)
     async def wizard_confirm(request: Request, ls_id: str):
-        from kernel.adapters import ingest_event
-        from kernel.adapters.spec import EventFieldError, RuleError
-        from kernel.adapters.engine import AdapterError
+        # Web 入口层（ADR-007：Web=可插拔入口，非核心账本引擎）经适配器公共
+        # API 入账，属合法的外围→外围依赖（与 kernel/ocr 同例，D8 边界契约）。
+        from kernel.adapters import (
+            AdapterError,
+            EventFieldError,
+            RuleError,
+            ingest_event,
+        )
         from kernel.biz_wizard import get_scenario, build_event, WizardError
 
         form = await request.form()

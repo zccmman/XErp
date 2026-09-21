@@ -31,8 +31,9 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kernel.adapters.engine import preview as _preview
-from kernel.adapters.registry import get_rule
+# 本模块是外围「业务语言向导」特性层（非核心账本引擎），按 D8 边界契约经
+# 适配器公共 API 消费事件引擎，属合法的外围→外围依赖（与 kernel/ocr 同例）。
+from kernel.adapters import get_rule, preview as _preview
 from kernel.db.models import Account
 
 ZERO = Decimal("0.00")

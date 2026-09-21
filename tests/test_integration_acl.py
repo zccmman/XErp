@@ -29,7 +29,17 @@ from kernel.seed import seed_demo_ledger
 _KERNEL_ROOT = Path("kernel")
 
 # Ledger Core 之外的外围模块允许依赖适配器（外围→外围 是合法方向）。
-ALLOWED_ADAPTER_IMPORTERS = ("kernel/adapters/", "kernel/ocr/")
+# 已知外围消费方（均非核心账本引擎）：
+#  - kernel/adapters/      适配器实现自身
+#  - kernel/ocr/           票据识别管线（经 adapters 入账，P2-02）
+#  - kernel/webapp.py      Web 入口层（ADR-007：Web=可插拔入口，非核心账本引擎）
+#  - kernel/biz_wizard.py  业务语言向导特性层（S1，只读探活 + 经 adapters 入账）
+ALLOWED_ADAPTER_IMPORTERS = (
+    "kernel/adapters/",
+    "kernel/ocr/",
+    "kernel/webapp.py",
+    "kernel/biz_wizard.py",
+)
 
 
 def _imports_adapters(path: Path) -> bool:

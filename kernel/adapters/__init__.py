@@ -10,6 +10,10 @@ Integration ↔ Ledger Core 边界契约（D8：防腐层缺失，按债务建�
    ``kernel/seed``、``kernel/carryforward``、``kernel/reconcile``、
    ``kernel/ledgerbook``、``kernel/classic``、``kernel/ledger`` 等）**不得** import
    本包。零核心改动（P2-01）的落点正是：第三方扩展只注册声明式规则，绝不改核心。
+   已知外围消费方（合法的外围→外围依赖，见 ``tests/test_integration_acl.py``
+   的 ``ALLOWED_ADAPTER_IMPORTERS``）：``kernel/ocr``（票据管线）、
+   ``kernel/webapp``（Web 入口层，ADR-007）、``kernel/biz_wizard``（业务向导
+   特性层）。
 2. **不绕过投影**：适配器**不得**调用核心内部投影累加器（``_accumulate_balances``
    等下划线前缀内部符号），也**不得**直写 ``Balance`` 投影。余额投影只由
    ``post_voucher`` 经 ``validate_voucher`` 触发，是事件流的可重建投影（ADR-002）。
