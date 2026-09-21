@@ -1455,6 +1455,88 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                 )
             )
 
+    # ---------- 应收应付深化（对账单 + 账龄） ----------
+
+    @mcp.tool()
+    def arap_statement(
+        ledger_set_id: str,
+        dim_key: str,
+        partner: str,
+        as_of_date: str = "",
+        from_date: str = "",
+    ) -> dict:
+        """往来对账单：某客户/供应商的期初、逐笔流水、运行余额、期末。
+
+        与 partner_balances 同一取数口径（在途：PUSHED/APPROVED/POSTED），
+        因此期末余额可对其逐客户复核——这是「单一真源」的结构性保证。
+        - dim_key：customer（应收）或 supplier（应付）；
+        - partner：往来单位名称（与凭证 aux_dims 里的客户/供应商值一致）；
+        - as_of_date：截止日期 ISO（如 2026-09-30），空=今天；
+        - from_date：期初切割日 ISO，空=展示截至 as_of_date 的全部流水
+          （期初归零）；传入则期初=该日前累计净欠款。
+        余额以『欠款方向』呈现：应收正数=客户欠我，应付正数=我欠供应商。
+        """
+        try:
+            from datetime import date
+
+            from kernel.reporting.arap import (
+                ArapError,
+                statement_of_account,
+            )
+
+            _as_of = date.fromisoformat(as_of_date) if as_of_date else None
+            _from = date.fromisoformat(from_date) if from_date else None
+            if _as_of is None:
+                _as_of = date.today()
+            with repo.session() as s:
+                return _ok(
+                    report=statement_of_account(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        dim_key=dim_key,
+                        partner=partner,
+                        as_of_date=_as_of,
+                        from_date=_from,
+                    )
+                )
+        except ArapError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def arap_aging(
+        ledger_set_id: str,
+        dim_key: str,
+        as_of_date: str = "",
+    ) -> dict:
+        """账龄分析：按客户/供应商把未结清欠款按逾期天数分桶。
+
+        采用 FIFO 配比（不依赖 open-item 核销）：回款/付款冲减最早的未结发票，
+        截至 as_of_date 仍未冲减的开票金额按 0-30/30-60/60-90/90+ 天入桶。
+        未结清余额之和 == partner_balances 同口径余额（单一真源），可直接复核。
+        - dim_key：customer（应收账龄）或 supplier（应付账龄）；
+        - as_of_date：截止日期 ISO，空=今天。
+        余额可能为负（表示预付），此时 buckets 全零、balance 为负。
+        """
+        try:
+            from datetime import date
+
+            from kernel.reporting.arap import ArapError, aging_analysis
+
+            _as_of = date.fromisoformat(as_of_date) if as_of_date else None
+            if _as_of is None:
+                _as_of = date.today()
+            with repo.session() as s:
+                return _ok(
+                    report=aging_analysis(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        dim_key=dim_key,
+                        as_of_date=_as_of,
+                    )
+                )
+        except ArapError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- 发票 OCR（P2-03） ----------
 
     @mcp.tool()
