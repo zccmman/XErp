@@ -19,13 +19,10 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from kernel.coa import DEFAULT_AP_ACCOUNTS, DEFAULT_AR_ACCOUNTS
 from kernel.db.models import Account, Period, Voucher, VoucherLine
 
 ZERO = Decimal("0.00")
-
-# 默认往来科目（与科目模板的 aux_dims 声明一致）
-DEFAULT_AR_ACCOUNTS = ("1122",)
-DEFAULT_AP_ACCOUNTS = ("2202",)
 
 
 def partner_balances(

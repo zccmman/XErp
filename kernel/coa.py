@@ -27,6 +27,12 @@ _EXPECT_DIR = {
     "pnl": {"debit", "credit"},  # 收入 credit / 费用 debit
 }
 
+# 往来（应收/应付）默认科目前缀，与内置 COA 模板一致：
+# 1122 = 应收账款，2202 = 应付账款。适配器与 AR/AP 报表共用，单一真源
+# （避免核心报表层反向依赖 adapters 包——A1 红线）。
+DEFAULT_AR_ACCOUNTS = ("1122",)
+DEFAULT_AP_ACCOUNTS = ("2202",)
+
 
 class CoaImportError(ValueError):
     """科目表导入失败：信息可直接展示给用户。"""
