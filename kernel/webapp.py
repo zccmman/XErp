@@ -972,15 +972,16 @@ def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
 
     # 账本精灵主动提醒：单一推送源（O18）。Web 提醒 / MCP 推送 / CLI / 企微
     # 全部消费 kernel.sprite_push.sprite_push_items，口径永远一致（守 ADR-002）。
-    # 只取 month_end / anomaly / health / credit / collections / receipt_matching 六类作为
-    # 「提醒」，report_card 由看板卡片呈现。credit/collections/receipt_matching 为信用管理、
-    # 智能催收、AI 收款自动匹配的只读推送（同源消费，守「推送 ≠ 执行」）。
+    # 只取 month_end / anomaly / health / credit / collections / receipt_matching /
+    # fx_revaluation / subledger_gl 八类作为「提醒」，report_card 由看板卡片呈现。
+    # credit/collections/receipt_matching/fx_revaluation/subledger_gl 为信用管理、智能催收、
+    # AI 收款自动匹配、外币重估、子账总账对账的只读推送（同源消费，守「推送 ≠ 执行」）。
     from kernel.sprite_push import sprite_push_items
 
     _sp = sprite_push_items(s, ls_id, yr, mo, standard)
     tips = [it["html"] for it in _sp["items"]
             if it["type"] in ("month_end", "anomaly", "health", "credit", "collections",
-                              "receipt_matching")]
+                              "receipt_matching", "fx_revaluation", "subledger_gl")]
 
     return {
         'labels': labels,

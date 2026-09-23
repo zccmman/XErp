@@ -1,0 +1,19 @@
+{
+  "name": "预提利息",
+  "period_type": "monthly",
+  "description": "按短期借款余额的月利率预提财务费用（应付利息），月结时自动提示/制备",
+  "balance_check": true,
+  "tags": ["G8", "月结自动化", "预提", "利息"],
+  "lines": [
+    {
+      "side": "debit",
+      "account": "6603",
+      "amount": {"source": "balance", "account": "2001", "scope": "balance", "ratio": 0.005}
+    },
+    {
+      "side": "credit",
+      "account": "2231",
+      "amount": {"source": "balance", "account": "2001", "scope": "balance", "ratio": 0.005}
+    }
+  ]
+}

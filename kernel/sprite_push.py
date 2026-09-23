@@ -56,7 +56,7 @@ def sprite_push_items(
 
     返回：
         items:  list[dict] 每条 {type, severity, title, text, html, action_hint}
-                type ∈ month_end | anomaly | report_card | health | credit | collections | receipt_matching
+                type ∈ month_end | anomaly | report_card | health | credit | collections | receipt_matching | fx_revaluation
                 severity ∈ info | warn | alert
         summary: 一句话总览（供 IM / CLI 首行）
         period_status: 期间状态（none / OPEN / CLOSED / ...）
@@ -237,9 +237,67 @@ def sprite_push_items(
             "action_hint": "调用 arap_propose_receipt_match 出匹配方案，确认后 arap_apply_clearing 落库。",
         })
 
+    # 9) 外币重估（fx_revaluation）——复用 has_foreign_exposure 只读判定，有外币头寸
+    #    且本期尚未生成重估凭证时，提示月结前做汇兑损益重估（需 Boss 提供期末汇率）。
+    #    推送 ≠ 执行：只展示提示，绝不替 Boss 重估或制单。
+    from kernel.reporting.foreign import (
+        fx_revaluation_posted,
+        has_foreign_exposure,
+    )
+
+    if period_status == "OPEN" and not closed:
+        if (
+            has_foreign_exposure(s, ledger_set_id=ls_id, year=yr, month=mo)
+            and not fx_revaluation_posted(s, ledger_set_id=ls_id, year=yr, month=mo)
+        ):
+            items.append({
+                "type": "fx_revaluation",
+                "severity": "warn",
+                "title": f"{yr}-{mo:02d} 有外币业务·建议月结前做汇兑损益重估",
+                "text": ("本期存在未结算外币头寸，期末需按期末汇率计提汇兑损益。"
+                         "请先确定各币种期末汇率。"),
+                "html": ("本期存在未结算<b>外币头寸</b>，期末需按期末汇率计提汇兑损益，"
+                         "请先确定各币种期末汇率。"),
+                "action_hint": ("调用 fx_revaluation_draft 并传入 fx_rates（各币种期末汇率）"
+                               "出具重估草稿，确认后 fx_revaluation_create 落 PUSHED 凭证。"),
+            })
+
+    # 10) 子账↔总账对账（subledger_gl）——复用 subledger_gl_reconcile 只读判定，
+    #     应收/应付控制科目(1122/2202)总额 ≠ 客户/供应商明细余额之和时告警（失配）。
+    #     推送 ≠ 执行：只展示提示，绝不替 Boss 重分类或制单。
+    from datetime import date as _date
+
+    from kernel.reporting.arap import subledger_gl_reconcile
+
+    if period_status == "OPEN" and not closed:
+        _mism: list[str] = []
+        for _dk in ("customer", "supplier"):
+            try:
+                _r = subledger_gl_reconcile(
+                    s, ledger_set_id=ls_id, dim_key=_dk, as_of_date=_date.today())
+            except Exception:  # noqa: BLE001 —— 推送层容错：对账异常不阻断其它提醒
+                continue
+            if not _r["ok"]:
+                _mism.append(
+                    f"{'应收' if _dk == 'customer' else '应付'}控制科目与"
+                    f"明细余额差异 {_r['difference']}（{_r['unassigned_count']} 笔漏挂往来单位）")
+        if _mism:
+            items.append({
+                "type": "subledger_gl",
+                "severity": "alert",
+                "title": f"{yr}-{mo:02d} 子账与总账不一致",
+                "text": "；".join(_mism) + "。需补录往来维度或重分类后月结。",
+                "html": "；".join(_mism) + "。需补录往来维度或重分类后月结。",
+                "action_hint": ("调用 reconcile_subledger_gl 查看明细，对漏挂往来单位的分录"
+                               "补录 customer/supplier 维度（HITL 制单修正）。"),
+            })
+
     # 4) 健康（health）——无任何待办时给正向反馈
     actionable = any(
-        it["type"] in ("month_end", "anomaly", "credit", "collections", "receipt_matching")
+        it["type"] in (
+            "month_end", "anomaly", "credit", "collections",
+            "receipt_matching", "fx_revaluation", "subledger_gl",
+        )
         for it in items
     )
     if not actionable:

@@ -102,6 +102,8 @@ def run_monthend(
     notifier: Notifier | None = None,
     dry_run: bool = False,
     bank_code: str = "100201",
+    fx_rates: dict | None = None,
+    auto_prepare: bool = False,
 ) -> dict[str, Any]:
     """执行月度关账编排。dry_run 只检查+催办，不动账。"""
     notifier = notifier or ConsoleNotifier()
@@ -134,6 +136,71 @@ def run_monthend(
         "reconcile_ok": pre_ok,
         "reconcile_issues": pre_issues,
     })
+
+    # ---------- 2.5 外币重估（G7，只读提示/草稿） ----------
+    # 月结自动化的一环：OPEN 期间且有未结算外币头寸时，提示月结前做汇兑损益重估。
+    # 提供 fx_rates 即出具重估草稿（只读，不改变账）；落库由 fx_revaluation_create（HITL）。
+    fx_step: dict[str, Any] = {"exposure": False, "needs_rates": True, "draft": None}
+    if period.status == "OPEN":
+        try:
+            from kernel.reporting.foreign import (
+                fx_revaluation_draft,
+                has_foreign_exposure,
+            )
+
+            if has_foreign_exposure(session, ledger_set_id=ledger_set_id,
+                                    year=year, month=month):
+                fx_step["exposure"] = True
+                if fx_rates:
+                    fx_step["needs_rates"] = False
+                    d = fx_revaluation_draft(
+                        session, ledger_set_id=ledger_set_id, year=year, month=month,
+                        fx_rates=fx_rates,
+                    )
+                    fx_step["draft"] = {
+                        "needs_revaluation": d["needs_revaluation"],
+                        "total_gain": d["total_gain"],
+                        "total_loss": d["total_loss"],
+                        "by_currency": d["by_currency"],
+                        "notes": d["notes"],
+                    }
+        except Exception as e:  # noqa: BLE001
+            fx_step["error"] = str(e)
+    step("fx_revaluation", fx_step)
+
+    # ---------- 2.6 周期性预提/计提（G8，月结自动化） ----------
+    # 月结的一环：列出本期到期的 monthly 转账模板（如计提坏账准备、预提利息）。
+    # 仅列出（只读，不改账）；auto_prepare=True 且非 dry_run 时调 run_template 生成
+    # PUSHED 草稿（HITL，绝不自动过账）。推送 ≠ 执行：agent 不替 Boss 决定计提比例/金额。
+    from kernel.transfers import (
+        TransferError,
+        list_templates,
+        load_builtin_templates,
+        run_template as _run_tpl,
+    )
+
+    load_builtin_templates()
+    due = [t for t in list_templates() if t.get("period_type") == "monthly"]
+    accr_items: list[dict] = []
+    for t in due:
+        entry = {"template": t["name"], "prepared": False,
+                 "voucher_no": None, "note": ""}
+        if auto_prepare and not dry_run:
+            try:
+                r = _run_tpl(session, ledger_set_id=ledger_set_id,
+                            template_name=t["name"], year=year, month=month,
+                            actor=actor)
+                entry["prepared"] = True
+                entry["voucher_no"] = r["voucher"]["voucher_no"]
+            except TransferError as e:
+                entry["note"] = f"{e.code}: {e.message_zh}"
+        accr_items.append(entry)
+    step("recurring_accruals", {"due_count": len(due), "items": accr_items})
+
+    # 重新计算待审分布：auto_prepare 在 step 2.6 新制备的 PUSHED 草稿必须计入
+    # 关账门禁（HITL——未审凭证不得随关账被「带过」）。即便未启用 auto_prepare，
+    # 此处重算亦无副作用（期间无新增凭证），但能兜住任何在 step 1 之后落入的凭证。
+    pending = _pending_review(session, ledger_set_id, period.id)
 
     # ---------- 2. 催办 ----------
     needs_chase = pending["draft"] + pending["pushed"]

@@ -1055,3 +1055,111 @@ def _subset_sum(items: list[dict], target: Decimal) -> list[dict] | None:
         return dfs(idx + 1, running, chosen)
 
     return dfs(0, ZERO, [])
+
+
+# ============================================================ Phase D（G9）：子账↔总账对账
+# 控制科目（应收 1122 / 应付 2202）总额必须等于各往来单位（客户/供应商）明细余额之和。
+# 只读、复用 _resolve_accounts / _line_delta / INCLUDED_STATUS——与往来对账单、账龄同一取数口径
+# （ADR-002 单一真源），不引入新投影、不复制配平逻辑。
+
+
+def subledger_gl_reconcile(
+    session: Session, *, ledger_set_id: str, dim_key: str,
+    as_of_date: date | None = None, tolerance: Decimal = Decimal("0.00"),
+) -> dict[str, Any]:
+    """子账↔总账对账（只读）：应收/应付控制科目 vs 按往来单位拆分的明细余额。
+
+    控制科目（1122/2202）的借贷净额合计（control_total），应等于「逐张凭证明细按
+    customer/supplier 维度拆分后」的往来单位余额之和（subledger_total）。
+
+    差异（difference = control_total − subledger_total）即「入了控制科目但未挂往来单位」
+    的分录——典型的子账↔总账失配（如一张 J/E 直接借 1122 却漏填客户）。
+
+    返回 {dim_key, as_of_date, accounts, control_total, subledger_total, difference,
+          ok, unassigned_total, unassigned_lines, unassigned_count, partner_count,
+          partners, by_account, basis}。ok 表示对账一致（|difference| <= tolerance）。
+    """
+    accounts = _resolve_accounts(session, ledger_set_id, dim_key)
+    if not accounts:
+        return {
+            "dim_key": dim_key,
+            "as_of_date": (as_of_date.isoformat()
+                           if as_of_date else date.today().isoformat()),
+            "accounts": [],
+            "control_total": "0.00",
+            "subledger_total": "0.00",
+            "difference": "0.00",
+            "ok": True,
+            "unassigned_total": "0.00",
+            "unassigned_lines": [],
+            "unassigned_count": 0,
+            "partner_count": 0,
+            "partners": [],
+            "by_account": {},
+            "basis": "无往来科目，无需对账",
+        }
+    if as_of_date is None:
+        as_of_date = date.today()
+
+    rows = session.execute(
+        select(VoucherLine, Voucher)
+        .join(Voucher, VoucherLine.voucher_id == Voucher.id)
+        .where(
+            Voucher.ledger_set_id == ledger_set_id,
+            Voucher.status.in_(INCLUDED_STATUS),
+            VoucherLine.account_id.in_(list(accounts)),
+            Voucher.voucher_date <= as_of_date,
+        )
+    ).all()
+
+    control_total = ZERO
+    subledger_total = ZERO
+    by_partner: dict[str, Decimal] = {}
+    by_account: dict[str, Decimal] = {}
+    unassigned_lines: list[dict] = []
+    for line, v in rows:
+        acc = accounts[line.account_id]
+        delta = _line_delta(
+            {"debit": Decimal(str(line.debit)), "credit": Decimal(str(line.credit))},
+            acc,
+        )
+        control_total += delta
+        by_account[acc.code] = by_account.get(acc.code, ZERO) + delta
+        dims = line.aux_dims or {}
+        partner = dims.get(dim_key)
+        if partner:
+            subledger_total += delta
+            by_partner[partner] = by_partner.get(partner, ZERO) + delta
+        else:
+            unassigned_lines.append({
+                "voucher_no": v.voucher_no,
+                "date": v.voucher_date.isoformat(),
+                "account_code": acc.code,
+                "debit": f"{line.debit:.2f}",
+                "credit": f"{line.credit:.2f}",
+                "summary": (v.summary or line.summary or ""),
+            })
+
+    difference = control_total - subledger_total
+    ok = abs(difference) <= tolerance
+    partners = [
+        {"partner": p, "balance": f"{b:.2f}"}
+        for p, b in sorted(by_partner.items(), key=lambda kv: -abs(kv[1]))
+    ]
+    return {
+        "dim_key": dim_key,
+        "as_of_date": as_of_date.isoformat(),
+        "accounts": sorted({a.code for a in accounts.values()}),
+        "control_total": f"{control_total:.2f}",
+        "subledger_total": f"{subledger_total:.2f}",
+        "difference": f"{difference:.2f}",
+        "ok": ok,
+        "unassigned_total": f"{difference:.2f}",
+        "unassigned_lines": unassigned_lines[:50],
+        "unassigned_count": len(unassigned_lines),
+        "partner_count": len(partners),
+        "partners": partners,
+        "by_account": {k: f"{v:.2f}" for k, v in by_account.items()},
+        "basis": ("控制科目(1122/2202)借贷净额合计 == 各往来单位明细余额之和；"
+                  "差异 = 入控制科目但未挂往来单位的分录（如漏填客户的 J/E）。只读，守 ADR-002。"),
+    }

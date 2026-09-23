@@ -1,0 +1,19 @@
+{
+  "name": "计提坏账准备",
+  "period_type": "monthly",
+  "description": "按应收账款余额的一定比例计提坏账准备（信用减值损失），月结时自动提示/制备",
+  "balance_check": true,
+  "tags": ["G8", "月结自动化", "计提", "坏账准备"],
+  "lines": [
+    {
+      "side": "debit",
+      "account": "6701",
+      "amount": {"source": "balance", "account": "1122", "scope": "balance", "ratio": 0.05}
+    },
+    {
+      "side": "credit",
+      "account": "1231",
+      "amount": {"source": "balance", "account": "1122", "scope": "balance", "ratio": 0.05}
+    }
+  ]
+}

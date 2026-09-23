@@ -1370,6 +1370,37 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except ReconcileError as e:
             return _err("RECONCILE_ERROR", str(e))
 
+    @mcp.tool()
+    def reconcile_subledger_gl(
+        ledger_set_id: str,
+        dim_key: str,
+        as_of_date: str = "",
+    ) -> dict:
+        """子账↔总账对账（只读）：应收/应付控制科目(1122/2202)总额 vs 客户/供应商明细余额之和。
+
+        dim_key = "customer"（应收 1122）或 "supplier"（应付 2202）。
+        as_of_date 截止日（ISO，空=今天）。差异≠0 即「入了控制科目却漏挂往来单位」的失配
+        （如漏填客户的 J/E），需补录往来维度。复用 arap.subledger_gl_reconcile，只读不改账。
+
+        返回 ok 与 control_total/subledger_total/difference/unassigned_lines 等明细。
+        """
+        try:
+            with repo.session() as s:
+                from datetime import date as _date
+
+                from kernel.reporting.arap import (
+                    ArapError,
+                    subledger_gl_reconcile as _sub,
+                )
+
+                _as = _date.fromisoformat(as_of_date) if as_of_date else None
+                return _ok(report=_sub(
+                    s, ledger_set_id=ledger_set_id, dim_key=dim_key,
+                    as_of_date=_as,
+                ))
+        except ArapError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- GB/T 24589.1-2024 审计导出（合规护城河） ----------
 
     @mcp.tool()
@@ -1792,6 +1823,80 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except ArapError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    # ---------- 月结自动化 · 外币重估（Phase D / G7） ----------
+
+    @mcp.tool()
+    def fx_revaluation_draft(
+        ledger_set_id: str,
+        year: int,
+        month: int,
+        fx_rates: dict,
+        fx_gain_loss_account: str = "660304",
+    ) -> dict:
+        """汇兑损益期末重估（只读草稿，不落库）：对每(科目,币种)累计外币头寸按期末汇率计提（Phase D / G7）。
+
+        承接合并层已有的分层汇率能力，把实体层缺失的**月度外币重估**补上——对标
+        SAP 期末汇兑损益重估 / Oracle 未实现汇兑损益。计算：目标本币=外币净额×期末汇率，
+        调整额=目标本币−当前账面本币，生成借贷恒等的重估分录草稿（差额对冲到汇兑损益科目）。
+
+        铁律：只读、只出草稿，绝不写账；落库由 fx_revaluation_create（HITL）执行。
+        - fx_rates：{币种: 期末汇率}（如 {"USD": 7.18, "EUR": 7.85}）；缺某币种汇率则跳过该币种并在 notes 标注；
+        - fx_gain_loss_account：汇兑损益科目（默认 660304，需账套存在该叶子科目）；
+        - 返回 lines（每科目调整 + 汇兑损益平衡分录，含 foreign_net/rate/delta/side）
+          + total_gain/loss + by_currency + notes。
+        """
+        try:
+            from kernel.reporting.foreign import FxError, fx_revaluation_draft as _fx
+
+            with repo.session() as s:
+                return _ok(
+                    report=_fx(
+                        s, ledger_set_id=ledger_set_id, year=year, month=month,
+                        fx_rates=fx_rates,
+                        fx_gain_loss_account=fx_gain_loss_account,
+                    )
+                )
+        except FxError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def fx_revaluation_create(
+        ledger_set_id: str,
+        year: int,
+        month: int,
+        fx_rates: dict,
+        actor_id: str,
+        fx_gain_loss_account: str = "660304",
+        voucher_date: str = "",
+    ) -> dict:
+        """把汇兑损益重估草稿落成待审（PUSHED）凭证（HITL 写动作，绝不自动过账）。
+
+        AI 产草稿：生成 PUSHED 凭证（待人审→过账才生效）。幂等：同期已生成→ALREADY_RUN。
+        典型闭环：fx_revaluation_draft（只读）→ 人工确认汇率/分录 → fx_revaluation_create 落 PUSHED → Boss 审批过账。
+        - actor_id：操作人 subject id（制单人≠审批人，终态须人类点头）；
+        - voucher_date：凭证日期 ISO，空=当月28日。
+        """
+        try:
+            from datetime import date
+
+            from kernel.reporting.foreign import (
+                FxError,
+                create_fx_revaluation_voucher,
+            )
+
+            _vd = date.fromisoformat(voucher_date) if voucher_date else None
+            with repo.session() as s:
+                return _ok(
+                    report=create_fx_revaluation_voucher(
+                        s, ledger_set_id=ledger_set_id, year=year, month=month,
+                        fx_rates=fx_rates, actor={"id": actor_id},
+                        fx_gain_loss_account=fx_gain_loss_account,
+                        voucher_date=_vd,
+                    )
+                )
+        except FxError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- 发票 OCR（P2-03） ----------
 
     @mcp.tool()
@@ -1943,12 +2048,18 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         period_year: int,
         period_month: int,
         dry_run: bool = False,
+        fx_rates: dict | None = None,
+        auto_prepare: bool = False,
     ) -> dict:
         """关账 Agent：检查未审凭证→催办→结转→试算→报表草稿→开下期。
 
         dry_run=True 只检查+催办不动账。正式执行时若存在未审凭证会中止
         （PENDING_VOUCHERS，催办已发）——Agent 永不代审，人工闸门不绕过。
         全程产出 agent.monthend.run 事件，可回放。
+        传入 fx_rates（{币种: 期末即期汇率}）即在「外币重估」步出具只读重估草稿，
+        供 Boss 审阅后由 fx_revaluation_create 落库（HITL，绝不自动过账）。
+        auto_prepare=True（且非 dry_run）即在「周期性预提」步对本月到期的 monthly
+        转账模板（如计提坏账准备、预提利息）自动制备 PUSHED 草稿（HITL，绝不自动过账）。
         """
         try:
             with repo.session() as s:
@@ -1963,6 +2074,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                     month=period_month,
                     actor={"type": "user", "id": actor_id},
                     dry_run=dry_run,
+                    fx_rates=fx_rates,
+                    auto_prepare=auto_prepare,
                 )
                 if not dry_run:
                     s.commit()
