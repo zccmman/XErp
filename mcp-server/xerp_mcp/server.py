@@ -1650,6 +1650,105 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except ArapError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    @mcp.tool()
+    def arap_credit_exposure(
+        ledger_set_id: str,
+        dim_key: str = "customer",
+        as_of_date: str = "",
+    ) -> dict:
+        """信用敞口扫描（只读）：按未清应收/应付聚合每个往来单位的敞口、额度、利用率、超额。
+
+        授信额度是 Boss 对客户的配置（存 Party.credit_limit），不是账本余额投影，
+        绝不新增会漂移的余额表；敞口完全由 open_items（凭证 + arap_clearing 重建）
+        派生（ADR-002 单一真源）。超额 = 额度>0 且敞口>额度；临近 = 利用率≥80%。
+        与 AI Runtime 接合：本结果被账本精灵 sprite_push 消费，超额自动推 alert、临近推 warn。
+        - dim_key：customer（应收信用）或 supplier（应付，较少用）；
+        - as_of_date：截止日期 ISO，空=今天。
+        返回 rows（逐往来单位）+ breaches（超额清单）+ totals。
+        """
+        try:
+            from datetime import date
+
+            from kernel.reporting.arap import ArapError
+            from kernel.reporting.credit import credit_exposure
+
+            _as_of = date.fromisoformat(as_of_date) if as_of_date else None
+            if _as_of is None:
+                _as_of = date.today()
+            with repo.session() as s:
+                return _ok(
+                    report=credit_exposure(
+                        s, ledger_set_id=ledger_set_id,
+                        dim_key=dim_key, as_of_date=_as_of,
+                    )
+                )
+        except (ArapError, Exception) as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
+            return _err("CREDIT_ERROR", str(e), {})
+
+    @mcp.tool()
+    def arap_collections_draft(
+        ledger_set_id: str,
+        as_of_date: str = "",
+    ) -> dict:
+        """催收草稿（只读）：逾期未清应收，按账龄升级 + 生成催收话术草稿。
+
+        逾期 = 未清发票账龄 > 30 天（超出常规信用期）；升级 30-60→L1（提醒）、
+        60-90→L2（跟进+电话）、90+→L3（最后通牒/法务）。每个客户按最老账龄定级别。
+        催收话术仅为草稿文本，XErp 不代发——由 Boss 在 Web/IM 人工执行（HITL）。
+        与 AI Runtime 接合：本结果被账本精灵 sprite_push 消费，逾期自动推催收提醒。
+        - as_of_date：截止日期 ISO，空=今天。
+        返回 rows（逐客户逾期清单 + 话术）+ counts（各级别家数）+ totals。
+        """
+        try:
+            from datetime import date
+
+            from kernel.reporting.arap import ArapError
+            from kernel.reporting.credit import collections_draft
+
+            _as_of = date.fromisoformat(as_of_date) if as_of_date else None
+            if _as_of is None:
+                _as_of = date.today()
+            with repo.session() as s:
+                return _ok(
+                    report=collections_draft(
+                        s, ledger_set_id=ledger_set_id, as_of_date=_as_of,
+                    )
+                )
+        except (ArapError, Exception) as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
+            return _err("CREDIT_ERROR", str(e), {})
+
+    @mcp.tool()
+    def arap_set_credit_limit(
+        ledger_set_id: str,
+        dim_key: str,
+        partner: str,
+        limit: str,
+        actor_id: str,
+    ) -> dict:
+        """设置/更新某往来单位授信额度（Boss 配置写；非账本写，HITL 显式操作）。
+
+        授信额度是 Boss 对客户的赊销上限（存 Party.credit_limit），0=不设额度（不限制）。
+        该往来单位无 Party 行时按 (ledger_set_id, dim_key, name) 自动建一行，保证额度可持久化。
+        注意：这是客户属性配置，不是凭证/余额投影；不触发任何记账、过账、结账。
+        - dim_key：customer（应收信用）或 supplier；
+        - partner：往来单位名称（与制单时 aux_dims 中使用的名称一致）；
+        - limit：授信额度字符串/数字，必须 ≥ 0；
+        - actor_id：执行人（Boss 本人）。
+        """
+        try:
+            from kernel.reporting.credit import CreditError, set_credit_limit
+
+            with repo.session() as s:
+                return _ok(
+                    **set_credit_limit(
+                        s, ledger_set_id=ledger_set_id, dim_key=dim_key,
+                        partner=partner, limit=limit,
+                        actor={"type": "user", "id": actor_id},
+                    )
+                )
+        except CreditError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- 发票 OCR（P2-03） ----------
 
     @mcp.tool()

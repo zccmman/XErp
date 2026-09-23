@@ -15,9 +15,11 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from kernel.adapters import ingest_event
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.db.base import Base
 from kernel.db.models import LedgerSet, Period, Voucher
+from kernel.reporting.credit import set_credit_limit
 from kernel.reporting.statements import income_statement
 from kernel.seed import seed_demo_ledger
 from kernel.sprite_push import (
@@ -54,7 +56,7 @@ def ls_info(env):
     return (ls.id, ls.accounting_standard, per.year, per.month)
 
 
-VALID_TYPES = {"month_end", "anomaly", "report_card", "health"}
+VALID_TYPES = {"month_end", "anomaly", "report_card", "health", "credit", "collections"}
 VALID_SEV = {"info", "warn", "alert"}
 
 
@@ -122,7 +124,7 @@ def test_sprite_push_boss_tips_single_source(env, ls_info):
         d = _boss_data(s, ls_id, yr, mo, std)
         sp = sprite_push_items(s, ls_id, yr, mo, std)
     expected = [it["html"] for it in sp["items"]
-                if it["type"] in ("month_end", "anomaly", "health")]
+                if it["type"] in ("month_end", "anomaly", "health", "credit", "collections")]
     assert d["tips"] == expected, "Web 提醒未与单一推送源 sprite_push_items 对齐"
 
 
@@ -163,3 +165,58 @@ def test_remind_action_wired():
     spec.loader.exec_module(mod)
     args = mod.build_parser().parse_args(["remind", "--source", str(pkg_root)])
     assert args.action == "remind"
+
+
+def test_sprite_push_credit_and_collections_items():
+    """账本精灵应主动推送信用超额（alert）与逾期催收（L3）提醒（Phase B·AI Runtime）。
+
+    推送 ≠ 执行：credit/collections 项只展示风险与催收草稿，action_hint 不含终态动词。
+    """
+    d = mkdtemp()
+    url = f"sqlite:///{d}/sprite_credit.db"
+    engine = create_engine(url)
+    Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        ids = seed_demo_ledger(s)
+        import_chart_of_accounts(s, ids["ledger_set_id"], load_template_rows())
+        # 一笔历史应收：会逾期（开票日远早于今天）且超授信额度
+        s.add(Period(ledger_set_id=ids["ledger_set_id"], year=2026,
+                     month=6, status="OPEN"))
+        s.commit()
+        actor = {"type": "user", "id": ids["subject_id"]}
+        ingest_event(
+            s, ledger_set_id=ids["ledger_set_id"], adapter="ar",
+            event_type="invoice.issued",
+            event={
+                "event_id": "INV-OVERDUE", "invoice_no": "INV-OVERDUE",
+                "customer": "测试逾期客户", "issued_at": "2026-06-01",
+                "net_amount": "990.00", "tax_amount": "10.00",
+                "total_amount": "1000.00",
+            },
+            actor=actor,
+        )
+        set_credit_limit(s, ledger_set_id=ids["ledger_set_id"], dim_key="customer",
+                         partner="测试逾期客户", limit="500.00", actor=actor)
+        s.commit()
+
+        ls = s.get(LedgerSet, ids["ledger_set_id"])
+        per = s.scalars(
+            select(Period).where(Period.ledger_set_id == ids["ledger_set_id"])
+        ).first()
+        payload = sprite_push_items(
+            s, ids["ledger_set_id"], per.year, per.month, ls.accounting_standard
+        )
+
+    credit_items = [it for it in payload["items"] if it["type"] == "credit"]
+    coll_items = [it for it in payload["items"] if it["type"] == "collections"]
+    breach = next((it for it in credit_items
+                   if "测试逾期客户" in it["title"] and it["severity"] == "alert"), None)
+    assert breach is not None, "信用超额应推 alert 级 credit 项"
+    assert "超额" in breach["title"]
+    l3 = next((it for it in coll_items
+               if "测试逾期客户" in it["title"] and "催收·L3" in it["title"]), None)
+    assert l3 is not None, "严重逾期应推 L3 collections 项"
+    # 推送 ≠ 执行：action_hint 不得出现终态动词
+    for it in credit_items + coll_items:
+        assert "已结账" not in it["action_hint"]
+        assert "已执行" not in it["action_hint"]

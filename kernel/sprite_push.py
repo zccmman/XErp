@@ -56,7 +56,7 @@ def sprite_push_items(
 
     返回：
         items:  list[dict] 每条 {type, severity, title, text, html, action_hint}
-                type ∈ month_end | anomaly | report_card | health
+                type ∈ month_end | anomaly | report_card | health | credit | collections
                 severity ∈ info | warn | alert
         summary: 一句话总览（供 IM / CLI 首行）
         period_status: 期间状态（none / OPEN / CLOSED / ...）
@@ -169,8 +169,59 @@ def sprite_push_items(
             "action_hint": f["suggestion"],
         })
 
+    # 6) 信用管理（credit）——复用 credit_exposure 只读扫描，作为 anomaly 通道同源消费
+    #    推送 ≠ 执行：只展示超额/临近，绝不替 Boss 改账或自动收紧授信。
+    from kernel.reporting.credit import credit_exposure
+
+    exposure = credit_exposure(s, ledger_set_id=ls_id, dim_key="customer")
+    for b in exposure.get("breaches") or []:
+        items.append({
+            "type": "credit",
+            "severity": "alert",
+            "title": f"信用超额·{b['partner']}",
+            "text": (f"{b['partner']} 应收敞口 {b['exposure']} 已超授信额度 "
+                     f"{b['credit_limit']}，超额 {b['over_by']}。"),
+            "html": (f"{b['partner']} 应收敞口 <b>{b['exposure']}</b> 已超授信额度 "
+                     f"{b['credit_limit']}，超额 <b>{b['over_by']}</b>。"),
+            "action_hint": f"联系 {b['partner']} 催收，或收紧其授信额度（仅 Boss 可设）。",
+        })
+    for r in exposure.get("rows") or []:
+        if r.get("near_limit") and not r.get("breach"):
+            items.append({
+                "type": "credit",
+                "severity": "warn",
+                "title": f"信用临近额度·{r['partner']}",
+                "text": (f"{r['partner']} 应收敞口 {r['exposure']}，授信额度 "
+                         f"{r['credit_limit']}，利用率已达 {r['utilization']}。"),
+                "html": (f"{r['partner']} 应收敞口 {r['exposure']}，授信额度 "
+                         f"{r['credit_limit']}，利用率已达 <b>{r['utilization']}</b>。"),
+                "action_hint": f"关注 {r['partner']} 后续赊销，必要时收紧额度。",
+            })
+
+    # 7) 智能催收（collections）——复用 collections_draft 只读草稿，作为 anomaly 通道同源消费
+    #    推送 ≠ 执行：只展示逾期与催收话术草稿，绝不代发催款函/电话/法务。
+    from kernel.reporting.credit import collections_draft
+
+    coll = collections_draft(s, ledger_set_id=ls_id)
+    for r in coll.get("rows") or []:
+        level = r["level"]
+        sev = "alert" if level == "L3" else "warn"
+        verb = {"L1": "提醒", "L2": "跟进", "L3": "最后通牒"}.get(level, "提醒")
+        items.append({
+            "type": "collections",
+            "severity": sev,
+            "title": f"催收·{level}·{r['partner']}",
+            "text": (f"{r['partner']} 逾期应收 {r['overdue_amount']}，最早一笔已 "
+                     f"{r['oldest_days']} 天。{r['draft_message']}"),
+            "html": (f"{r['partner']} 逾期应收 <b>{r['overdue_amount']}</b>，最早一笔已 "
+                     f"<b>{r['oldest_days']}</b> 天，建议发送{level}催收。"),
+            "action_hint": f"发送{verb}（仅 Boss 在 Web/IM 执行，XErp 不代发）",
+        })
+
     # 4) 健康（health）——无任何待办时给正向反馈
-    actionable = any(it["type"] in ("month_end", "anomaly") for it in items)
+    actionable = any(
+        it["type"] in ("month_end", "anomaly", "credit", "collections") for it in items
+    )
     if not actionable:
         items.append({
             "type": "health",

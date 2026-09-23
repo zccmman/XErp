@@ -193,6 +193,11 @@ class Party(Base):
     party_type: Mapped[str] = mapped_column(String(16))
     name: Mapped[str] = mapped_column(String(200))
     aux_attrs: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    # 授信额度（信用管理 G2）：0 = 不设额度（不限制赊销）；仅 AR 客户使用，
+    # 由 Boss 在 Web/对话显式设置，非账本余额投影（ADR-002 红线：不新增会漂移的投影）。
+    credit_limit: Mapped[decimal.Decimal] = mapped_column(
+        AMOUNT, nullable=False, default=0, server_default="0"
+    )
 
 
 class Voucher(Base):

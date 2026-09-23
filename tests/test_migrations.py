@@ -63,12 +63,14 @@ def test_fresh_upgrade_head_has_all_model_columns():
                 "quantity", "unit"} <= _vl, "② 外币/数量列必须由迁移提供"
         assert _columns(db, "arap_clearing"), \
             "Phase A 未清项核销表必须由迁移提供"
+        assert "credit_limit" in _columns(db, "parties"), \
+            "Phase B 授信额度列必须由迁移提供"
         con = sqlite3.connect(db)
         try:
             ver = con.execute("select version_num from alembic_version").fetchone()[0]
         finally:
             con.close()
-        assert ver == "0009_arap_clearing"
+        assert ver == "0010_party_credit_limit"
 
 
 def test_legacy_db_upgrade_is_idempotent():
@@ -103,6 +105,13 @@ def test_legacy_db_upgrade_is_idempotent():
             line_no INTEGER, account_id VARCHAR(32),
             debit NUMERIC(18,2), credit NUMERIC(18,2),
             summary VARCHAR(500), aux_dims JSON)"""
+        )
+        # 旧版模型同样含 0001 基础表 parties（本测试此前漏建，0010 触碰该表后暴露）
+        con.execute(
+            """CREATE TABLE parties (
+            id VARCHAR(32) PRIMARY KEY, ledger_set_id VARCHAR(32),
+            party_type VARCHAR(16), name VARCHAR(200),
+            aux_attrs JSON)"""
         )
         con.commit()
         con.close()
