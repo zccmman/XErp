@@ -56,7 +56,8 @@ COA = {
 YEAR, MONTH = 2026, 9
 
 
-def _make_entity(s: Session, name: str, lines: list[dict], ccy: str = "CNY") -> str:
+def _make_entity(s: Session, name: str, lines: list[dict], ccy: str = "CNY",
+                attrs_map: dict | None = None) -> str:
     """造一个账套 + 科目 + OPEN 期间 + 一张 POSTED 凭证 + 对应 Balance 投影。
 
     lines: [{"code", "dr", "cr"}]；同 code 多行自动聚合为一条 Balances 投影行。
@@ -70,7 +71,8 @@ def _make_entity(s: Session, name: str, lines: list[dict], ccy: str = "CNY") -> 
     for code in {ln["code"] for ln in lines}:
         nm, dr, cat = COA[code]
         acc = Account(ledger_set_id=ls.id, code=code, name=nm,
-                      direction=dr, category=cat)
+                      direction=dr, category=cat,
+                      attrs=(attrs_map or {}).get(code))
         s.add(acc)
         s.flush()
         accs[code] = acc
@@ -574,4 +576,158 @@ def test_propose_coi_is_readonly(session, env):
         session, [p_id, s_id], YEAR, MONTH, ownership={s_id: "1.0"}
     )
     assert len(session.scalars(select(Voucher)).all()) == before
+
+
+# ---------------------------------------------------------- 6. 分层汇率（阶段2）
+
+def test_layered_fx_close_vs_average(session, env):
+    from sqlalchemy.orm import Session as _S
+
+    engine = create_engine(env["url"])
+    with _S(engine) as s:
+        a_id = env["ids"]["A"]                      # 母公司 A（CNY，基准币种）
+        u_id = _make_entity(s, "美元U", [
+            {"code": "1002", "dr": "500", "cr": "0"},    # 银行 500（资产）
+            {"code": "6001", "dr": "0", "cr": "500"},    # 收入 500
+            {"code": "6602", "dr": "100", "cr": "0"},    # 费用 100
+            {"code": "1002", "dr": "0", "cr": "100"},
+        ], ccy="USD")
+        s.commit()
+
+    # 分层汇率：USD 期末(closing)=2.0、平均(average)=1.0，拉开口径差异；
+    # 基准币种 A(CNY) 也须显式声明（既有币种检查要求全体账套都入册）
+    fx = {a_id: {"closing": "1", "average": "1"}, u_id: {"closing": "2", "average": "1"}}
+
+    bs = CONS.consolidated_balance_sheet(
+        session, [a_id, u_id], YEAR, MONTH, fx_rates=fx
+    )
+    # U 银行余额 400 (dr500-cr100) → closing 2.0 → 800；A 银行 800 → 1
+    assert bs["consolidated"]["assets"]["total"] == Decimal("1600")
+
+    inc = CONS.consolidated_income_statement(
+        session, [a_id, u_id], YEAR, MONTH, fx_rates=fx
+    )
+    # U 收入 500 → average 1.0 → 500；A 收入 1000；U 费用 100 → 100；A 费用 200
+    assert inc["revenue"] == Decimal("1500")
+    assert inc["expense"] == Decimal("300")
+    assert inc["net_profit"] == Decimal("1200")
+
+
+def test_layered_fx_scalar_backward_compat(session, env):
+    from sqlalchemy.orm import Session as _S
+
+    engine = create_engine(env["url"])
+    with _S(engine) as s:
+        a_id = env["ids"]["A"]
+        u_id = _make_entity(s, "美元U2", [
+            {"code": "1002", "dr": "500", "cr": "0"},
+            {"code": "6001", "dr": "0", "cr": "500"},
+            {"code": "6602", "dr": "100", "cr": "0"},
+            {"code": "1002", "dr": "0", "cr": "100"},
+        ], ccy="USD")
+        s.commit()
+
+    # 旧形态：标量汇率 2.0 —— BS 与 IS 统一按 2.0 折算（向后兼容）；
+    # 基准币种 A(CNY) 也须显式声明
+    fx = {a_id: "1", u_id: "2"}
+    bs = CONS.consolidated_balance_sheet(
+        session, [a_id, u_id], YEAR, MONTH, fx_rates=fx
+    )
+    assert bs["consolidated"]["assets"]["total"] == Decimal("1600")  # 800 + 400*2
+    inc = CONS.consolidated_income_statement(
+        session, [a_id, u_id], YEAR, MONTH, fx_rates=fx
+    )
+    # 标量：利润表也用 2.0 → U 收入 1000（而非分层的 500）
+    assert inc["revenue"] == Decimal("2000")
+
+
+# ---------------------------------------------------------- 7. 合并现金流量表（阶段2）
+
+def _make_cashflow_group(env):
+    """构造母子现金流场景：母经营+对子投资支付；子经营+吸收母投资。"""
+    from sqlalchemy.orm import Session as _S
+
+    engine = create_engine(env["url"])
+    with _S(engine) as s:
+        a_id = _make_entity(s, "母现金流A", [
+            {"code": "1002", "dr": "1000", "cr": "0"},
+            {"code": "6001", "dr": "0", "cr": "1000"},     # 经营流入 1000
+            {"code": "6602", "dr": "200", "cr": "0"},
+            {"code": "1002", "dr": "0", "cr": "200"},       # 经营流出 200
+            {"code": "1511", "dr": "800", "cr": "0"},
+            {"code": "1002", "dr": "0", "cr": "800"},       # 投资支付 800（内部）
+        ], attrs_map={"1511": {"cash_flow_item": "投资支付的现金"}})
+        b_id = _make_entity(s, "子现金流B", [
+            {"code": "1002", "dr": "500", "cr": "0"},
+            {"code": "6001", "dr": "0", "cr": "500"},       # 经营流入 500
+            {"code": "6602", "dr": "100", "cr": "0"},
+            {"code": "1002", "dr": "0", "cr": "100"},       # 经营流出 100
+            {"code": "1002", "dr": "800", "cr": "0"},
+            {"code": "4001", "dr": "0", "cr": "800"},       # 吸收投资 800（内部）
+        ], attrs_map={"4001": {"cash_flow_item": "吸收投资收到的现金"}})
+        s.commit()
+    return a_id, b_id
+
+
+def test_consolidated_cash_flow_sum_and_reconcile(session, env):
+    a_id, b_id = _make_cashflow_group(env)
+    cf = CONS.consolidated_cash_flow(session, [a_id, b_id], YEAR, MONTH)
+    # 经营：流入 1500(1000+500) / 流出 300(200+100) / 净 1200
+    assert cf["categories"]["operating"]["in"] == Decimal("1500")
+    assert cf["categories"]["operating"]["out"] == Decimal("300")
+    assert cf["categories"]["operating"]["net"] == Decimal("1200")
+    # 投资：流出 800（母投资支付）；融资：流入 800（子吸收投资）
+    assert cf["categories"]["investing"]["out"] == Decimal("800")
+    assert cf["categories"]["financing"]["in"] == Decimal("800")
+    # 净增加 = 1200 - 800 + 800 = 1200；勾稽：期初0 + 净增 = 期末
+    assert cf["net_increase"] == Decimal("1200")
+    assert cf["reconcile"]["closing_cash"] == Decimal("1200")
+    assert cf["balanced"] is True
+    assert cf["eliminations"] == []
+
+
+def test_consolidated_cash_flow_apply_eliminations(session, env):
+    a_id, b_id = _make_cashflow_group(env)
+    elims = [
+        {"category": "investing", "item": "投资支付的现金", "amount": "800"},
+        {"category": "financing", "item": "吸收投资收到的现金", "amount": "800"},
+    ]
+    cf = CONS.consolidated_cash_flow(
+        session, [a_id, b_id], YEAR, MONTH, eliminations=elims
+    )
+    # 抵消后：投资支付归零、吸收投资归零（内部现金往来从合并中剔除）
+    assert cf["categories"]["investing"]["out"] == Decimal("0")
+    assert cf["categories"]["financing"]["in"] == Decimal("0")
+    # 勾稽仍成立：净增加 = 经营1200 + 投资0 + 融资0 = 1200
+    assert cf["net_increase"] == Decimal("1200")
+    assert cf["reconcile"]["closing_cash"] == Decimal("1200")
+    assert cf["balanced"] is True
+    assert len(cf["eliminations"]) == 2
+
+
+def test_propose_cash_flow_eliminations_and_feed_back(session, env):
+    a_id, b_id = _make_cashflow_group(env)
+    prop = CONS.propose_cash_flow_eliminations(session, [a_id, b_id], YEAR, MONTH)
+    # 识别内部权益投资镜像：投资支付 800 / 吸收投资 800 → 可抵消 800
+    assert Decimal(prop["investing_out"]) == Decimal("800")
+    assert Decimal(prop["financing_in"]) == Decimal("800")
+    assert Decimal(prop["matched"]) == Decimal("800")
+    assert len(prop["suggested_eliminations"]) == 2
+    # 建议抵消项可直接喂回 consolidated_cash_flow
+    cf = CONS.consolidated_cash_flow(
+        session, [a_id, b_id], YEAR, MONTH,
+        eliminations=prop["suggested_eliminations"],
+    )
+    assert cf["categories"]["investing"]["out"] == Decimal("0")
+    assert cf["categories"]["financing"]["in"] == Decimal("0")
+    assert cf["balanced"] is True
+
+
+def test_consolidated_cash_flow_is_readonly(session, env):
+    a_id, b_id = _make_cashflow_group(env)
+    before = len(session.scalars(select(Voucher)).all())
+    CONS.consolidated_cash_flow(session, [a_id, b_id], YEAR, MONTH)
+    CONS.propose_cash_flow_eliminations(session, [a_id, b_id], YEAR, MONTH)
+    assert len(session.scalars(select(Voucher)).all()) == before
+
 

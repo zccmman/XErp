@@ -2644,6 +2644,83 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except Exception as e:  # pragma: no cover
             return _err("COI_PROPOSE_FAILED", f"权益抵销草稿失败：{e}")
 
+    @mcp.tool()
+    def consolidate_cash_flow(
+        ledger_set_ids: list[str],
+        period_year: int,
+        period_month: int,
+        standard: str = "small_business",
+        ownership: dict | None = None,
+        eliminations: list | None = None,
+        fx_rates: dict | None = None,
+    ) -> dict:
+        """合并现金流量表（阶段2 / 直接法，只读）：汇总各参与账套单体现金流量表，按
+        报告币种（平均汇率）折算后加总，并保持勾稽（合并期初现金 + 净增加 = 合并期末现金）。
+        内部现金往来抵消由 Boss 显式提供 eliminations（与合并 BS/IS 同 HITL 哲学）；
+        若需自动建议抵消，先用 consolidate_propose_cash_flow 取得草稿。
+        完全只读——复用单体现金流量表口径，绝不写凭证 / 过账 / 结账。
+
+        ledger_set_ids：参与合并的账套 ID 列表。period_year/period_month：合并期间。
+        ownership：可选 {账套ID: 持股比例(0~1)}。eliminations：可选
+        [{"category","item","amount"}] 抵消项。fx_rates：可选汇率（标量 {账套ID: 汇率}
+        或分层 {账套ID: {"closing":..,"average":..}}，现金流折算用平均汇率）。
+        standard：默认 small_business。
+        返回 {ok, currency, categories{operating/investing/financing}, net_increase,
+        reconcile{opening_cash,net_increase,closing_cash}, balanced, entities[], eliminations[]}。
+        """
+        try:
+            from kernel.reporting import consolidation as CONS
+
+            if not ledger_set_ids:
+                return _err("NO_LEDGERS", "ledger_set_ids 不能为空")
+
+            with repo.session() as s:
+                result = CONS.consolidated_cash_flow(
+                    s, ledger_set_ids, period_year, period_month,
+                    standard, ownership=ownership, eliminations=eliminations,
+                    fx_rates=fx_rates,
+                )
+            return _ok(**result)
+        except CONS.ConsolidationError as e:
+            return _err("CONSOLIDATION_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("CONSOLIDATE_CF_FAILED", f"合并现金流失败：{e}")
+
+    @mcp.tool()
+    def consolidate_propose_cash_flow(
+        ledger_set_ids: list[str],
+        period_year: int,
+        period_month: int,
+        standard: str = "small_business",
+        fx_rates: dict | None = None,
+    ) -> dict:
+        """合并现金流内部往来抵消建议（阶段2，只读草稿）：识别集团内权益性投资现金流
+        镜像配对（母公司「投资支付的现金」↔ 子公司「吸收投资收到的现金」），生成可直接
+        确认的建议抵消项——把「内部现金往来抵消从手敲变确认」，仍守 HITL。
+        完全只读——绝不写账。建议抵消项可直接喂回 consolidate_cash_flow 的 eliminations。
+
+        ledger_set_ids：参与合并的账套 ID 列表。period_year/period_month：合并期间。
+        fx_rates：可选汇率（标量或分层）。standard：默认 small_business。
+        返回 {ok, period, currency, investing_out, financing_in, matched,
+        suggested_eliminations[], notes[]}。
+        """
+        try:
+            from kernel.reporting import consolidation as CONS
+
+            if not ledger_set_ids:
+                return _err("NO_LEDGERS", "ledger_set_ids 不能为空")
+
+            with repo.session() as s:
+                result = CONS.propose_cash_flow_eliminations(
+                    s, ledger_set_ids, period_year, period_month,
+                    standard, fx_rates=fx_rates,
+                )
+            return _ok(**result)
+        except CONS.ConsolidationError as e:
+            return _err("CONSOLIDATION_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("CONSOLIDATE_CF_PROPOSE_FAILED", f"合并现金流抵消建议失败：{e}")
+
     # ---------- 助手 ----------
 
     def _ontology_findings(s: Session, ledger_set_id: str, lines) -> list[dict]:

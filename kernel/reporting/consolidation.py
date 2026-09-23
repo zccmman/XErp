@@ -37,11 +37,30 @@ from kernel.reporting.statements import (
     _period,
     amounts_by_code,
     balance_sheet,
+    cash_flow,
     ending_balance,
     income_statement,
 )
 
 ZERO = Decimal("0")
+
+
+def _rate_for_fx(
+    fx_rates: dict[str, object] | None, ls_id: str, kind: str | None = None,
+) -> Decimal:
+    """解析某账套在指定分层（kind）下的折算汇率（模块级，供合并现金流复用）。
+
+    fx_rates 支持标量形态 ``{ls_id: rate}`` 与分层形态
+    ``{ls_id: {"closing": r1, "average": r2, "historical": r3}}``：
+    分层 + 指定 kind → 取 kind（缺则回退 closing）；分层 + 未指定 kind → closing；
+    标量 → 直接用。
+    """
+    r = (fx_rates or {}).get(ls_id, "1")
+    if isinstance(r, dict):
+        if kind:
+            return Decimal(str(r.get(kind, r.get("closing", "1"))))
+        return Decimal(str(r.get("closing", r.get("rate", "1"))))
+    return Decimal(str(r))
 
 
 class ConsolidationError(ReportError):
@@ -66,19 +85,32 @@ def _ledger_sets(session: Session, ledger_set_ids: list[str]) -> list[LedgerSet]
 
 def _aggregate_amounts(
     session: Session, ledger_set_ids: list[str], year: int, month: int,
-    fx_rates: dict[str, Decimal] | None = None,
+    fx_rates: dict[str, object] | None = None,
+    kind: str | None = None,
 ) -> tuple[dict[str, list[Decimal]], str]:
     """把各账套同 code 的借/贷发生额直接相加（按汇率换算到报告币种后）。
 
     返回 (agg, reporting_currency)。agg: code → [借方发生额, 贷方发生额]。
+
+    fx_rates 支持两种形态（向后兼容）：
+      - 标量形态（旧）：``{ls_id: rate}`` ——所有项目统一用该汇率折算；
+      - 分层形态（新）：``{ls_id: {"closing": r1, "average": r2, "historical": r3}}``
+        ——按 ``kind`` 取对应分层汇率：资产负债表用 kind="closing"（期末汇率），
+        利润表用 kind="average"（平均汇率），权益可指定 kind="historical"。
+        不传 kind 时 layered 回退到 "closing"（合并主表默认 BS 视角），标量
+        形态则忽略 kind（所有项目同一汇率）。
     """
     fx_rates = fx_rates or {}
+
+    def _rate_for(ls_id: str) -> Decimal:
+        return _rate_for_fx(fx_rates, ls_id, kind)
+
     currencies: set[str] = set()
     agg: dict[str, list[Decimal]] = {}
     for ls_id in ledger_set_ids:
         ls = session.get(LedgerSet, ls_id)
         currencies.add(ls.functional_currency or "CNY")
-        rate = Decimal(str(fx_rates.get(ls_id, "1")))
+        rate = _rate_for(ls_id)
         amts = amounts_by_code(session, ls_id, year, month)
         for code, (dr, cr) in amts.items():
             d, c = agg.get(code, [ZERO, ZERO])
@@ -232,10 +264,12 @@ def consolidated_balance_sheet(
     """
     ls_list = _ledger_sets(session, ledger_set_ids)
     own = _normalize_ownership(ledger_set_ids, ownership)
-    fx = {k: Decimal(str(v)) for k, v in (fx_rates or {}).items()}
     mp = M.get_mapping(standard)
 
-    agg, ccy = _aggregate_amounts(session, ledger_set_ids, year, month, fx)
+    # 分层汇率：资产负债表用期末汇率（closing）
+    agg, ccy = _aggregate_amounts(
+        session, ledger_set_ids, year, month, fx_rates, kind="closing"
+    )
     applied = _apply_eliminations(agg, eliminations)
     (assets, total_assets, liabs, total_liabs, equity, total_equity) = _build_bs(mp, agg)
 
@@ -314,10 +348,12 @@ def consolidated_income_statement(
     """
     _ledger_sets(session, ledger_set_ids)  # 校验账套存在
     own = _normalize_ownership(ledger_set_ids, ownership)
-    fx = {k: Decimal(str(v)) for k, v in (fx_rates or {}).items()}
     mp = M.get_mapping(standard)
 
-    agg, ccy = _aggregate_amounts(session, ledger_set_ids, year, month, fx)
+    # 分层汇率：利润表用平均汇率（average）
+    agg, ccy = _aggregate_amounts(
+        session, ledger_set_ids, year, month, fx_rates, kind="average"
+    )
     applied = _apply_eliminations(agg, eliminations)
     items, revenue, expense, net = _build_is(mp, agg)
 
@@ -532,10 +568,10 @@ def consolidated_posting_levels(
     ownership 不影响 code 级余额（少数股权仅在权益披露层体现），故本函数不接收。
     """
     _ledger_sets(session, ledger_set_ids)
-    fx = {k: Decimal(str(v)) for k, v in (fx_rates or {}).items()}
     mp = M.get_mapping(standard)
 
-    pre_agg, ccy = _aggregate_amounts(session, ledger_set_ids, year, month, fx)
+    # 不传 kind → layered 回退 closing（posting level 为 BS 视角）
+    pre_agg, ccy = _aggregate_amounts(session, ledger_set_ids, year, month, fx_rates)
     pre_copy = {c: [d, cr] for c, (d, cr) in pre_agg.items()}
     applied = _apply_eliminations(pre_agg, eliminations)
 
@@ -611,8 +647,8 @@ def propose_icp_eliminations(
     以及 ``notes`` 提示。
     """
     _ledger_sets(session, ledger_set_ids)
-    fx = {k: Decimal(str(v)) for k, v in (fx_rates or {}).items()}
-    agg, ccy = _aggregate_amounts(session, ledger_set_ids, year, month, fx)
+    # 不传 kind → layered 回退 closing（ICP 为 BS 层面应收/应付）
+    agg, ccy = _aggregate_amounts(session, ledger_set_ids, year, month, fx_rates)
 
     ar_balances: dict[str, Decimal] = {}
     ap_balances: dict[str, Decimal] = {}
@@ -698,7 +734,6 @@ def propose_coi_eliminations(
     """
     ls_list = _ledger_sets(session, ledger_set_ids)
     own = _normalize_ownership(ledger_set_ids, ownership)
-    fx = {k: Decimal(str(v)) for k, v in (fx_rates or {}).items()}
 
     if parent_id:
         if parent_id not in own:
@@ -830,6 +865,220 @@ def propose_coi_eliminations(
         },
         "subsidiaries": subs_out,
         "all_suggested_eliminations": all_elims,
+        "notes": notes,
+    }
+
+
+# ---------------------------------------------------------- 阶段2（合并现金流量表）
+
+def _apply_cash_flow_eliminations(
+    categories: dict[str, dict], eliminations: list[dict] | None,
+) -> list[dict]:
+    """应用现金流内部往来抵消（Boss 显式提供，HITL）。
+
+    每个抵消项 ``{category, item, amount}`` 从对应 category 的 item（带符号金额）
+    与流入/流出额中冲减；amount 不得超过该 item 绝对值（否则破坏勾稽）。返回明细。
+    """
+    applied: list[dict] = []
+    for i, e in enumerate(eliminations or []):
+        if not isinstance(e, dict) or "category" not in e or "item" not in e \
+                or "amount" not in e:
+            raise ConsolidationError(
+                f"现金流抵消项#{i} 必须含 category / item / amount 三键"
+            )
+        try:
+            amt = Decimal(str(e["amount"]))
+        except Exception as exc:  # noqa: BLE001
+            raise ConsolidationError(f"现金流抵消项#{i} 金额非法：{exc}") from exc
+        if amt < ZERO:
+            raise ConsolidationError(f"现金流抵消项#{i} 金额必须非负")
+        cat = str(e["category"])
+        item = str(e["item"])
+        if cat not in categories or item not in categories[cat]["items"]:
+            raise ConsolidationError(
+                f"现金流抵消项#{i} 目标不存在：{cat}/{item}"
+            )
+        cur = categories[cat]["items"][item]
+        if amt > abs(cur):
+            raise ConsolidationError(
+                f"现金流抵消项#{i} 金额 {amt} 超过该项绝对值 {abs(cur)}"
+            )
+        if cur >= ZERO:
+            categories[cat]["items"][item] = cur - amt
+            categories[cat]["in"] -= amt
+        else:
+            categories[cat]["items"][item] = cur + amt
+            categories[cat]["out"] -= amt
+        applied.append({"category": cat, "item": item, "amount": str(amt)})
+    return applied
+
+
+def consolidated_cash_flow(
+    session: Session, ledger_set_ids: list[str], year: int, month: int,
+    standard: str = "small_business",
+    ownership: dict[str, object] | None = None,
+    eliminations: list[dict] | None = None,
+    fx_rates: dict[str, object] | None = None,
+) -> dict:
+    """合并现金流量表（直接法，只读）。
+
+    汇总各参与账套的单体现金流量表（复用 ``statements.cash_flow`` 同一口径），按报告
+    币种（平均汇率）折算后加总，并保持勾稽：合并期初现金 + 合并净增加 = 合并期末现金。
+
+    内部现金往来抵消由 **Boss 显式提供** ``eliminations``（与 BS/IS 同 HITL 哲学），
+    形如 ``[{"category":"investing","item":"投资支付的现金","amount":"1200"}]``；
+    若需自动建议抵消，见 ``propose_cash_flow_eliminations``。
+    """
+    ls_list = _ledger_sets(session, ledger_set_ids)
+    own = _normalize_ownership(ledger_set_ids, ownership)
+
+    categories: dict[str, dict] = {
+        "operating": {"in": ZERO, "out": ZERO, "items": {}},
+        "investing": {"in": ZERO, "out": ZERO, "items": {}},
+        "financing": {"in": ZERO, "out": ZERO, "items": {}},
+    }
+    entities: list[dict] = []
+    opening_cash = ZERO
+    for ls in ls_list:
+        cf = cash_flow(session, ls.id, year, month, standard)
+        rate = _rate_for_fx(fx_rates, ls.id, kind="average")
+        for cat in ("operating", "investing", "financing"):
+            c = cf["categories"][cat]
+            categories[cat]["in"] += c["in"] * rate
+            categories[cat]["out"] += c["out"] * rate
+            for it in c["items"]:
+                key = it["item"]
+                categories[cat]["items"][key] = (
+                    categories[cat]["items"].get(key, ZERO) + it["amount"] * rate
+                )
+        opening_cash += cf["reconcile"]["opening_cash"] * rate
+        entities.append({
+            "ledger_set_id": ls.id,
+            "name": ls.name,
+            "currency": ls.functional_currency or "CNY",
+            "ownership": str(own[ls.id]),
+            "operating": cf["operating"],
+            "investing": cf["investing"],
+            "financing": cf["financing"],
+            "net_increase": cf["net_increase"],
+        })
+
+    applied = _apply_cash_flow_eliminations(categories, eliminations)
+
+    op = categories["operating"]["in"] - categories["operating"]["out"]
+    inv = categories["investing"]["in"] - categories["investing"]["out"]
+    fin = categories["financing"]["in"] - categories["financing"]["out"]
+    net_increase = op + inv + fin
+    closing_cash = opening_cash + net_increase
+    _, ccy = _aggregate_amounts(
+        session, ledger_set_ids, year, month, fx_rates, kind="average"
+    )
+
+    return {
+        "ledger_set_ids": ledger_set_ids,
+        "period": {"year": year, "month": month},
+        "standard": standard,
+        "currency": ccy,
+        "entities": entities,
+        "owned": {k: str(v) for k, v in own.items()},
+        "eliminations": applied,
+        "categories": {
+            cat: {
+                "in": categories[cat]["in"],
+                "out": categories[cat]["out"],
+                "net": categories[cat]["in"] - categories[cat]["out"],
+                "items": [
+                    {"item": k, "amount": v}
+                    for k, v in sorted(categories[cat]["items"].items())
+                ],
+            }
+            for cat in ("operating", "investing", "financing")
+        },
+        "operating": op,
+        "investing": inv,
+        "financing": fin,
+        "net_increase": net_increase,
+        "reconcile": {
+            "opening_cash": opening_cash,
+            "net_increase": net_increase,
+            "closing_cash": closing_cash,
+        },
+        "balanced": (opening_cash + net_increase == closing_cash),
+    }
+
+
+def propose_cash_flow_eliminations(
+    session: Session, ledger_set_ids: list[str], year: int, month: int,
+    standard: str = "small_business",
+    fx_rates: dict[str, object] | None = None,
+) -> dict:
+    """合并现金流内部往来抵消建议（阶段2，只读草稿）。
+
+    识别集团内**权益性投资**现金流的镜像配对：母公司账套「投资支付的现金」
+    （investing 流出）与子公司账套「吸收投资收到的现金」（financing 流入）在合并
+    层面应当等额对冲。做**集团级镜像配对**：可抵消额 = min(集团投资支付净额,
+    集团吸收投资净流入)，生成两笔建议抵消项（分别对应投资支付与吸收投资）。
+
+    ⚠️ 诚实边界：XErp 当前凭证明细无「对手方账套」维度，无法逐笔确认具体交易对象，
+    故这是**集团级近似**；借款、股利类内部现金往来不在本建议内（请 Boss 结合
+    ICP/COI 配对结果手工判断）。建议抵消项可直接喂回 ``consolidated_cash_flow`` 的
+    eliminations。
+    """
+    _ledger_sets(session, ledger_set_ids)
+    _, ccy = _aggregate_amounts(
+        session, ledger_set_ids, year, month, fx_rates, kind="average"
+    )
+
+    invest_pay = ZERO    # 集团投资支付净额（流出绝对值，正计量）
+    finance_recv = ZERO  # 集团吸收投资/取得借款净流入（正计量）
+    for ls_id in ledger_set_ids:
+        cf = cash_flow(session, ls_id, year, month, standard)
+        rate = _rate_for_fx(fx_rates, ls_id, kind="average")
+        for cat in ("operating", "investing", "financing"):
+            for it in cf["categories"][cat]["items"]:
+                amt = it["amount"] * rate  # 带符号：流入正、流出负
+                label = it["item"]
+                if cat == "investing" and amt < ZERO and "投资支付" in label:
+                    invest_pay += -amt
+                if cat == "financing" and amt > ZERO and (
+                        "吸收投资" in label or "取得借款" in label):
+                    finance_recv += amt
+
+    matched = min(invest_pay, finance_recv)
+    suggest: list[dict] = []
+    notes: list[str] = []
+    if matched > ZERO:
+        suggest.append(
+            {"category": "investing", "item": "投资支付的现金", "amount": str(matched)}
+        )
+        suggest.append(
+            {"category": "financing", "item": "吸收投资收到的现金", "amount": str(matched)}
+        )
+        notes.append(
+            f"已识别内部权益投资镜像可抵消 {matched}（投资支付 {invest_pay} / "
+            f"吸收投资 {finance_recv} 取小）"
+        )
+        notes.append(
+            "⚠️ 诚实边界：凭证明细无对手方账套维度，仅做集团级镜像配对，无法逐笔确认具体"
+            "交易对象；借款/股利类内部现金往来未自动识别，请 Boss 结合 ICP/COI 配对结果手工判断。"
+        )
+    else:
+        notes.append(
+            "未识别到集团内部权益性投资现金流镜像（母投子：投资支付 ↔ 吸收投资），无需抵消"
+        )
+    if invest_pay != finance_recv:
+        notes.append(
+            f"投资支付({invest_pay})与吸收投资({finance_recv})不对称，差额可能为外部投资或"
+            f"借款，请 Boss 复核后再确认；本建议仅抵消可配对部分 {matched}。"
+        )
+    return {
+        "period": {"year": year, "month": month},
+        "standard": standard,
+        "currency": ccy,
+        "investing_out": str(invest_pay),
+        "financing_in": str(finance_recv),
+        "matched": str(matched),
+        "suggested_eliminations": suggest,
         "notes": notes,
     }
 

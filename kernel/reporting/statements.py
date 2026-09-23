@@ -239,11 +239,17 @@ def _flow_label(mp: dict, code: str, inflow: bool) -> str:
 
 
 def _cat_of(label: str) -> str:
-    """现金流项目名 → 三大类别键。"""
+    """现金流项目名 → 三大类别键。
+
+    筹资活动关键字优先于「投资」：自定义项目名（如 ``cash_flow_item`` 声明的
+    「吸收投资收到的现金」）虽含「投资」二字，但属筹资活动，必须先于「投资」判定，
+    否则会被错归为投资活动。标准映射标签（经营/投资/筹资活动-…）同样适用本规则。
+    """
+    if ("筹资" in label or "借款" in label or "吸收投资" in label
+            or "偿还债务" in label or "偿付利息" in label or "股利" in label):
+        return "financing"
     if "投资" in label:
         return "investing"
-    if "筹资" in label:
-        return "financing"
     return "operating"
 
 
@@ -258,10 +264,15 @@ def cash_flow(session: Session, ledger_set_id: str, year: int, month: int,
     """
     mp = M.get_mapping(standard)
     period = _period(session, ledger_set_id, year, month)
-    accounts = {a.id: a.code for a in session.scalars(select(Account)).all()}
+    # 只查本账套科目：多账套共享 session 合并消费时，按 code 索引的 attrs 才不会
+    # 被其他账套的同 code 科目覆盖（既有全账套查询会在合并场景下产生歧义）。
+    _ls_accounts = session.scalars(
+        select(Account).where(Account.ledger_set_id == ledger_set_id)
+    ).all()
+    accounts = {a.id: a.code for a in _ls_accounts}
     # 科目 attrs（用于 cash_flow_item 声明式覆盖）
     attrs_by_code = {
-        a.code: (a.attrs or {}) for a in session.scalars(select(Account)).all()
+        a.code: (a.attrs or {}) for a in _ls_accounts
     }
 
     vouchers = session.scalars(
@@ -283,43 +294,50 @@ def cash_flow(session: Session, ledger_set_id: str, year: int, month: int,
         lines = session.scalars(
             select(VoucherLine).where(VoucherLine.voucher_id == v.id)
         ).all()
-        delta = ZERO
-        others: list[VoucherLine] = []
+        # 期初及其红字冲销 → 仅计入期初现金，不计入本期三类流量
+        if is_opening_voucher(v.voucher_no):
+            opening_delta = ZERO
+            for ln in lines:
+                code = accounts.get(ln.account_id, "")
+                if M.is_cash_account(mp, code):
+                    opening_delta += Decimal(str(ln.debit)) - Decimal(str(ln.credit))
+            opening_cash += opening_delta
+            continue
+        # 直接法核心：以「非现金科目行」为现金流事件单元——每一笔非现金分录对应一笔
+        # 现金收支（现金恒在对方科目）。非现金行**贷方**（如收入/负债/权益增加）→ 现金
+        # 流入（收）；**借方**（如资产增加/费用）→ 现金流出（付）；金额取该非现金行发生额。
+        # 科目可经 attrs.cash_flow_item 声明式指定项目名，优先于映射默认归类。
+        # 此写法天然支持一借多贷/一贷多借（多现金、多对方）凭证，不再因整单现金净额为 0
+        # 而整单漏记（既有实现把整张凭证当单一事件、用 others[0] 归类，多现金场景会整单
+        # 跳过或错归——这正是合并现金流在多账套下 A 全 0 / B 全归经营的根因）。
         for ln in lines:
             code = accounts.get(ln.account_id, "")
             if M.is_cash_account(mp, code):
-                delta += Decimal(str(ln.debit)) - Decimal(str(ln.credit))
+                continue  # 现金行不直接分类，已隐含在其对方非现金行
+            signed = Decimal(str(ln.debit)) - Decimal(str(ln.credit))
+            if signed == ZERO:
+                continue
+            # 非现金行方向决定现金流方向：贷方(收款)→流入；借方(付款)→流出
+            inflow = signed < ZERO
+            amount = abs(signed)
+            custom = (attrs_by_code.get(code) or {}).get("cash_flow_item")
+            if custom:
+                label = str(custom)
             else:
-                others.append(ln)
-        if delta == ZERO:
-            continue
-        # 期初及其红字冲销 → 归入期初现金，不计入本期三类流量
-        if is_opening_voucher(v.voucher_no):
-            opening_cash += delta
-            continue
-        inflow = delta > ZERO
-        target = others[0] if others else None
-        target_code = accounts.get(target.account_id, "") if target else ""
-        custom = attrs_by_code.get(target_code, {}).get("cash_flow_item")
-        if custom:
-            label = str(custom)
-        elif target:
-            label = _flow_label(mp, target_code, inflow)
-        else:
-            label = "经营活动-流入" if inflow else "经营活动-流出"
-        items[label] = items.get(label, ZERO) + delta
-        # 类别：优先从项目名识别，否则回退到对方科目的映射类别
-        cat = _cat_of(label)
-        if cat == "operating" and not custom and target_code:
-            mb = M.cash_flow_bucket(mp, target_code)
-            if mb:
-                cat = _cat_of(mb)
-        if inflow:
-            categories[cat]["in"] += delta
-        else:
-            categories[cat]["out"] += -delta
-        cat_items = categories[cat]["items"]
-        cat_items[label] = cat_items.get(label, ZERO) + delta
+                label = _flow_label(mp, code, inflow)
+            items[label] = items.get(label, ZERO) + (amount if inflow else -amount)
+            # 类别：优先从项目名识别，否则回退到对方科目的映射类别
+            cat = _cat_of(label)
+            if cat == "operating" and not custom:
+                mb = M.cash_flow_bucket(mp, code)
+                if mb:
+                    cat = _cat_of(mb)
+            if inflow:
+                categories[cat]["in"] += amount
+            else:
+                categories[cat]["out"] += amount
+            cat_items = categories[cat]["items"]
+            cat_items[label] = cat_items.get(label, ZERO) + (amount if inflow else -amount)
 
     op = categories["operating"]["in"] - categories["operating"]["out"]
     inv = categories["investing"]["in"] - categories["investing"]["out"]
