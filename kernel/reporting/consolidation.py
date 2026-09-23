@@ -24,10 +24,12 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kernel.db.models import LedgerSet
+from kernel.db.models import Account, LedgerSet, Voucher, VoucherLine
+from kernel.opening import is_opening_voucher
 from kernel.reporting import mapping as M
 from kernel.reporting.statements import (
     ReportError,
+    _period,
     amounts_by_code,
     balance_sheet,
     ending_balance,
@@ -369,6 +371,192 @@ def consolidate(
         "eliminations": bs["eliminations"],
         "balance_sheet": bs,
         "income_statement": inc,
+    }
+
+
+# ---------------------------------------------------------- 阶段0 派生（P0-1 血缘 / P0-2 posting level）
+
+
+def _scope_codes(
+    session: Session, ledger_set_ids: list[str], year: int, month: int,
+    standard: str, code: str | None, group: str | None,
+) -> set[str]:
+    """把血缘下钻的范围收敛为一组科目 code：code 直接命中；group 取所有
+    归入该资产负债表大类的 code（跨主体并集）。"""
+    mp = M.get_mapping(standard)
+    if code:
+        return {code}
+    if not group:
+        raise ConsolidationError(
+            "consolidation_lineage 必须指定 code（科目）或 group（资产负债表大类）之一"
+        )
+    codes: set[str] = set()
+    for ls_id in ledger_set_ids:
+        for c in amounts_by_code(session, ls_id, year, month):
+            pos = M.balance_sheet_group(mp, c)
+            if pos and pos[1] == group:
+                codes.add(c)
+    if not codes:
+        raise ConsolidationError(f"集团内没有任何科目归入「{group}」大类")
+    return codes
+
+
+def _source_vouchers(
+    session: Session, ledger_set_id: str, year: int, month: int,
+    scope_codes: set[str],
+) -> list[dict]:
+    """血缘下钻的底层：返回构成 scope_codes 余额的 POSTED 凭证明细（排除结转与期初）。
+
+    口径与 ``amounts_by_code`` 一致（同一期间、POSTED、排除 结转-/期初），
+    因此各 code 的凭证明细借贷合计 == Balance 投影发生额，可一路重建（ADR-002）。
+    """
+    period = _period(session, ledger_set_id, year, month)
+    accs = {
+        a.code: a.id
+        for a in session.scalars(
+            select(Account).where(Account.ledger_set_id == ledger_set_id)
+        )
+    }
+    id_to_code = {accs[c]: c for c in scope_codes if c in accs}
+    if not id_to_code:
+        return []
+    rows = session.execute(
+        select(Voucher, VoucherLine)
+        .join(VoucherLine, VoucherLine.voucher_id == Voucher.id)
+        .where(
+            Voucher.ledger_set_id == ledger_set_id,
+            Voucher.period_id == period.id,
+            Voucher.status == "POSTED",
+            VoucherLine.account_id.in_(id_to_code),
+        )
+        .order_by(Voucher.voucher_no, VoucherLine.line_no)
+    ).all()
+    out: list[dict] = []
+    for v, ln in rows:
+        if v.voucher_no.startswith("结转-"):       # 期结转凭证不是本期经营来源
+            continue
+        if is_opening_voucher(v.voucher_no):         # 期初及其红字冲销同理
+            continue
+        out.append({
+            "voucher_no": v.voucher_no,
+            "voucher_date": v.voucher_date.isoformat(),
+            "summary": (ln.summary or v.summary or ""),
+            "account_code": id_to_code.get(ln.account_id, ""),
+            "debit": Decimal(str(ln.debit)),
+            "credit": Decimal(str(ln.credit)),
+        })
+    return out
+
+
+def consolidation_lineage(
+    session: Session, ledger_set_ids: list[str], year: int, month: int,
+    standard: str = "small_business",
+    code: str | None = None, group: str | None = None,
+) -> dict:
+    """合并血缘下钻（只读，P0-1 / Palantir 式端到端血缘）。
+
+    给定合并资产负债表的一个科目 code 或大类 group，返回三层血缘：
+      1. 集团合并数 ``consolidated_ending`` ——该范围在合并口径下的期末余额；
+      2. 各主体分项 ``entities[]`` ——每个参与账套的期末余额贡献与逐 code 拆解；
+      3. 各主体源凭证 ``entities[].vouchers`` ——构成该余额的 POSTED 凭证明细，
+         可一路追到凭证流（ADR-002：投影可由凭证流重建）。
+
+    仅基于各账套「主体上报数据」（PL00），不含 Boss 抵消项——抵消的本源不在
+    任一主体账套内，单列于 posting level（见 ``consolidated_posting_levels``）。
+
+    注：跨币种集团下 ``consolidated_ending`` 仅作信息性汇总（各主体仍按其本位币
+    列示）；如需折算后合并数，请先用 ``consolidate`` + fx_rates 取得。
+    """
+    _ledger_sets(session, ledger_set_ids)
+    scope = _scope_codes(session, ledger_set_ids, year, month, standard, code, group)
+    mp = M.get_mapping(standard)
+
+    entities: list[dict] = []
+    consolidated = ZERO
+    for ls_id in ledger_set_ids:
+        ls = session.get(LedgerSet, ls_id)
+        amts = amounts_by_code(session, ls_id, year, month)
+        ending = ZERO
+        accounts = []
+        for c in sorted(scope):
+            d, c_ = amts.get(c, (ZERO, ZERO))
+            bal = ending_balance(c, d, c_)
+            if bal != ZERO:
+                ending += bal
+                accounts.append({
+                    "code": c,
+                    "ending": bal,
+                    "period_debit": d,
+                    "period_credit": c_,
+                })
+        vouchers = _source_vouchers(session, ls_id, year, month, scope)
+        entities.append({
+            "ledger_set_id": ls_id,
+            "name": ls.name,
+            "currency": ls.functional_currency or "CNY",
+            "ending": ending,
+            "accounts": accounts,
+            "vouchers": vouchers,
+        })
+        consolidated += ending
+
+    return {
+        "scope": {"code": code, "group": group, "codes": sorted(scope)},
+        "period": {"year": year, "month": month},
+        "standard": standard,
+        "consolidated_ending": consolidated,
+        "entities": entities,
+    }
+
+
+def consolidated_posting_levels(
+    session: Session, ledger_set_ids: list[str], year: int, month: int,
+    standard: str = "small_business",
+    eliminations: list[dict] | None = None,
+    fx_rates: dict[str, object] | None = None,
+) -> dict:
+    """合并分录层级标注（只读，P0-2 / SAP posting level 透明化）。
+
+    把合并资产负债表每个科目的金额拆成 posting level 来源：
+      - PL00 主体上报数据：各账套发生额聚合（折算后）的期末余额；
+      - PL20 Boss 抵消项：eliminations（HITL 显式提供）对余额的影响额。
+    每个 code 的合并余额 = PL00 − PL20 影响；仅暴露有余额或被抵消的 code，
+    供合并审计追溯「这一行里有多少是抵消出来的」，是 SAP 双 Monitor 步骤的
+    前置透明化（先看清来源，再决定是否下钻/确认）。
+
+    ownership 不影响 code 级余额（少数股权仅在权益披露层体现），故本函数不接收。
+    """
+    _ledger_sets(session, ledger_set_ids)
+    fx = {k: Decimal(str(v)) for k, v in (fx_rates or {}).items()}
+    mp = M.get_mapping(standard)
+
+    pre_agg, ccy = _aggregate_amounts(session, ledger_set_ids, year, month, fx)
+    pre_copy = {c: [d, cr] for c, (d, cr) in pre_agg.items()}
+    applied = _apply_eliminations(pre_agg, eliminations)
+
+    levels: list[dict] = []
+    for c in sorted(set(pre_copy) | set(pre_agg)):
+        d_pre, c_pre = pre_copy.get(c, [ZERO, ZERO])
+        d_post, c_post = pre_agg.get(c, [ZERO, ZERO])
+        pl00 = ending_balance(c, d_pre, c_pre)
+        consolidated = ending_balance(c, d_post, c_post)
+        pl20 = pl00 - consolidated          # 抵消对余额的影响（= PL00 − 合并余额；正表示该项被抵消、合并余额相对主体上报下降）
+        if consolidated == ZERO and pl20 == ZERO:
+            continue
+        pos = M.balance_sheet_group(mp, c)
+        levels.append({
+            "code": c,
+            "report_line": (pos[1] if pos else "（利润表/未分类项目）"),
+            "pl00_entity_reported": pl00,
+            "pl20_elimination": pl20,
+            "consolidated": consolidated,
+        })
+    return {
+        "period": {"year": year, "month": month},
+        "standard": standard,
+        "currency": ccy,
+        "levels": levels,
+        "eliminations": applied,
     }
 
 

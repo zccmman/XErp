@@ -2465,6 +2465,95 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except Exception as e:  # pragma: no cover
             return _err("CONSOLIDATE_FAILED", f"合并报表失败：{e}")
 
+    @mcp.tool()
+    def consolidate_lineage(
+        ledger_set_ids: list[str],
+        period_year: int,
+        period_month: int,
+        code: str | None = None,
+        group: str | None = None,
+        standard: str = "small_business",
+    ) -> dict:
+        """合并血缘下钻（阶段0 / Palantir 式端到端血缘）：把合并资产负债表里
+        的某一个科目 code 或某一个大类 group，一路向下追到「集团合并数 → 各主体分项
+        → 各主体源凭证」，每个数字都能由凭证明细重建（ADR-002）。
+
+        完全只读——只复用单主体取数与同源凭证流，绝不写凭证 / 过账 / 结账。
+
+        用途：合并数对不上、想搞清楚「这笔钱到底在哪家账套、哪张凭证」时，
+        用它下钻，而不是盲信汇总。
+        ledger_set_ids：参与合并的账套 ID 列表。
+        period_year/period_month：合并期间（必填）。
+        code：要下钻的科目代码，如 "1002"（银行存款）。与 group 二选一。
+        group：要下钻的资产负债表大类名，如 "流动资产"。与 code 二选一。
+        standard：会计准则，默认 small_business。
+
+        返回 {ok, scope, period, consolidated_ending, entities[]}；
+        entities[] 每项含 {ledger_set_id, name, ending, accounts[], vouchers[]}，
+        vouchers[] 为构成该余额的 POSTED 凭证明细（凭证号/日期/摘要/借贷/科目）。
+        """
+        try:
+            from kernel.reporting import consolidation as CONS
+
+            if not ledger_set_ids:
+                return _err("NO_LEDGERS", "ledger_set_ids 不能为空")
+            if not code and not group:
+                return _err("NO_SCOPE", "必须指定 code（科目）或 group（大类）之一")
+
+            with repo.session() as s:
+                result = CONS.consolidation_lineage(
+                    s, ledger_set_ids, period_year, period_month,
+                    standard, code=code, group=group,
+                )
+            return _ok(**result)
+        except CONS.ConsolidationError as e:
+            return _err("CONSOLIDATION_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("LINEAGE_FAILED", f"合并血缘下钻失败：{e}")
+
+    @mcp.tool()
+    def consolidate_posting_levels(
+        ledger_set_ids: list[str],
+        period_year: int,
+        period_month: int,
+        standard: str = "small_business",
+        eliminations: list | None = None,
+        fx_rates: dict | None = None,
+    ) -> dict:
+        """合并分录层级标注（阶段0 / SAP posting level 透明化）：把合并资产负债表
+        每个科目的金额拆成两层来源——PL00 主体上报数据、PL20 Boss 抵消项——
+        让每一行「有多少是抵消出来的」一目了然，是合并审计的前置透明化。
+
+        完全只读——只复用合并聚合与同一套标准映射，绝不写凭证 / 过账 / 结账。
+
+        ledger_set_ids：参与合并的账套 ID 列表。
+        period_year/period_month：合并期间（必填）。
+        eliminations：可选抵消项列表（同 consolidate_reports 的 HITL 抵消）；
+            传入后，被抵消的科目会显示 PL20 影响额。
+        fx_rates：可选 {账套ID: 汇率}，多币种集团折算用。
+        standard：会计准则，默认 small_business。
+
+        返回 {ok, period, currency, levels[], eliminations}；
+        levels[] 每项含 {code, report_line, pl00_entity_reported,
+        pl20_elimination, consolidated}，仅含非零余额或含抵消的科目。
+        """
+        try:
+            from kernel.reporting import consolidation as CONS
+
+            if not ledger_set_ids:
+                return _err("NO_LEDGERS", "ledger_set_ids 不能为空")
+
+            with repo.session() as s:
+                result = CONS.consolidated_posting_levels(
+                    s, ledger_set_ids, period_year, period_month,
+                    standard, eliminations=eliminations, fx_rates=fx_rates,
+                )
+            return _ok(**result)
+        except CONS.ConsolidationError as e:
+            return _err("CONSOLIDATION_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("POSTING_LEVEL_FAILED", f"合并层级标注失败：{e}")
+
     # ---------- 助手 ----------
 
     def _ontology_findings(s: Session, ledger_set_id: str, lines) -> list[dict]:

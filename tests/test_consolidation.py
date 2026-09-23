@@ -30,7 +30,12 @@ from kernel.db.models import (
     utcnow,
 )
 from kernel.reporting import consolidation as CONS
-from kernel.reporting.statements import amounts_by_code, balance_sheet, income_statement
+from kernel.reporting.statements import (
+    amounts_by_code,
+    balance_sheet,
+    ending_balance,
+    income_statement,
+)
 
 COA = {
     "1001": ("库存现金", "debit", "asset"),
@@ -277,3 +282,102 @@ def test_amounts_by_code_exposed(session, env):
     assert amts["1002"] == (Decimal("1000"), Decimal("200"))
     assert amts["6001"] == (Decimal("0"), Decimal("1000"))
     assert amts["6602"] == (Decimal("200"), Decimal("0"))
+
+
+# ---------------------------------------------------------- 7. 阶段0 P0-1 血缘下钻
+
+
+def test_lineage_by_code(session, env):
+    ids = _all_ids(env)
+    res = CONS.consolidation_lineage(session, ids, YEAR, MONTH, code="1002")
+    # 1002：A 借1000贷200 → 期末 800；B 借500贷100 → 400；C 借300贷50 → 250
+    assert res["consolidated_ending"] == Decimal("1450")
+    assert res["scope"]["codes"] == ["1002"]
+    for e in res["entities"]:
+        d, c = amounts_by_code(session, e["ledger_set_id"], YEAR, MONTH)["1002"]
+        assert e["ending"] == ending_balance("1002", d, c)
+        # 源凭证：每个主体一张记-0001，1002 两行都命中
+        assert len(e["vouchers"]) == 2
+        assert all(v["account_code"] == "1002" for v in e["vouchers"])
+        # 凭证借贷合计 == Balance 投影发生额（可重建，ADR-002）
+        vd = sum(v["debit"] for v in e["vouchers"])
+        vc = sum(v["credit"] for v in e["vouchers"])
+        assert vd == d and vc == c
+
+
+def test_lineage_by_group(session, env):
+    ids = _all_ids(env)
+    # 1002 归入 small_business 的「流动资产」大类
+    res = CONS.consolidation_lineage(session, ids, YEAR, MONTH, group="流动资产")
+    assert res["scope"]["codes"] == ["1002"]
+    assert res["consolidated_ending"] == Decimal("1450")
+
+
+def test_lineage_requires_scope(session, env):
+    ids = _all_ids(env)
+    try:
+        CONS.consolidation_lineage(session, ids, YEAR, MONTH)
+        assert False, "未指定 code/group 应抛 ConsolidationError"
+    except CONS.ConsolidationError:
+        pass
+
+
+def test_lineage_is_readonly(session, env):
+    ids = _all_ids(env)
+    before = len(session.scalars(select(Voucher)).all())
+    CONS.consolidation_lineage(session, ids, YEAR, MONTH, code="1002")
+    CONS.consolidation_lineage(session, ids, YEAR, MONTH, group="流动资产")
+    assert len(session.scalars(select(Voucher)).all()) == before
+
+
+# ---------------------------------------------------------- 8. 阶段0 P0-2 posting level
+
+
+def test_posting_levels_without_elim(session, env):
+    ids = _all_ids(env)
+    res = CONS.consolidated_posting_levels(session, ids, YEAR, MONTH)
+    row = next(r for r in res["levels"] if r["code"] == "1002")
+    # 无抵消：PL00 == 合并余额，PL20 == 0
+    assert row["pl00_entity_reported"] == Decimal("1450")
+    assert row["pl20_elimination"] == Decimal("0")
+    assert row["consolidated"] == Decimal("1450")
+    assert row["report_line"] == "流动资产"
+
+
+def test_posting_levels_with_elim(session, env):
+    from sqlalchemy.orm import Session as _S
+
+    engine = create_engine(env["url"])
+    with _S(engine) as s:
+        _make_entity(s, "内部A2", [
+            {"code": "1122", "dr": "100", "cr": "0"},
+            {"code": "1002", "dr": "0", "cr": "100"},
+        ])
+        _make_entity(s, "内部B2", [
+            {"code": "1002", "dr": "100", "cr": "0"},
+            {"code": "2202", "dr": "0", "cr": "100"},
+        ])
+        s.commit()
+        a_id = s.scalars(select(LedgerSet).where(LedgerSet.name == "内部A2")).first().id
+        b_id = s.scalars(select(LedgerSet).where(LedgerSet.name == "内部B2")).first().id
+
+    res = CONS.consolidated_posting_levels(
+        session, [a_id, b_id], YEAR, MONTH,
+        eliminations=[{"dr_code": "1122", "cr_code": "2202", "amount": "100"}],
+    )
+    r1122 = next(r for r in res["levels"] if r["code"] == "1122")
+    r2202 = next(r for r in res["levels"] if r["code"] == "2202")
+    # 抵消前：1122(资产)=100，2202(负债)=100；抵消 100 后净额为 0
+    assert r1122["pl00_entity_reported"] == Decimal("100")
+    assert r1122["pl20_elimination"] == Decimal("100")    # 资产方抵消使余额下降（PL20 为正=被抵消额）
+    assert r1122["consolidated"] == Decimal("0")
+    assert r2202["pl00_entity_reported"] == Decimal("100")
+    assert r2202["pl20_elimination"] == Decimal("100")     # 负债方抵消使余额回升
+    assert r2202["consolidated"] == Decimal("0")
+
+
+def test_posting_levels_is_readonly(session, env):
+    ids = _all_ids(env)
+    before = len(session.scalars(select(Voucher)).all())
+    CONS.consolidated_posting_levels(session, ids, YEAR, MONTH)
+    assert len(session.scalars(select(Voucher)).all()) == before
