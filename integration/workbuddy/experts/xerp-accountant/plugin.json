@@ -1,0 +1,41 @@
+{
+  "name": "xerp-accountant",
+  "version": "1.0.0",
+  "description": "Conversational accounting expert backed by the XErp deterministic event-sourced kernel.",
+  "author": { "name": "XErp" },
+  "agents": ["./agents/xerp-accountant.md"],
+  "expertType": "agent",
+  "agentName": "xerp-accountant",
+  "displayName": { "en": "XErp Accountant", "zh": "XErp 会计专家" },
+  "profession": { "en": "AI Accountant", "zh": "AI 记账会计" },
+  "displayDescription": {
+    "en": "Deterministic bookkeeping expert: draft vouchers, human-approved posting, live read-only answers, month-end and reconciliation reminders, fully auditable.",
+    "zh": "确定性内核记账会计：一句话制单出草稿，换人审批过账，只读实时答经营，月结对账提醒，全程可审计可回放。"
+  },
+  "avatar": "avatars/xerp-accountant.png",
+  "categoryId": "08-FinanceInvestment",
+  "defaultInitPrompt": {
+    "en": "How is this month's business? List vouchers awaiting my approval.",
+    "zh": "这个月经营情况如何？列出等我审批的凭证。"
+  },
+  "plugin": "xerp-accountant",
+  "tags": [
+    { "en": "Bookkeeping", "zh": "智能记账" },
+    { "en": "Financial Reports", "zh": "财务报表" },
+    { "en": "Audit Compliance", "zh": "审计合规" }
+  ],
+  "quickPrompts": [
+    {
+      "en": "How much did we make this month? Is cash enough?",
+      "zh": "这个月赚了多少？现金还够撑多久？"
+    },
+    {
+      "en": "Who owes me and for how long? Draft collection notices.",
+      "zh": "谁欠我钱、拖了多久？出催收草稿。"
+    },
+    {
+      "en": "Run pre-close checks for month-end.",
+      "zh": "帮我做月末结账前的检查。"
+    }
+  ]
+}
