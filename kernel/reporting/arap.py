@@ -20,8 +20,10 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from decimal import Decimal
+from difflib import SequenceMatcher
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -689,3 +691,367 @@ def aging_analysis(
         "totals": totals,
         "basis": "FIFO 配比（不依赖 open-item 核销），未结清余额可对其 partner_balances 复核",
     }
+
+
+# ============================================================ Phase C：AI 收款自动匹配（G4）
+# 承接 Phase A 的 open_items / record_clearing，是 propose_clearing（FIFO 兜底）的**智能升级**。
+# 铁律（事件溯源 + ADR-002）：本模块**只读**，不新增任何投影；匹配结果由 Boss 确认后
+# 经 record_clearing 落库（HITL，推送 ≠ 执行）。所有取数复用 open_items / arap_clearing。
+
+
+def _normalize_ref(token: str) -> str:
+    return re.sub(r"[\s\-_.]", "", token).upper()
+
+
+def _parse_invoice_refs(reference: str | None) -> list[str]:
+    """从回款备注里抽取候选发票号（归一化大写、去分隔符）。
+
+    识别：① 字母前缀 + 数字（可含 -_. 分隔），如 INV-2026-001 / FP001 / AB-12345；
+          ② 独立纯数字发票号（4 位及以上，前后非字母/数字/分隔符，避免误吞金额小数）。
+    重复归一并保序。
+    """
+    if not reference:
+        return []
+    refs: list[str] = []
+    for m in re.finditer(r"[A-Za-z]{1,4}(?:[ \-_.]?\d+)+", reference, re.IGNORECASE):
+        refs.append(_normalize_ref(m.group(0)))
+    for m in re.finditer(r"(?<![A-Za-z\d\-_.])(\d{4,})(?![A-Za-z\d\-_.])", reference):
+        refs.append(_normalize_ref(m.group(1)))
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in refs:
+        if r and r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+def _fuzzy_best(payer: str, candidates: list[str]) -> tuple[str | None, float]:
+    """在候选往来单位名里模糊匹配 payer，返回 (最佳名, 相似度 0-1)。
+
+    兼顾两种信号：① difflib 编辑距离比；② 子串/包含（付款方名是客户名的
+    子串，如「示例科技」∈「北京示例科技有限公司」）→ 视为强匹配（0.9）。
+    """
+    if not payer or not candidates:
+        return None, 0.0
+    p = payer.strip()
+    best, score = None, 0.0
+    for c in candidates:
+        s = SequenceMatcher(None, p, c).ratio()
+        if p in c or c in p:  # 子串/包含加成
+            s = max(s, 0.9)
+        if s > score:
+            best, score = c, s
+    return best, score
+
+
+def unmatched_receipts(
+    session: Session, *, ledger_set_id: str, dim_key: str = "customer",
+    partner: str | None = None, as_of_date: date | None = None,
+) -> dict[str, Any]:
+    """待匹配收款/付款清单（只读）：回款/付款侧尚未完全核销的行 + 剩余可匹配额。
+
+    与 open_items 同一取数口径（凭证 + arap_clearing 重建，ADR-002）。
+    用途：① sprite_push 主动提醒「有几笔回款还没匹配发票」；
+          ② Boss 一键查待匹配回款，再调 arap_propose_receipt_match 出匹配方案。
+    """
+    accounts = _resolve_accounts(session, ledger_set_id, dim_key)
+    if not accounts:
+        return {"dim_key": dim_key, "items": [],
+                "totals": {"count": 0, "remaining": "0.00"},
+                "basis": "无往来科目"}
+    if as_of_date is None:
+        as_of_date = date.today()
+    lines = _collect_arap_lines(session, ledger_set_id, accounts, dim_key, partner, as_of_date)
+    _, pay_cleared = _cleared_map(session, ledger_set_id, dim_key, partner)
+    items: list[dict] = []
+    total_rem = ZERO
+    for ln in lines:
+        if _is_invoice_side(ln):
+            continue  # 仅回款/付款侧
+        gross = ln["credit"] if ln["direction"] == "debit" else ln["debit"]
+        rem = gross - pay_cleared.get(ln["line_id"], ZERO)
+        if rem <= ZERO:
+            continue
+        items.append({
+            "partner": ln["partner"],
+            "payment_line_id": ln["line_id"],
+            "voucher_no": ln["voucher_no"],
+            "date": ln["date"].isoformat(),
+            "amount": f"{gross:.2f}",
+            "cleared_amount": f"{pay_cleared.get(ln['line_id'], ZERO):.2f}",
+            "remaining": f"{rem:.2f}",
+        })
+        total_rem += rem
+    items.sort(key=lambda i: (i["partner"], i["date"]))
+    return {
+        "dim_key": dim_key,
+        "as_of_date": as_of_date.isoformat(),
+        "items": items,
+        "totals": {"count": len(items), "remaining": f"{total_rem:.2f}"},
+        "basis": "回款/付款侧未清额 = 行额 − 已用额（arap_clearing 重建）；仅列未完全匹配的行",
+    }
+
+
+def propose_receipt_match(
+    session: Session, *, ledger_set_id: str, dim_key: str = "customer",
+    payment_line_id: str | None = None, receipt: dict | None = None,
+    as_of_date: date | None = None,
+) -> dict[str, Any]:
+    """AI 收款自动匹配（只读草稿，不落库）：把一笔回款智能匹配到未清发票。
+
+    承接 Phase A 的 open_items / record_clearing，是 propose_clearing（FIFO 兜底）的
+    **智能升级**——在 FIFO 之外叠加多信号匹配 + 可解释置信度：
+      · 备注发票号命中（最高置信）：从回款备注解析发票号，精确指向对应发票；
+      · 金额精确匹配：单张发票未清额 == 回款，或多张发票合计 == 回款；
+      · 付款方名称模糊匹配：限定候选客户、提升置信；
+      · 部分核销 / 多付预警：回款 < / > 未清合计时给明确提示；
+      · 退化 FIFO 兜底：无备注无精确匹配时退回最旧优先（与 propose_clearing 一致）。
+    每条匹配都带 confidence（0-1）与 rationale（中文可解释），便于 Boss 信任并一键确认。
+
+    输入二选一：
+      · payment_line_id：已入账的回款行 id（推荐，匹配结果可直接喂 record_clearing）；
+      · receipt：自由文本收款 {amount, date, reference, payer}（银行导入/AI 解析场景）；
+        此时 payment_line_id 为 None，需先据建议分录入账该回款再回填匹配。
+    输出 proposals：[{invoice_line_id, payment_line_id, voucher_no, invoice_date,
+                     amount, confidence, rationale, signals}] + receipt 摘要 /
+                     matched_amount / unmatched_amount / overpayment / partner / advice / basis。
+    终态动作（record_clearing，HITL）由 Boss 确认后调用，XErp 不自动落账。
+    """
+    if payment_line_id is None and not receipt:
+        raise ArapError("NEED_RECEIPT", "必须提供 payment_line_id 或 receipt 之一")
+
+    accounts = _resolve_accounts(session, ledger_set_id, dim_key)
+    if not accounts:
+        return {"dim_key": dim_key, "partner": None, "proposals": [],
+                "receipt": {}, "matched_amount": "0.00",
+                "unmatched_amount": "0.00", "overpayment": False,
+                "needs_recording": payment_line_id is None,
+                "basis": "无往来科目"}
+
+    if as_of_date is None:
+        as_of_date = date.today()
+
+    resolved_partner: str | None = None
+    receipt_amount: Decimal | None = None
+    receipt_date = as_of_date
+    reference = (receipt or {}).get("reference") if isinstance(receipt, dict) else None
+    payer = (receipt or {}).get("payer") if isinstance(receipt, dict) else None
+
+    if payment_line_id is not None:
+        _, pay_cleared = _cleared_map(session, ledger_set_id, dim_key, None)
+        row = session.execute(
+            select(VoucherLine, Voucher)
+            .join(Voucher, VoucherLine.voucher_id == Voucher.id)
+            .where(VoucherLine.id == payment_line_id)
+        ).first()
+        if row is None:
+            raise ArapError("PAYMENT_LINE_NOT_FOUND", f"回款行不存在：{payment_line_id}")
+        line, v = row
+        acc = accounts.get(line.account_id)
+        if acc is None:
+            raise ArapError("NOT_ARAP_LINE", "回款行不属于应收/应付科目")
+        dims = line.aux_dims or {}
+        resolved_partner = dims.get(dim_key)
+        if resolved_partner is None:
+            raise ArapError("NO_PARTNER", "回款行无往来单位，无法匹配")
+        gross = (Decimal(str(line.credit)) if acc.direction == "debit"
+                 else Decimal(str(line.debit)))
+        receipt_amount = gross - pay_cleared.get(payment_line_id, ZERO)
+        if receipt_amount <= ZERO:
+            raise ArapError("RECEIPT_FULLY_CLEARED", f"该回款已完全匹配：{payment_line_id}")
+        receipt_date = v.voucher_date
+    else:
+        try:
+            receipt_amount = Decimal(str((receipt or {}).get("amount")))
+        except (TypeError, ValueError, AttributeError):
+            raise ArapError("BAD_AMOUNT", f"回款金额非法：{receipt}")
+        if receipt_amount <= ZERO:
+            raise ArapError("BAD_AMOUNT", "回款金额必须为正")
+        if isinstance(receipt, dict) and receipt.get("date"):
+            receipt_date = date.fromisoformat(receipt["date"])
+
+    # 取候选未清发票（按 resolved_partner 或 payer 模糊匹配收敛）
+    oi = open_items(session, ledger_set_id=ledger_set_id, dim_key=dim_key,
+                    partner=resolved_partner, as_of_date=as_of_date)
+    line_ids = [it["invoice_line_id"] for it in oi.get("items", [])]
+    summ: dict[str, str] = {}
+    if line_ids:  # 取发票凭证摘要（含业务发票号，如「销售开票 INV-2026-001」）
+        for lid, sm in session.execute(
+            select(VoucherLine.id, Voucher.summary)
+            .join(Voucher, VoucherLine.voucher_id == Voucher.id)
+            .where(VoucherLine.id.in_(line_ids))
+        ).all():
+            summ[lid] = sm or ""
+    open_inv: list[dict] = []
+    for it in oi.get("items", []):
+        open_inv.append({
+            "invoice_line_id": it["invoice_line_id"],
+            "voucher_no": it["voucher_no"],
+            "date": date.fromisoformat(it["date"]),
+            "open_amount": Decimal(it["open_amount"]),
+            "partner": it["partner"],
+            "summary": summ.get(it["invoice_line_id"], ""),
+        })
+
+    # 付款方名称模糊匹配（仅自由文本 receipt 且未解析出 partner 时）
+    if resolved_partner is None and payer:
+        cands = sorted({i["partner"] for i in open_inv})
+        best, score = _fuzzy_best(payer, cands)
+        if best is not None and score >= 0.6:
+            resolved_partner = best
+            open_inv = [i for i in open_inv if i["partner"] == best]
+
+    if not open_inv:
+        return {
+            "dim_key": dim_key, "partner": resolved_partner,
+            "receipt": {"amount": f"{receipt_amount:.2f}",
+                        "date": receipt_date.isoformat(),
+                        "reference": reference, "payer": payer,
+                        "payment_line_id": payment_line_id},
+            "proposals": [], "matched_amount": "0.00",
+            "unmatched_amount": f"{receipt_amount:.2f}", "overpayment": False,
+            "needs_recording": payment_line_id is None,
+            "basis": "无未清发票可匹配（该客户无欠款或回款方不匹配）",
+        }
+
+    proposals, matched, leftover = _match_engine(
+        receipt_amount, open_inv, reference, payment_line_id,
+    )
+    overpayment = leftover > ZERO
+    confs = [p["confidence"] for p in proposals] or [0.0]
+    overall = (sum(confs) / len(confs)) if confs else 0.0
+    advice = ("高置信，建议直接确认" if overall >= 0.9
+              else "中置信，建议复核后确认" if overall >= 0.7
+              else "低置信（FIFO 兜底），务必人工复核")
+
+    return {
+        "dim_key": dim_key,
+        "partner": resolved_partner or open_inv[0]["partner"],
+        "receipt": {
+            "amount": f"{receipt_amount:.2f}",
+            "date": receipt_date.isoformat(),
+            "reference": reference, "payer": payer,
+            "payment_line_id": payment_line_id,
+        },
+        "proposals": proposals,
+        "matched_amount": f"{matched:.2f}",
+        "unmatched_amount": f"{leftover:.2f}",
+        "overpayment": overpayment,
+        "needs_recording": payment_line_id is None,
+        "confidence_overall": round(overall, 2),
+        "advice": advice,
+        "basis": ("AI 多信号匹配（备注发票号/金额精确/名称模糊/部分-多付/FIFO 兜底）；"
+                  "只读草稿，确认后由 record_clearing 落库（HITL）"),
+    }
+
+
+def _match_engine(
+    receipt_amount: Decimal, open_inv: list[dict], reference, payment_line_id,
+) -> tuple[list[dict], Decimal, Decimal]:
+    """核心匹配（纯函数、确定性、可测试）：返回 (proposals, 已匹配额, 剩余额)。"""
+    inv_sorted = sorted(open_inv, key=lambda i: i["date"])
+    ref_tokens = set(_parse_invoice_refs(reference)) if reference else set()
+    ref_hits = ([i for i in inv_sorted
+                 if (_normalize_ref(i["voucher_no"]) in ref_tokens
+                     or any(tok in _normalize_ref(i.get("summary") or "")
+                            for tok in ref_tokens))]
+                if ref_tokens else [])
+
+    proposals: list[dict] = []
+    avail = receipt_amount
+    used_ids: set[str] = set()
+
+    def add(inv: dict, amt: Decimal, conf: float, rationale: str, signals: list[str]) -> None:
+        proposals.append({
+            "invoice_line_id": inv["invoice_line_id"],
+            "voucher_no": inv["voucher_no"],
+            "invoice_date": inv["date"].isoformat(),
+            "amount": f"{amt:.2f}",
+            "confidence": conf,
+            "rationale": rationale,
+            "signals": signals,
+            "payment_line_id": payment_line_id,
+        })
+        inv["open_amount"] -= amt
+        used_ids.add(inv["invoice_line_id"])
+
+    # —— 备注发票号命中（最高置信）——
+    if ref_hits:
+        ref_total = sum(i["open_amount"] for i in ref_hits)
+        if ref_total == avail:
+            for i in ref_hits:
+                add(i, i["open_amount"], 0.99,
+                    f"回款备注含发票号 {i['voucher_no']} 精确命中，金额相等",
+                    ["reference_exact"])
+            return proposals, avail, ZERO
+        if ref_total < avail:
+            for i in ref_hits:
+                add(i, i["open_amount"], 0.95,
+                    f"回款备注含发票号 {i['voucher_no']} 命中，优先核销",
+                    ["reference"])
+            avail -= ref_total  # 余下金额继续走精确/FIFO
+        else:  # ref_total > avail：按最旧优先部分核销命中的发票
+            for i in sorted(ref_hits, key=lambda x: x["date"]):
+                if avail <= ZERO:
+                    break
+                take = min(avail, i["open_amount"])
+                add(i, take, 0.9,
+                    f"回款备注含发票号 {i['voucher_no']} 命中，回款不足额按最旧优先部分核销",
+                    ["reference", "partial"])
+                avail -= take
+            return proposals, receipt_amount - avail, avail
+
+    # —— 金额精确匹配（无备注或备注已消化余量）——
+    for i in inv_sorted:  # 单张精确
+        if i["invoice_line_id"] not in used_ids and i["open_amount"] == avail:
+            add(i, avail, 0.95, "单一发票未清额精确等于回款金额", ["exact_amount"])
+            return proposals, avail, ZERO
+    pool = [i for i in inv_sorted if i["invoice_line_id"] not in used_ids]
+    if len(pool) <= 20:  # 多张合计精确（小集合穷举）
+        found = _subset_sum(pool, avail)
+        if found:
+            for i in found:
+                add(i, i["open_amount"], 0.9,
+                    "多张发票未清额合计精确等于回款金额", ["exact_sum"])
+            return proposals, avail, ZERO
+
+    # —— 部分 / 多付 / FIFO 兜底 ——
+    total_open = sum(i["open_amount"] for i in inv_sorted
+                     if i["invoice_line_id"] not in used_ids)
+    if avail >= total_open and total_open > ZERO:
+        for i in inv_sorted:
+            if i["invoice_line_id"] in used_ids or i["open_amount"] <= ZERO:
+                continue
+            add(i, i["open_amount"], 0.6,
+                "回款≥全部未清发票合计，全额核销（疑似多付/预付，请人工确认）",
+                ["overpay_risk", "fifo"])
+        return proposals, total_open, avail - total_open
+    for i in inv_sorted:  # 部分核销：最旧优先
+        if avail <= ZERO:
+            break
+        if i["invoice_line_id"] in used_ids or i["open_amount"] <= ZERO:
+            continue
+        take = min(avail, i["open_amount"])
+        add(i, take, 0.6, "无备注/无精确匹配，退回 FIFO 兜底（最旧发票优先）",
+            ["fifo"])
+        avail -= take
+    return proposals, receipt_amount - avail, avail
+
+
+def _subset_sum(items: list[dict], target: Decimal) -> list[dict] | None:
+    """小集合精确子集和：返回和为 target 的发票子集；无解返回 None。
+    调用方已保证 items 规模（≤20），DFS + 早停足够。"""
+    n = len(items)
+
+    def dfs(idx: int, running: Decimal, chosen: list[int]):
+        if running == target:
+            return [items[k] for k in chosen]
+        if idx >= n or running > target:
+            return None
+        r1 = dfs(idx + 1, running + items[idx]["open_amount"], chosen + [idx])
+        if r1 is not None:
+            return r1
+        return dfs(idx + 1, running, chosen)
+
+    return dfs(0, ZERO, [])

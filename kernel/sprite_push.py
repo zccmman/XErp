@@ -56,7 +56,7 @@ def sprite_push_items(
 
     返回：
         items:  list[dict] 每条 {type, severity, title, text, html, action_hint}
-                type ∈ month_end | anomaly | report_card | health | credit | collections
+                type ∈ month_end | anomaly | report_card | health | credit | collections | receipt_matching
                 severity ∈ info | warn | alert
         summary: 一句话总览（供 IM / CLI 首行）
         period_status: 期间状态（none / OPEN / CLOSED / ...）
@@ -218,9 +218,29 @@ def sprite_push_items(
             "action_hint": f"发送{verb}（仅 Boss 在 Web/IM 执行，XErp 不代发）",
         })
 
+    # 8) 待匹配收款（receipt_matching）——复用 unmatched_receipts 只读，主动提醒有几笔回款还没匹配发票
+    #    推送 ≠ 执行：只展示待匹配笔数与金额，绝不替 Boss 自动核销（守 sprite_push 铁律）。
+    from kernel.reporting.arap import unmatched_receipts
+
+    rec = unmatched_receipts(s, ledger_set_id=ls_id, dim_key="customer")
+    rec_n = int((rec.get("totals") or {}).get("count", 0) or 0)
+    if rec_n > 0:
+        rec_rem = (rec.get("totals") or {}).get("remaining", "0.00")
+        items.append({
+            "type": "receipt_matching",
+            "severity": "warn",
+            "title": f"待匹配收款·{rec_n} 笔",
+            "text": (f"有 {rec_n} 笔回款尚未匹配到发票（合计待匹配 {rec_rem}），"
+                     "建议运行收款自动匹配。"),
+            "html": (f"有 <b>{rec_n}</b> 笔回款尚未匹配到发票（合计待匹配 "
+                     f"<b>{rec_rem}</b>），建议运行收款自动匹配。"),
+            "action_hint": "调用 arap_propose_receipt_match 出匹配方案，确认后 arap_apply_clearing 落库。",
+        })
+
     # 4) 健康（health）——无任何待办时给正向反馈
     actionable = any(
-        it["type"] in ("month_end", "anomaly", "credit", "collections") for it in items
+        it["type"] in ("month_end", "anomaly", "credit", "collections", "receipt_matching")
+        for it in items
     )
     if not actionable:
         items.append({

@@ -1749,6 +1749,49 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except CreditError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    @mcp.tool()
+    def arap_propose_receipt_match(
+        ledger_set_id: str,
+        dim_key: str = "customer",
+        payment_line_id: str = "",
+        receipt: dict | None = None,
+        as_of_date: str = "",
+    ) -> dict:
+        """AI 收款自动匹配（只读草稿，不落库）：把一笔回款智能匹配到未清发票（Phase C / G4）。
+
+        承接 Phase A 的 open_items / record_clearing，是 arap_propose_clearing（FIFO 兜底）
+        的**智能升级**——在 FIFO 之外叠加多信号匹配 + 可解释置信度：备注发票号命中（最高
+        置信）/ 金额精确匹配（单张或多张合计）/ 付款方名称模糊匹配 / 部分核销与多付预警 /
+        退化 FIFO 兜底。每条匹配带 confidence（0-1）与 rationale（中文可解释），便于 Boss 信任。
+
+        典型闭环：arap_propose_receipt_match（只读草稿）→ 人工确认 → arap_apply_clearing 落库。
+        - payment_line_id：已入账的回款行 id（推荐，匹配结果可直接喂 apply）；
+        - receipt：自由文本收款 {amount, date, reference, payer}（银行导入/AI 解析场景），
+          此时 payment_line_id 为空，需先据建议分录入账该回款再回填匹配；
+        - 二选一，都不传 → 报错 NEED_RECEIPT；
+        - as_of_date：截止日期 ISO，空=今天。
+        返回 proposals（含 invoice_line_id / payment_line_id / amount / confidence / rationale /
+        signals）+ receipt 摘要 + matched_amount / unmatched_amount / overpayment / advice。
+        """
+        try:
+            from datetime import date
+
+            from kernel.reporting.arap import ArapError, propose_receipt_match
+
+            _as_of = date.fromisoformat(as_of_date) if as_of_date else None
+            if _as_of is None:
+                _as_of = date.today()
+            with repo.session() as s:
+                return _ok(
+                    report=propose_receipt_match(
+                        s, ledger_set_id=ledger_set_id, dim_key=dim_key,
+                        payment_line_id=(payment_line_id or None),
+                        receipt=receipt, as_of_date=_as_of,
+                    )
+                )
+        except ArapError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- 发票 OCR（P2-03） ----------
 
     @mcp.tool()

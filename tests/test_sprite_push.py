@@ -56,7 +56,7 @@ def ls_info(env):
     return (ls.id, ls.accounting_standard, per.year, per.month)
 
 
-VALID_TYPES = {"month_end", "anomaly", "report_card", "health", "credit", "collections"}
+VALID_TYPES = {"month_end", "anomaly", "report_card", "health", "credit", "collections", "receipt_matching"}
 VALID_SEV = {"info", "warn", "alert"}
 
 
@@ -124,7 +124,8 @@ def test_sprite_push_boss_tips_single_source(env, ls_info):
         d = _boss_data(s, ls_id, yr, mo, std)
         sp = sprite_push_items(s, ls_id, yr, mo, std)
     expected = [it["html"] for it in sp["items"]
-                if it["type"] in ("month_end", "anomaly", "health", "credit", "collections")]
+                if it["type"] in ("month_end", "anomaly", "health", "credit", "collections",
+                                  "receipt_matching")]
     assert d["tips"] == expected, "Web 提醒未与单一推送源 sprite_push_items 对齐"
 
 
@@ -220,3 +221,60 @@ def test_sprite_push_credit_and_collections_items():
     for it in credit_items + coll_items:
         assert "已结账" not in it["action_hint"]
         assert "已执行" not in it["action_hint"]
+
+
+def test_sprite_push_receipt_matching_item():
+    """账本精灵应主动推送「待匹配收款」提醒（Phase C·AI Runtime）。
+
+    推送 ≠ 执行：receipt_matching 项只展示待匹配笔数与金额，action_hint 指向
+    arap_propose_receipt_match（不替 Boss 自动核销）。
+    """
+    d = mkdtemp()
+    url = f"sqlite:///{d}/sprite_receipt.db"
+    engine = create_engine(url)
+    Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        ids = seed_demo_ledger(s)
+        import_chart_of_accounts(s, ids["ledger_set_id"], load_template_rows())
+        s.add(Period(ledger_set_id=ids["ledger_set_id"], year=2026,
+                     month=6, status="OPEN"))
+        s.commit()
+        actor = {"type": "user", "id": ids["subject_id"]}
+        # 一张已开票未清的应收
+        ingest_event(
+            s, ledger_set_id=ids["ledger_set_id"], adapter="ar",
+            event_type="invoice.issued",
+            event={
+                "event_id": "INV-RM", "invoice_no": "INV-RM",
+                "customer": "匹配测试客户", "issued_at": "2026-06-10",
+                "net_amount": "990.00", "tax_amount": "10.00",
+                "total_amount": "1000.00",
+            },
+            actor=actor,
+        )
+        # 一笔未匹配的回款（仅收到钱、还没核销到发票）
+        ingest_event(
+            s, ledger_set_id=ids["ledger_set_id"], adapter="ar",
+            event_type="payment.received",
+            event={
+                "event_id": "PAY-RM", "customer": "匹配测试客户",
+                "received_at": "2026-06-20", "amount": "600.00",
+            },
+            actor=actor,
+        )
+        s.commit()
+
+        ls = s.get(LedgerSet, ids["ledger_set_id"])
+        per = s.scalars(
+            select(Period).where(Period.ledger_set_id == ids["ledger_set_id"])
+        ).first()
+        payload = sprite_push_items(
+            s, ids["ledger_set_id"], per.year, per.month, ls.accounting_standard
+        )
+
+    rm_items = [it for it in payload["items"] if it["type"] == "receipt_matching"]
+    assert rm_items, "有未匹配回款应推 receipt_matching 项"
+    assert rm_items[0]["severity"] == "warn"
+    assert "待匹配收款" in rm_items[0]["title"]
+    assert "arap_propose_receipt_match" in rm_items[0]["action_hint"]
+    assert "已核销" not in rm_items[0]["action_hint"]
