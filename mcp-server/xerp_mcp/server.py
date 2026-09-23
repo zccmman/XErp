@@ -2554,6 +2554,96 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except Exception as e:  # pragma: no cover
             return _err("POSTING_LEVEL_FAILED", f"合并层级标注失败：{e}")
 
+    @mcp.tool()
+    def consolidate_propose_icp(
+        ledger_set_ids: list[str],
+        period_year: int,
+        period_month: int,
+        standard: str = "small_business",
+        fx_rates: dict | None = None,
+    ) -> dict:
+        """内部往来自动配对草稿（阶段1 / Oracle ICP 精神）：把集团内各账套的应收
+        （1122）与应付（2202）自动算出可抵消额，生成一笔集团级抵消建议，供 Boss 复核后
+        确认——把「抵消从手敲变确认」，仍守住 HITL（AI 不臆测具体配对）。
+
+        完全只读——只复用合并聚合取数，绝不写凭证 / 过账 / 结账。
+
+        ⚠️ 诚实边界：凭证明细无「对手方账套」维度，故为集团级净额配对
+        （可抵消 = min(应收合计, 应付合计)），未逐对手方；应收应付不对称差额可能为
+        外部往来，请 Boss 复核。
+
+        ledger_set_ids：参与合并的账套 ID 列表。
+        period_year/period_month：合并期间（必填）。
+        fx_rates：可选 {账套ID: 汇率}，多币种折算用。
+        standard：会计准则，默认 small_business。
+
+        返回 {ok, period, currency, receivables, payables, total_receivables,
+        total_payables, matched, draft_eliminations[], notes[]}；
+        draft_eliminations 可直接原样喂回 consolidate_reports / consolidate_posting_levels
+        的 eliminations 参数确认执行。
+        """
+        try:
+            from kernel.reporting import consolidation as CONS
+
+            if not ledger_set_ids:
+                return _err("NO_LEDGERS", "ledger_set_ids 不能为空")
+
+            with repo.session() as s:
+                result = CONS.propose_icp_eliminations(
+                    s, ledger_set_ids, period_year, period_month,
+                    standard, fx_rates=fx_rates,
+                )
+            return _ok(**result)
+        except CONS.ConsolidationError as e:
+            return _err("CONSOLIDATION_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("ICP_PROPOSE_FAILED", f"内部往来配对草稿失败：{e}")
+
+    @mcp.tool()
+    def consolidate_propose_coi(
+        ledger_set_ids: list[str],
+        period_year: int,
+        period_month: int,
+        standard: str = "small_business",
+        ownership: dict | None = None,
+        fx_rates: dict | None = None,
+        parent_id: str | None = None,
+    ) -> dict:
+        """长期股权投资与子公司权益抵销草稿（阶段1 / SAP COI 精神）：自动把母公司
+        长投（1511）与子公司所有者权益配比抵销，并推算应享权益份额、商誉、少数股东权益，
+        生成一组可直接确认的建议消除项——把「长投-权益抵消从手敲变确认」，仍守 HITL。
+
+        完全只读——只复用单主体取数与账套科目定义，绝不写凭证 / 过账 / 结账。
+
+        ledger_set_ids：参与合并的账套 ID 列表（母公司自身 + 子公司）。
+        period_year/period_month：合并期间（必填）。
+        ownership：可选 {账套ID: 持股比例(0~1)}，缺省全部按 1.0（全资）。
+        parent_id：可选母公司账套 ID；缺省时取 ownership=1.0 的唯一账套，缺失/多个则报错。
+        fx_rates：可选 {账套ID: 汇率}，多币种折算用。
+        standard：会计准则，默认 small_business。
+
+        返回 {ok, period, currency, parent, subsidiaries[], all_suggested_eliminations[],
+        notes[]}；all_suggested_eliminations 可直接原样喂回 consolidate_reports /
+        consolidate_posting_levels 的 eliminations 参数确认执行。
+        """
+        try:
+            from kernel.reporting import consolidation as CONS
+
+            if not ledger_set_ids:
+                return _err("NO_LEDGERS", "ledger_set_ids 不能为空")
+
+            with repo.session() as s:
+                result = CONS.propose_coi_eliminations(
+                    s, ledger_set_ids, period_year, period_month,
+                    standard, ownership=ownership, fx_rates=fx_rates,
+                    parent_id=parent_id,
+                )
+            return _ok(**result)
+        except CONS.ConsolidationError as e:
+            return _err("CONSOLIDATION_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("COI_PROPOSE_FAILED", f"权益抵销草稿失败：{e}")
+
     # ---------- 助手 ----------
 
     def _ontology_findings(s: Session, ledger_set_id: str, lines) -> list[dict]:

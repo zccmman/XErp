@@ -33,6 +33,10 @@ _EXPECT_DIR = {
 DEFAULT_AR_ACCOUNTS = ("1122",)
 DEFAULT_AP_ACCOUNTS = ("2202",)
 
+# 长期股权投资默认科目（1511，小企业准则）。合并 COI（权益抵销）草稿与
+# 适配器共用，单一真源（中性核心，仅依赖 db.models，不触 A1 红线）。
+DEFAULT_INVESTMENT_ACCOUNTS = ("1511",)
+
 
 class CoaImportError(ValueError):
     """科目表导入失败：信息可直接展示给用户。"""

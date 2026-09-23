@@ -27,6 +27,11 @@ from sqlalchemy.orm import Session
 from kernel.db.models import Account, LedgerSet, Voucher, VoucherLine
 from kernel.opening import is_opening_voucher
 from kernel.reporting import mapping as M
+from kernel.coa import (
+    DEFAULT_AP_ACCOUNTS,
+    DEFAULT_AR_ACCOUNTS,
+    DEFAULT_INVESTMENT_ACCOUNTS,
+)
 from kernel.reporting.statements import (
     ReportError,
     _period,
@@ -557,6 +562,275 @@ def consolidated_posting_levels(
         "currency": ccy,
         "levels": levels,
         "eliminations": applied,
+    }
+
+
+# ---------------------------------------------------------- 阶段1 草稿（Oracle ICP / SAP COI）
+#
+# 设计定位：把「抵消从手敲变 Boss 确认」。两个函数都**只出草稿**——
+# 自动算出可抵消的内部往来 / 长投-权益配比，返回供 Boss 审阅的
+# ``draft_eliminations`` / ``suggested_eliminations``；Boss 确认后再把这些
+# 消除项原样喂回 ``consolidate`` / ``consolidated_posting_levels``。
+# 绝不自行应用、绝不写账，守住 HITL 铁律与 ADR-002 单一真源。
+
+
+def _find_goodwill_code(session: Session, ledger_set_id: str) -> str | None:
+    """在母公司账套里找一个「商誉」科目（资产类、名称含'商誉'或编码以 19 开头）。
+
+    找不到返回 None——此时 COI 草稿只披露商誉、不自动消除，避免引入未定义
+    科目导致合并表不平衡。
+    """
+    for a in session.scalars(
+        select(Account).where(Account.ledger_set_id == ledger_set_id)
+    ):
+        if a.category != "asset":
+            continue
+        if (a.name and "商誉" in a.name) or a.code.startswith("19"):
+            return a.code
+    return None
+
+
+def propose_icp_eliminations(
+    session: Session, ledger_set_ids: list[str], year: int, month: int,
+    standard: str = "small_business",
+    fx_rates: dict[str, object] | None = None,
+) -> dict:
+    """内部往来自动配对（阶段1 / Oracle ICP 精神，只读草稿）。
+
+    集团内各主体的应收（``DEFAULT_AR_ACCOUNTS``）与应付（``DEFAULT_AP_ACCOUNTS``）
+    在合并层面应当等额对冲（甲对乙的应收 = 乙对甲的应付）。本函数做**集团级净额
+    配对**：取各账套折算后应收/应付净额，可抵消额 = min(应收合计, 应付合计)，
+    生成一笔集团级抵消建议。
+
+    ⚠️ 诚实边界：XErp 当前凭证明细无「对手方账套」维度，无法逐对手方精确配对，
+    故这是**集团级近似**——应收与应付不对称的差额可能来自外部往来或非对称内部
+    交易，必须 Boss 复核后再确认（不会臆测具体配对）。
+
+    返回结构含 ``draft_eliminations``（可直接喂回 ``consolidate`` 的消除项）、
+    ``total_receivables`` / ``total_payables`` / ``matched`` / 各 code 明细，
+    以及 ``notes`` 提示。
+    """
+    _ledger_sets(session, ledger_set_ids)
+    fx = {k: Decimal(str(v)) for k, v in (fx_rates or {}).items()}
+    agg, ccy = _aggregate_amounts(session, ledger_set_ids, year, month, fx)
+
+    ar_balances: dict[str, Decimal] = {}
+    ap_balances: dict[str, Decimal] = {}
+    for code, (d, c) in agg.items():
+        net = ending_balance(code, d, c)  # 正=资产借超 / 负债贷超
+        if code in DEFAULT_AR_ACCOUNTS and net > ZERO:
+            ar_balances[code] = net
+        if code in DEFAULT_AP_ACCOUNTS and net > ZERO:
+            ap_balances[code] = net
+
+    total_ar = sum(ar_balances.values(), ZERO)
+    total_ap = sum(ap_balances.values(), ZERO)
+    matched = min(total_ar, total_ap)
+
+    draft: list[dict] = []
+    notes: list[str] = []
+    if ar_balances and ap_balances and matched > ZERO:
+        ar_rep = max(ar_balances, key=lambda c: ar_balances[c])
+        ap_rep = max(ap_balances, key=lambda c: ap_balances[c])
+        # dr_code=应收(资产，借正→减借) / cr_code=应付(负债，贷正→减贷)：
+        # 两者各减 matched，配对归零内部往来（与 _apply_eliminations 的减借/减贷语义一致）。
+        draft.append({
+            "dr_code": ar_rep, "cr_code": ap_rep,
+            "amount": str(matched),
+        })
+    if total_ar == ZERO or total_ap == ZERO:
+        notes.append(
+            "集团内未识别到内部应收/应付余额，无需抵消"
+            "（或应收、应付在合并口径下均不为零的一方为空）"
+        )
+    if total_ar != total_ap:
+        notes.append(
+            f"应收({total_ar})与应付({total_ap})不对称，差额可能为外部往来或非对称"
+            f"内部交易，请 Boss 复核后再确认；本建议仅抵消可配对部分 {matched}。"
+        )
+    notes.append(
+        "本配对为集团级净额配对（未逐对手方），抵消建议在确认前请核对具体往来对象。"
+    )
+    denom = max(total_ar, total_ap, Decimal("1"))
+    return {
+        "period": {"year": year, "month": month},
+        "standard": standard,
+        "currency": ccy,
+        "receivables": {c: str(v) for c, v in ar_balances.items()},
+        "payables": {c: str(v) for c, v in ap_balances.items()},
+        "total_receivables": str(total_ar),
+        "total_payables": str(total_ap),
+        "matched": str(matched),
+        "unmatched_receivables": str(total_ar - matched),
+        "unmatched_payables": str(total_ap - matched),
+        "match_ratio": str(matched / denom),
+        "draft_eliminations": draft,
+        "notes": notes,
+    }
+
+
+def propose_coi_eliminations(
+    session: Session, ledger_set_ids: list[str], year: int, month: int,
+    standard: str = "small_business",
+    ownership: dict[str, object] | None = None,
+    fx_rates: dict[str, object] | None = None,
+    parent_id: str | None = None,
+) -> dict:
+    """长期股权投资与子公司权益抵销草稿（阶段1 / SAP COI 精神，只读草稿）。
+
+    对母公司账套的「长期股权投资」（``DEFAULT_INVESTMENT_ACCOUNTS``，如 1511）
+    与子公司账套的「所有者权益」（按 ``Account.category == 'equity'`` 识别，不依赖
+    映射前缀，更贴近真实账套）做配比抵销，并自动推算：
+      - 应享权益份额 = 持股 × 子公司权益总额（attributable）；
+      - 商誉 = 长期股权投资 − 应享权益份额（正=商誉，负=廉价购买）；
+      - 少数股东权益 = (1−持股) × 子公司权益总额（由 ``consolidate`` 的少数股权逻辑
+        处理，本草稿仅披露，不重复消除）。
+
+    每个子公司生成一组 ``suggested_eliminations``（借长投 / 贷子公司各权益科目按持股
+    比例），母公司长投若有剩余（商誉）且账套有商誉科目则单列一笔商誉消除使长投清零。
+    Boss 确认后把 ``all_suggested_eliminations`` 原样喂回 ``consolidate`` 即可。
+
+    ⚠️ 诚实边界：假设母公司长投 1511 **全部**对应所列子公司；多子公司时请分别运行或
+    拆分 1511（当前不做层级合并，见增强路线图阶段3）。
+
+    母公司识别：``parent_id`` 优先；否则取 ``ownership`` 中 ==1.0 的唯一账套，缺失或多
+    个则抛 ``ConsolidationError`` 要求显式指定。
+    """
+    ls_list = _ledger_sets(session, ledger_set_ids)
+    own = _normalize_ownership(ledger_set_ids, ownership)
+    fx = {k: Decimal(str(v)) for k, v in (fx_rates or {}).items()}
+
+    if parent_id:
+        if parent_id not in own:
+            raise ConsolidationError("parent_id 不在 ledger_set_ids 内")
+        parent = parent_id
+    else:
+        parents = [i for i, o in own.items() if o == Decimal("1")]
+        if len(parents) == 1:
+            parent = parents[0]
+        else:
+            # 多个全资（含全资子公司情形）：以「持有长期股权投资」的账套为母公司。
+            # 全资子公司场景下母子 ownership 都为 1.0，无法靠持股比例区分，
+            # 但母公司账套必然挂有长投余额，子公司不会，故可据此唯一确定。
+            inv_map: dict[str, Decimal] = {}
+            for ls in ls_list:
+                p_amts = amounts_by_code(session, ls.id, year, month)
+                inv = ZERO
+                for code in DEFAULT_INVESTMENT_ACCOUNTS:
+                    if code in p_amts:
+                        inv += ending_balance(code, *p_amts[code])
+                if inv > ZERO:
+                    inv_map[ls.id] = inv
+            if len(inv_map) == 1:
+                parent = next(iter(inv_map))
+            else:
+                raise ConsolidationError(
+                    "无法确定母公司：请指定 parent_id，或恰好一个账套 ownership=1 "
+                    "或持有长期股权投资"
+                )
+
+    # 所有非母公司的参与账套都视为被投资方（含全资子公司：持股 1.0 时
+    # 少数股权=0、应享权益=100%，长投与权益仍须抵消）。
+    subs = [i for i in ledger_set_ids if i != parent]
+    parent_ls = next(x for x in ls_list if x.id == parent)
+    notes: list[str] = []
+
+    # 母公司长期股权投资（折算后净额，正=借超）
+    p_amts = amounts_by_code(session, parent, year, month)
+    investment = ZERO
+    for code in DEFAULT_INVESTMENT_ACCOUNTS:
+        if code in p_amts:
+            investment += ending_balance(code, *p_amts[code])
+    goodwill_code = _find_goodwill_code(session, parent)
+
+    subs_out: list[dict] = []
+    all_elims: list[dict] = []
+    if not subs:
+        notes.append("未识别到子公司（持股<1 的账套），无需 COI 抵销")
+    for sub in subs:
+        sub_ls = next(x for x in ls_list if x.id == sub)
+        s_accs = {
+            a.code: a
+            for a in session.scalars(
+                select(Account).where(Account.ledger_set_id == sub)
+            )
+        }
+        s_amts = amounts_by_code(session, sub, year, month)
+        equity_items: list[tuple[str, Decimal]] = []
+        for code, a in s_accs.items():
+            if a.category != "equity":
+                continue
+            if code in s_amts:
+                net = ending_balance(code, *s_amts[code])
+                if net != ZERO:
+                    equity_items.append((code, net))
+        sub_equity = sum((net for _, net in equity_items), ZERO)
+        o = own[sub]
+        attributable = o * sub_equity
+        goodwill = investment - attributable          # 假设 1511 全对该子（多子不准）
+        minority = (Decimal("1") - o) * sub_equity
+
+        elims: list[dict] = []
+        for code, net in equity_items:
+            # 借长投（dr_code 减借）、贷子公司权益（cr_code 减贷），按持股比例配比
+            elims.append({
+                "dr_code": DEFAULT_INVESTMENT_ACCOUNTS[0],
+                "cr_code": code,
+                "amount": str(o * net),
+            })
+        # 长投与子公司权益的「配比部分」被抵消清零；剩余 goodwill（长投 − 应享权益）
+        # 作为披露项（_apply_eliminations 仅支持「减」余额，无法增记商誉，故不在消除
+        # 里造商誉科目，避免引入未定义科目或破坏表平衡）。请 Boss 确认前核对。
+        if goodwill != ZERO:
+            if goodwill > ZERO:
+                hint = (
+                    f"母公司账套有商誉科目 {goodwill_code}，可重分类"
+                    if goodwill_code else
+                    "母公司账套无商誉科目（建议建 1911），请手工重分类"
+                )
+                notes.append(
+                    f"子公司 {sub_ls.name} 存在商誉 {goodwill}（长投>应享权益）："
+                    f"{hint}；本草稿仅抵消配比部分，长投剩余额作残值披露"
+                )
+            else:
+                notes.append(
+                    f"子公司 {sub_ls.name} 出现负商誉（廉价购买）{abs(goodwill)}，"
+                    f"请 Boss 手工处理（本草稿不自动消除）"
+                )
+        all_elims.extend(elims)
+        subs_out.append({
+            "ledger_set_id": sub,
+            "name": sub_ls.name,
+            "ownership": str(o),
+            "equity_total": str(sub_equity),
+            "investment": str(investment),
+            "attributable": str(attributable),
+            "goodwill": str(goodwill),
+            "minority_interest": str(minority),
+            "equity_breakdown": [
+                {"code": c, "amount": str(net), "eliminate_amount": str(o * net)}
+                for c, net in equity_items
+            ],
+            "suggested_eliminations": elims,
+        })
+
+    if subs:
+        notes.append(
+            "假设母公司长期股权投资（1511）全部对应所列子公司；多子公司时请分别运行或"
+            "拆分 1511（当前不做层级合并，见增强路线图阶段3）。"
+        )
+    return {
+        "period": {"year": year, "month": month},
+        "standard": standard,
+        "currency": parent_ls.functional_currency or "CNY",
+        "parent": {
+            "ledger_set_id": parent,
+            "name": parent_ls.name,
+            "investment": str(investment),
+        },
+        "subsidiaries": subs_out,
+        "all_suggested_eliminations": all_elims,
+        "notes": notes,
     }
 
 

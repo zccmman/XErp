@@ -41,8 +41,14 @@ COA = {
     "1001": ("库存现金", "debit", "asset"),
     "1002": ("银行存款", "debit", "asset"),
     "1122": ("应收账款", "debit", "asset"),
+    "1511": ("长期股权投资", "debit", "asset"),
+    "1911": ("商誉", "debit", "asset"),
     "2202": ("应付账款", "credit", "liability"),
     "4001": ("实收资本", "credit", "equity"),
+    "4002": ("资本公积", "credit", "equity"),
+    "4101": ("盈余公积", "credit", "equity"),
+    "4103": ("本年利润", "credit", "equity"),
+    "4104": ("利润分配", "credit", "equity"),
     "6001": ("主营业务收入", "credit", "pnl"),
     "6602": ("管理费用", "debit", "pnl"),
 }
@@ -381,3 +387,191 @@ def test_posting_levels_is_readonly(session, env):
     before = len(session.scalars(select(Voucher)).all())
     CONS.consolidated_posting_levels(session, ids, YEAR, MONTH)
     assert len(session.scalars(select(Voucher)).all()) == before
+
+
+# ---------------------------------------------------------- 9. 阶段1 ICP 内部往来自动配对
+
+
+def _make_icp_pair(env, ar_amt: str, ap_amt: str):
+    """造一对内部账套：甲有应收 ar_amt，乙有应付 ap_amt（其余走权益/银行，账套平衡）。"""
+    from sqlalchemy.orm import Session as _S
+
+    engine = create_engine(env["url"])
+    with _S(engine) as s:
+        # 甲（应收方）：借应收账款 ar_amt，贷实收资本 ar_amt（资产=权益，平衡）
+        a_id = _make_entity(s, f"应收方{ar_amt}", [
+            {"code": "1122", "dr": ar_amt, "cr": "0"},
+            {"code": "4001", "dr": "0", "cr": ar_amt},
+        ])
+        # 乙（应付方）：借银行存款 ap_amt，贷应付账款 ap_amt（资产=负债，平衡）
+        b_id = _make_entity(s, f"应付方{ap_amt}", [
+            {"code": "1002", "dr": ap_amt, "cr": "0"},
+            {"code": "2202", "dr": "0", "cr": ap_amt},
+        ])
+        s.commit()
+    return a_id, b_id
+
+
+def test_propose_icp_pairs_and_apply(session, env):
+    a_id, b_id = _make_icp_pair(env, "100", "100")
+    res = CONS.propose_icp_eliminations(session, [a_id, b_id], YEAR, MONTH)
+    # 应收 100 == 应付 100 → 全额配对
+    assert Decimal(res["total_receivables"]) == Decimal("100")
+    assert Decimal(res["total_payables"]) == Decimal("100")
+    assert Decimal(res["matched"]) == Decimal("100")
+    assert len(res["draft_eliminations"]) == 1
+    _d = res["draft_eliminations"][0]
+    # dr_code=应收(1122 减借) / cr_code=应付(2202 减贷)，与 _apply_eliminations 语义一致
+    assert _d["dr_code"] == "1122" and _d["cr_code"] == "2202"
+    assert Decimal(_d["amount"]) == Decimal("100")
+    # 草稿喂回 consolidate 后，1122 与 2202 应抵消归零且表平衡
+    bs = CONS.consolidated_balance_sheet(
+        session, [a_id, b_id], YEAR, MONTH, eliminations=res["draft_eliminations"]
+    )
+    dr_sum = sum(
+        r["ending"] for grp in bs["consolidated"]["assets"]["items"]
+        for r in grp["accounts"] if r["code"] == "1122"
+    )
+    cr_sum = sum(
+        r["ending"] for grp in bs["consolidated"]["liabilities"]["items"]
+        for r in grp["accounts"] if r["code"] == "2202"
+    )
+    assert dr_sum == Decimal("0")
+    assert cr_sum == Decimal("0")
+    assert bs["balanced"] is True
+
+
+def test_propose_icp_asymmetric(session, env):
+    a_id, b_id = _make_icp_pair(env, "150", "100")  # 应收 150 > 应付 100
+    res = CONS.propose_icp_eliminations(session, [a_id, b_id], YEAR, MONTH)
+    assert Decimal(res["total_receivables"]) == Decimal("150")
+    assert Decimal(res["total_payables"]) == Decimal("100")
+    assert Decimal(res["matched"]) == Decimal("100")
+    assert Decimal(res["unmatched_receivables"]) == Decimal("50")
+    # 应收>应付：提示不对称（差额可能为外部往来）
+    assert any("不对称" in n for n in res["notes"])
+
+
+def test_propose_icp_is_readonly(session, env):
+    a_id, b_id = _make_icp_pair(env, "100", "100")
+    before = len(session.scalars(select(Voucher)).all())
+    CONS.propose_icp_eliminations(session, [a_id, b_id], YEAR, MONTH)
+    assert len(session.scalars(select(Voucher)).all()) == before
+
+
+# ---------------------------------------------------------- 10. 阶段1 COI 长投/权益抵销
+
+
+def _make_coi_group(env, parent_invest: str, sub_equity: list[dict],
+                    parent_has_goodwill: bool = True):
+    """造母公司 + 子公司一对。
+
+    parent_invest：母公司长投 1511 借方额（资金来自股东投入，资产内部转换，账套平衡）。
+    sub_equity：子公司权益 lines，如 [{"code":"4001","cr":"1000"},{"code":"4103","cr":"200"}]
+                子公司另收投资现金，借 1002 等额（保证账套平衡）。
+    """
+    from sqlalchemy.orm import Session as _S
+
+    engine = create_engine(env["url"])
+    with _S(engine) as s:
+        p_lines = [
+            {"code": "1002", "dr": parent_invest, "cr": "0"},
+            {"code": "4001", "dr": "0", "cr": parent_invest},
+            {"code": "1511", "dr": parent_invest, "cr": "0"},
+            {"code": "1002", "dr": "0", "cr": parent_invest},
+        ]
+        if parent_has_goodwill:
+            p_lines.append({"code": "1911", "dr": "0", "cr": "0"})  # 仅建科目(余额0)
+        p_id = _make_entity(s, "母公司P", p_lines)
+        sub_amt = sum(Decimal(str(e["cr"])) for e in sub_equity)
+        s_lines = [{"code": "1002", "dr": str(sub_amt), "cr": "0"}]
+        for e in sub_equity:
+            s_lines.append({"code": e["code"], "dr": "0", "cr": e["cr"]})
+        s_id = _make_entity(s, "子公司S", s_lines)
+        s.commit()
+    return p_id, s_id
+
+
+def test_propose_coi_wholly_owned_and_apply(session, env):
+    p_id, s_id = _make_coi_group(
+        env, parent_invest="1200", sub_equity=[
+            {"code": "4001", "cr": "1000"}, {"code": "4103", "cr": "200"},
+        ],
+    )
+    res = CONS.propose_coi_eliminations(
+        session, [p_id, s_id], YEAR, MONTH, ownership={s_id: "1.0"}
+    )
+    assert Decimal(res["parent"]["investment"]) == Decimal("1200")
+    sub = res["subsidiaries"][0]
+    assert Decimal(sub["equity_total"]) == Decimal("1200")
+    assert Decimal(sub["attributable"]) == Decimal("1200")
+    assert Decimal(sub["goodwill"]) == Decimal("0")        # 长投 == 应享权益
+    assert Decimal(sub["minority_interest"]) == Decimal("0")
+    # 消除：借 1511 / 贷 子公司各权益（按比例 1.0）
+    _elims = {(e["dr_code"], e["cr_code"]): Decimal(e["amount"])
+              for e in sub["suggested_eliminations"]}
+    assert _elims[("1511", "4001")] == Decimal("1000")
+    assert _elims[("1511", "4103")] == Decimal("200")
+    # 草稿喂回 consolidate：长投与子公司权益抵消，合并表平衡
+    bs = CONS.consolidated_balance_sheet(
+        session, [p_id, s_id], YEAR, MONTH, ownership={s_id: "1.0"},
+        eliminations=res["all_suggested_eliminations"],
+    )
+    # 1511（长投）应完全抵消为 0
+    inv_sum = sum(
+        r["ending"] for grp in bs["consolidated"]["assets"]["items"]
+        for r in grp["accounts"] if r["code"] == "1511"
+    )
+    assert inv_sum == Decimal("0")
+    assert bs["balanced"] is True
+
+
+def test_propose_coi_controlling_with_goodwill(session, env):
+    p_id, s_id = _make_coi_group(
+        env, parent_invest="1500", sub_equity=[
+            {"code": "4001", "cr": "1000"}, {"code": "4103", "cr": "200"},
+        ],
+    )
+    res = CONS.propose_coi_eliminations(
+        session, [p_id, s_id], YEAR, MONTH, ownership={s_id: "0.8"}
+    )
+    sub = res["subsidiaries"][0]
+    # 长投 1500，应享权益 0.8×1200=960，商誉=540
+    assert Decimal(sub["equity_total"]) == Decimal("1200")
+    assert Decimal(sub["attributable"]) == Decimal("960")
+    assert Decimal(sub["goodwill"]) == Decimal("540")
+    assert Decimal(sub["minority_interest"]) == Decimal("240")   # 0.2×1200
+    # 消除：仅子公司权益按 0.8 比例配比（商誉改为披露，不再造分录）
+    _elims = {(e["dr_code"], e["cr_code"]): Decimal(e["amount"])
+              for e in sub["suggested_eliminations"]}
+    assert _elims[("1511", "4001")] == Decimal("800")
+    assert _elims[("1511", "4103")] == Decimal("160")
+    assert ("1911", "1511") not in _elims   # 商誉不进消除，仅披露
+    # 商誉（长投>应享权益）应当在 notes 中披露，提示 Boss 手工重分类
+    assert any("商誉" in n and "540" in n for n in res["notes"])
+
+
+def test_propose_coi_requires_parent_clarification(session, env):
+    p1, s1 = _make_coi_group(
+        env, parent_invest="1200", sub_equity=[{"code": "4001", "cr": "1000"}],
+    )
+    # parent_id 不在 ledger_set_ids 内 → 应抛 ConsolidationError
+    try:
+        CONS.propose_coi_eliminations(
+            session, [p1, s1], YEAR, MONTH, parent_id="not_a_real_id"
+        )
+        assert False, "parent_id 非法时应抛 ConsolidationError"
+    except CONS.ConsolidationError:
+        pass
+
+
+def test_propose_coi_is_readonly(session, env):
+    p_id, s_id = _make_coi_group(
+        env, parent_invest="1200", sub_equity=[{"code": "4001", "cr": "1000"}],
+    )
+    before = len(session.scalars(select(Voucher)).all())
+    CONS.propose_coi_eliminations(
+        session, [p_id, s_id], YEAR, MONTH, ownership={s_id: "1.0"}
+    )
+    assert len(session.scalars(select(Voucher)).all()) == before
+
