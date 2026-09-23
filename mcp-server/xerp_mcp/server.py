@@ -1823,6 +1823,107 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except ArapError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    # ---------- 运营财务本体 + Copilot（Phase E / E1·E2） ----------
+
+    @mcp.tool()
+    def operating_partner_profile(
+        ledger_set_id: str,
+        dim_key: str,
+        partner: str,
+        as_of_date: str = "",
+    ) -> dict:
+        """往来单位一站式画像（只读）：把某客户/供应商的敞口/账龄/未清/待匹配/催收/对账聚合成一张卡（Phase E / E1）。
+
+        聚合 credit_exposure / aging_analysis / open_items / unmatched_receipts /
+        collections_draft / subledger_gl_reconcile（全部既有只读内核，ADR-002 单一真源），
+        不建投影、不改账。供 Copilot 与 Boss 一屏看全某往来单位运营财务健康度。
+        - dim_key：customer（应收）或 supplier（应付）；
+        - partner：往来单位名称（与凭证 aux_dims 里的客户/供应商值一致）；
+        - as_of_date：截止日期 ISO，空=今天。
+        返回 summary / aging / open_items / unmatched_receipts / collections / reconcile。
+        """
+        try:
+            from datetime import date as _date
+
+            from kernel.operating import partner_profile
+
+            _as = _date.fromisoformat(as_of_date) if as_of_date else None
+            with repo.session() as s:
+                return _ok(
+                    report=partner_profile(
+                        s, ledger_set_id=ledger_set_id, dim_key=dim_key,
+                        partner=partner, as_of_date=_as,
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
+            return _err("OPERATING_ERROR", str(e), {})
+
+    @mcp.tool()
+    def operating_graph_metrics(
+        ledger_set_id: str,
+        dim_key: str = "customer",
+        as_of_date: str = "",
+    ) -> dict:
+        """运营财务图谱指标（只读）：应收/应付总额、敞口 TopN、HHI 集中度、对账健康（Phase E / E1）。
+
+        复用 open_items（AR/AP 总额）/ credit_exposure（敞口 TopN + HHI）/ 
+        subledger_gl_reconcile（对账健康），全只读、不建投影（ADR-002）。
+        - dim_key：customer（应收口径，默认）或 supplier（应付口径）；
+        - as_of_date：截止日期 ISO，空=今天。
+        返回 ar_total / ap_total / exposure_topn / hhi / reconcile_health / breaches。
+        """
+        try:
+            from datetime import date as _date
+
+            from kernel.operating import graph_metrics
+
+            _as = _date.fromisoformat(as_of_date) if as_of_date else None
+            with repo.session() as s:
+                return _ok(
+                    report=graph_metrics(
+                        s, ledger_set_id=ledger_set_id, dim_key=dim_key,
+                        as_of_date=_as,
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
+            return _err("OPERATING_ERROR", str(e), {})
+
+    @mcp.tool()
+    def copilot_ask(
+        ledger_set_id: str,
+        question_zh: str,
+        as_of_date: str = "",
+        dim_key: str = "customer",
+    ) -> dict:
+        """实时 Copilot（只读）：中文自然语言问题 → 确定性意图路由 → 只读内核 → 结构化作答（Phase E / E2）。
+
+        走确定性路由（规则/关键词意图匹配 + 复用各只读内核），完全离线、可审计、零 LLM 成本；
+        未配置 LLM 也能跑。把问题路由到运营财务图谱 / 往来画像 / 对账 / 催收 / 待匹配 / 外币
+        等只读内核，输出 answer_zh（中文作答）+ intent + tool_calls（逐条溯源）+ evidence +
+        followups + severity。
+        严重项（授信超额 / 子账失配）自动经算子信号桥置 ALERT（复用跨进程桥，无需 websocket）；
+        推送 ≠ 执行，绝不写账。典型问法：「示例科技 全貌」「谁逾期了」「子账总账对账」
+        「应收敞口集中度」「还有哪些回款没匹配」。
+        - question_zh：中文问题；
+        - as_of_date：截止日期 ISO，空=今天；
+        - dim_key：全局意图默认维度（customer/supplier）。
+        """
+        try:
+            from datetime import date as _date
+
+            from kernel.copilot import ask as _copilot_ask
+
+            _as = _date.fromisoformat(as_of_date) if as_of_date else None
+            with repo.session() as s:
+                return _ok(
+                    report=_copilot_ask(
+                        s, ledger_set_id=ledger_set_id, question_zh=question_zh,
+                        as_of_date=_as, dim_key=dim_key,
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
+            return _err("COPILOT_ERROR", str(e), {})
+
     # ---------- 月结自动化 · 外币重估（Phase D / G7） ----------
 
     @mcp.tool()

@@ -112,6 +112,12 @@ STANDARD_EXTRA: tuple[str, ...] = (
     # 月结自动化 · 子账↔总账对账（Phase D / G9）：应收/应付控制科目 vs 客户/供应商
     # 明细余额之和，差异即漏挂往来单位的失配；只读、复用 arap 单一真源
     "reconcile_subledger_gl",
+    # 运营财务本体 + 实时 Copilot（Phase E / E1·E2）：运营财务图谱（往来单位一站式
+    # 画像 + 图谱指标）+ 确定性自然语言 Copilot；全部只读、复用 arap/credit 单一真源，
+    # 不改账、不建投影；Copilot 严重项经算子信号桥置 ALERT（推送≠执行）
+    "operating_partner_profile",
+    "operating_graph_metrics",
+    "copilot_ask",
     # 月结自动化 · 外币重估（Phase D / G7）：期末汇兑损益重估只读草稿，落库由
     # fx_revaluation_create（PRO_ONLY, HITL）执行；对标 SAP/Oracle 未实现汇兑损益
     "fx_revaluation_draft",
