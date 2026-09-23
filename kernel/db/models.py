@@ -288,3 +288,31 @@ class Balance(Base):
     dims_key: Mapped[str] = mapped_column(String(500), default="")
     debit_total: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
     credit_total: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
+
+
+class ArapClearing(Base):
+    """应收应付未清项核销记录（Phase A / G1）。
+
+    设计铁律（事件溯源 + ADR-002）：
+    - 核销**不是改写任何凭证或余额投影**，而是新增一条不可变记录，
+      关联「哪笔回款(payment_line_id) 清了哪张发票(invoice_line_id) 多少金额(amount)」。
+    - 未清项(open item) = 发票行金额 − 该发票已被核销覆盖的金额，
+      全部可由「凭证明细行 + arap_clearing 记录」完全重建（守单一真源）。
+    - invoice_line_id / payment_line_id 存凭证明细行 id（字符串，不跨表加 FK，
+      与 Balance.account_id 等既有约定一致）；内核做存在性与超额校验。
+    - source 标记来源：manual（人工）/ ai_proposed（AI 草稿确认）/ fifo_auto（兜底）。
+    """
+
+    __tablename__ = "arap_clearing"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ledger_set_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    dim_key: Mapped[str] = mapped_column(String(16), nullable=False)  # customer | supplier
+    partner: Mapped[str] = mapped_column(String(128), nullable=False)
+    invoice_line_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    payment_line_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    amount: Mapped[decimal.Decimal] = mapped_column(AMOUNT, nullable=False)
+    cleared_at: Mapped[date] = mapped_column(Date, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
+    created_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

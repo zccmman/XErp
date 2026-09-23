@@ -61,12 +61,14 @@ def test_fresh_upgrade_head_has_all_model_columns():
         _vl = _columns(db, "voucher_lines")
         assert {"currency", "fx_rate", "foreign_debit", "foreign_credit",
                 "quantity", "unit"} <= _vl, "② 外币/数量列必须由迁移提供"
+        assert _columns(db, "arap_clearing"), \
+            "Phase A 未清项核销表必须由迁移提供"
         con = sqlite3.connect(db)
         try:
             ver = con.execute("select version_num from alembic_version").fetchone()[0]
         finally:
             con.close()
-        assert ver == "0008_autonomy_grants"
+        assert ver == "0009_arap_clearing"
 
 
 def test_legacy_db_upgrade_is_idempotent():

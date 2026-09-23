@@ -1537,6 +1537,119 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except ArapError as e:
             return _err(e.code, e.message_zh, e.details)
 
+    @mcp.tool()
+    def arap_open_items(
+        ledger_set_id: str,
+        dim_key: str,
+        partner: str = "",
+        as_of_date: str = "",
+    ) -> dict:
+        """未清项清单（open-item 核销基础，只读）：列出每张未核销完的发票行。
+
+        与 SAP open-item 管理对齐——单据级核销，不依赖 FIFO 近似。每张未清项 =
+        发票金额 − 已核销额，完全由「凭证明细行 + arap_clearing 记录」重建
+        （ADR-002 单一真源），不新增任何会漂移的余额投影。未清项之和 == 往来余额
+        同口径（可逐客户复核）。
+        - dim_key：customer（应收未清）或 supplier（应付未清）；
+        - partner：往来单位名称，空=全部；
+        - as_of_date：截止日期 ISO，空=今天。
+        返回 items（逐张未清发票）+ totals（未清小计 + 按账龄分桶）。
+        """
+        try:
+            from datetime import date
+
+            from kernel.reporting.arap import ArapError, open_items
+
+            _as_of = date.fromisoformat(as_of_date) if as_of_date else None
+            if _as_of is None:
+                _as_of = date.today()
+            with repo.session() as s:
+                return _ok(
+                    report=open_items(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        dim_key=dim_key,
+                        partner=partner or None,
+                        as_of_date=_as_of,
+                    )
+                )
+        except ArapError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def arap_propose_clearing(
+        ledger_set_id: str,
+        dim_key: str,
+        partner: str = "",
+        as_of_date: str = "",
+    ) -> dict:
+        """核销草稿（只读、不落库）：为未核销的回款按「金额优先 + 最旧优先(FIFO 兜底)」
+        匹配未清发票，输出建议核销方案，供 Boss 确认后再调 arap_apply_clearing。
+
+        只产草稿、不改账——守住「AI 只产草稿，落账终态必须人类点头」红线。
+        这是 Phase C 收款自动匹配的种子：确认后的 assignments 可直接喂给 apply。
+        - dim_key：customer 或 supplier；
+        - partner：往来单位，空=全部；
+        - as_of_date：截止日期 ISO，空=今天。
+        返回 proposals：[{invoice_line_id, payment_line_id, amount}, ...] 及 basis 说明。
+        """
+        try:
+            from datetime import date
+
+            from kernel.reporting.arap import ArapError, propose_clearing
+
+            _as_of = date.fromisoformat(as_of_date) if as_of_date else None
+            if _as_of is None:
+                _as_of = date.today()
+            with repo.session() as s:
+                return _ok(
+                    report=propose_clearing(
+                        s,
+                        ledger_set_id=ledger_set_id,
+                        dim_key=dim_key,
+                        partner=partner or None,
+                        as_of_date=_as_of,
+                    )
+                )
+        except ArapError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def arap_apply_clearing(
+        ledger_set_id: str,
+        actor_id: str,
+        dim_key: str,
+        partner: str,
+        assignments: list[dict],
+        source: str = "manual",
+    ) -> dict:
+        """记录核销（业务动作，需 HITL 确认后调用）：把回款与发票做单据级核销。
+
+        新增**不可变** arap_clearing 记录，不改动任何凭证或余额投影；超额校验
+        （OVER_CLEAR_INVOICE / OVER_APPLY_PAYMENT）防止发票/回款被过度核销。
+        典型闭环：arap_propose_clearing（只读草稿）→ 人工确认 → 本工具落库。
+        - assignments：[{invoice_line_id, payment_line_id, amount}, ...]，amount 为字符串/数字；
+        - partner：核销双方必须同为往来单位；
+        - source：manual（人工）/ proposal（由 propose 确认）/ auto（Phase C 自动）。
+        返回新建核销记录摘要。落库走 repo.session() 自动提交。
+        """
+        try:
+            from kernel.reporting.arap import ArapError, record_clearing
+
+            with repo.session() as s:
+                rows = record_clearing(
+                    s,
+                    ledger_set_id=ledger_set_id,
+                    dim_key=dim_key,
+                    partner=partner,
+                    assignments=assignments,
+                    source=source,
+                    actor={"type": "user", "id": actor_id},
+                )
+                return _ok(records=rows, count=len(rows))
+        except ArapError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     # ---------- 发票 OCR（P2-03） ----------
 
     @mcp.tool()
