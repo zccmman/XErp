@@ -23,10 +23,11 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from kernel.anomaly import trip_breaker
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.copilot import ask
 from kernel.db.base import Base
-from kernel.db.models import Period
+from kernel.db.models import Period, Subject
 from kernel.posting import post_voucher
 from kernel.reporting.credit import set_credit_limit
 from kernel.seed import seed_demo_ledger
@@ -190,3 +191,60 @@ def test_mcp_copilot_ask_empty():
     out = asyncio.run(inner())
     assert out["ok"] is True
     assert out["report"]["intent"] == "overview"
+
+
+def _seed_simulation_data(sess, env):
+    """造「应收远大于月收入」的种子：AR 130k / AP 120k / 收入 10k。"""
+    _post(sess, env, [
+        {"account_code": "1122", "debit": "120000", "credit": "",
+         "aux_dims": {"customer": "示例科技"}},
+        {"account_code": "2202", "debit": "", "credit": "120000",
+         "aux_dims": {"supplier": "某供应商"}},
+    ])
+    _post(sess, env, [
+        {"account_code": "1122", "debit": "10000", "credit": "",
+         "aux_dims": {"customer": "示例科技"}},
+        {"account_code": "6001", "debit": "", "credit": "10000"},
+    ])
+
+
+def test_route_what_if(sess, env):
+    _seed_simulation_data(sess, env)
+    out = ask(sess, ledger_set_id=env["ledger_set_id"],
+              question_zh="如果加速回款会怎样", as_of_date=date(2026, 8, 31))
+    assert out["intent"] == "what_if"
+    assert "what_if" in out["evidence"]
+    assert out["evidence"]["what_if"]["variants"]
+    assert out["severity"] == "NORMAL"
+    assert any(tc["tool"] == "forecast_statements" for tc in out["tool_calls"])
+
+
+def test_route_healing(sess, env):
+    out = ask(sess, ledger_set_id=env["ledger_set_id"],
+              question_zh="异常怎么处理", as_of_date=date(2026, 8, 31))
+    assert out["intent"] == "healing"
+    assert "healing" in out["evidence"]
+    assert out["evidence"]["healing"]["suggestions"] is not None
+
+
+def test_route_healing_alert_with_breaker(sess, env, tmp_path):
+    # 准备 agent 主体并跳闸（setup 副作用），healing 应汇总为 critical → ALERT
+    agent = Subject(id="agent_y", type="agent", display_name="bot")
+    sess.add(agent)
+    sess.commit()
+    trip_breaker(
+        sess, subject_id="agent_y",
+        reasons=["large_amount: 测试跳闸"], actor={"id": "u1", "type": "user"},
+    )
+    sess.commit()
+
+    os.environ["XERP_OPERATOR_STATE_FILE"] = str(tmp_path / "op.json")
+    try:
+        out = ask(sess, ledger_set_id=env["ledger_set_id"],
+                  question_zh="异常怎么处理", as_of_date=date(2026, 8, 31))
+        assert out["severity"] == "ALERT"
+        assert out["evidence"]["healing"]["breaker_open_count"] >= 1
+        raw = json.loads(Path(os.environ["XERP_OPERATOR_STATE_FILE"]).read_text(encoding="utf-8"))
+        assert raw["state"] == "alert"
+    finally:
+        os.environ.pop("XERP_OPERATOR_STATE_FILE", None)

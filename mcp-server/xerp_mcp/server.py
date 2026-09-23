@@ -1924,6 +1924,70 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except Exception as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
             return _err("COPILOT_ERROR", str(e), {})
 
+    @mcp.tool()
+    def what_if_simulation(
+        ledger_set_id: str,
+        base_year: int,
+        base_month: int,
+        horizon: int = 12,
+        levers: list = None,
+        standard: str = "",
+    ) -> dict:
+        """情景推演 what-if（只读）：以指定上期末实际三表为种子，跑基准 + 各杠杆情景对比（Phase E / E3）。
+
+        复用 kernel.forecast 纯函数（extract_seed_from_actuals + forecast_statements），
+        不改账、不建投影（ADR-002）。levers 为预设名列表（如 ["ar_acceleration","margin_compression"]）
+        或自定义覆盖字典混合；不传则仅返回基准。返回 baseline / variants(每杠杆) /
+        impact(逐指标 delta：期末现金/净利润/应收/应付/经营现金流/总资产) / impact_summary /
+        tool_calls 溯源。
+        - base_year / base_month：种子期间（上期末实际数）；
+        - horizon：外推期数（默认 12，月步长）；
+        - levers：预设杠杆名或 {"字段": 值} 覆盖；可用名见 preset_lever_names()。
+        """
+        try:
+            from kernel.simulation import preset_lever_names, what_if
+
+            _levers = levers or []
+            with repo.session() as s:
+                return _ok(
+                    report=what_if(
+                        s, ledger_set_id=ledger_set_id, base_year=base_year,
+                        base_month=base_month, horizon=horizon, levers=_levers,
+                        standard=standard or None,
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
+            return _err("SIMULATION_ERROR", str(e), {})
+
+    @mcp.tool()
+    def anomaly_healing_suggestions(
+        ledger_set_id: str,
+        voucher_id: str = "",
+        lookback_days: int = 30,
+    ) -> dict:
+        """异常自愈建议（只读 HITL 动作清单）：基于 anomaly.rule_scan 确定性规则扫描，出整改建议（Phase E / E4）。
+
+        只读、不跳闸（绝不自动修复，HITL + O11 红线：Agent 不能自解断路器）。把每个规则命中映射为
+        human_approval_required=True 的整改建议草稿（suggested_action_zh + draft_payload），并汇总当前
+        open 的 Agent 断路器复核建议。严重项（critical / 断路器开）由 Copilot 联动算子置 ALERT。
+        - voucher_id：指定凭证则只扫该张；空则扫账套近 lookback_days 天创建的凭证；
+        - 返回 suggestions（含 action_id / severity / suggested_action_zh / draft_payload /
+          human_approval_required / auto_executable）/ breaker_open_count / severity_rank / tool_calls。
+        """
+        try:
+            from kernel.healing import healing_suggestions
+
+            _vid = voucher_id or None
+            with repo.session() as s:
+                return _ok(
+                    report=healing_suggestions(
+                        s, ledger_set_id=ledger_set_id, voucher_id=_vid,
+                        lookback_days=lookback_days,
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
+            return _err("HEALING_ERROR", str(e), {})
+
     # ---------- 月结自动化 · 外币重估（Phase D / G7） ----------
 
     @mcp.tool()

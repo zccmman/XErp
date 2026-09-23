@@ -3,11 +3,11 @@
 设计铁律（项目「确定性优先、离线、可审计」）：
 - 自然语言理解内核走**确定性路由**——规则/关键词意图匹配 + 复用各只读内核；
   完全离线、可审计、零 LLM 成本；未配置 LLM 也能跑（与 ADR 一致）。
-- ``ask()`` 把中文问题路由到 operating / arap / credit / foreign 的只读内核，
-  输出 {answer_zh, intent, tool_calls, evidence, followups, severity}。
+- ``ask()`` 把中文问题路由到 operating / arap / credit / foreign / simulation / healing
+  的只读内核，输出 {answer_zh, intent, tool_calls, evidence, followups, severity}。
 - 每条数字都来自被调用的只读内核（ADR-002 单一真源），``tool_calls`` 逐条溯源。
-- 严重项（信用超额 / 子账失配）→ 经 ``operator.signal(ALERT)`` 联动算子（E5，
-  复用跨进程信号桥，无需 websocket）；推送 ≠ 执行，不改账。
+- 严重项（信用超额 / 子账失配 / 异常自愈 critical）→ 经 ``operator.signal(ALERT)``
+  联动算子（E5，复用跨进程信号桥，无需 websocket）；推送 ≠ 执行，不改账。
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ from kernel.reporting.arap import (
 )
 from kernel.reporting.credit import collections_draft, credit_exposure
 from kernel.reporting.foreign import foreign_trial_balance
+from kernel.healing import healing_suggestions
+from kernel.simulation import what_if as _what_if_simulation
 
 ZERO = Decimal("0.00")
 
@@ -40,6 +42,35 @@ _UNMATCHED_KW = ("待匹配", "未匹配", "回款待", "没匹配", "回款没"
 _FOREIGN_KW = ("外币", "汇率", "汇兑", "重估", "外汇", "fx", "外币户")
 _OVERVIEW_KW = ("总览", "全貌", "健康", "指标", "集中度", "敞口", "一览", "概览",
                 "全屏", "看板", "概貌", "全景", "授信", "超额", "风险", "体检", "汇总")
+
+# 情景推演（E3）：识别「如果…会怎样」「加速回款」「毛利下降」等假设性提问
+_WHATIF_KW = ("如果", "假如", "假设", "会怎样", "会如何", "影响", "测算", "情景",
+              "推演", "模拟", "压力测试", "敏感性", "加速回款", "缩短应收", "延长付款",
+              "拖延付款", "占用供应商", "毛利", "降价", "毛利率", "增长停滞", "不增长",
+              "成本上升", "费用上升", "资本开支", "扩产", "capex", "what-if", "whatif")
+# 异常自愈（E4）：识别「异常怎么处理」「整改建议」「风控建议」等
+_HEALING_KW = ("异常", "自愈", "修复", "整改", "建议", "怎么处理", "怎么办",
+               "healing", "heal", "风控建议", "风险建议", "排查", "风险点")
+
+
+def _parse_whatif_levers(q: str) -> list[str]:
+    """从问题中识别具体杠杆；未指定具体杠杆时返回默认敏感性组合。"""
+    mapping = [
+        (("加速回款", "缩短应收", "回款快", "加快回款"), "ar_acceleration"),
+        (("延长付款", "拖延付款", "占用供应商", "晚付", "拖延"), "ap_extension"),
+        (("毛利", "降价", "毛利率"), "margin_compression"),
+        (("增长停滞", "不增长", "零增长", "增长放缓"), "growth_halt"),
+        (("成本上升", "费用上升", "费用增加", "成本增加"), "cost_inflation"),
+        (("资本开支", "扩产", "capex", "投资"), "capex_surge"),
+    ]
+    hit: list[str] = []
+    for keys, name in mapping:
+        if any(k in q for k in keys):
+            hit.append(name)
+    if not hit:
+        # 未指定具体杠杆 → 默认跑一套典型压力情景（敏感性分析）
+        return ["ar_acceleration", "ap_extension", "margin_compression", "growth_halt"]
+    return hit
 
 
 def _known_partners_with_dim(
@@ -85,6 +116,10 @@ def _route(
         return "unmatched", {}
     if any(k in q for k in _FOREIGN_KW):
         return "foreign", {}
+    if any(k in q for k in _HEALING_KW):
+        return "healing", {}
+    if any(k in q for k in _WHATIF_KW):
+        return "what_if", {"levers": _parse_whatif_levers(q)}
     if any(k in q for k in _OVERVIEW_KW):
         return "overview", {}
     return "overview", {}
@@ -326,6 +361,91 @@ def _answer_foreign(params, session, ledger_set_id, as_of_date) -> dict[str, Any
     }
 
 
+def _answer_whatif(params, session, ledger_set_id, as_of_date) -> dict[str, Any]:
+    lp = _latest_period(session, ledger_set_id)
+    parts = ["【情景推演 what-if · 基准 vs 杠杆（E3）】"]
+    if lp is None:
+        parts.append("· 账套无期间，无法定位基准种子（实际三表）。")
+        return {
+            "answer_zh": "\n".join(parts), "tool_calls": [], "evidence": {},
+            "followups": ["先确保账套存在 OPEN 期间"], "severity": "NORMAL",
+        }
+    levers = params.get("levers", [])
+    res = _what_if_simulation(
+        session, ledger_set_id=ledger_set_id, base_year=lp[0], base_month=lp[1],
+        horizon=12, levers=levers,
+    )
+    base_last = res["baseline"]["periods"][-1]
+    base_cash = Decimal(str(base_last["balance_sheet"]["cash"]))
+    base_np = Decimal(str(base_last["income_statement"]["net_profit"]))
+    parts.append(
+        f"· 基准（{res['base_period']['year']}-{res['base_period']['month']:02d} 起 12 期）："
+        f"期末现金 {base_cash:.2f}，累计净利润 {base_np:.2f}"
+    )
+    for name, v in res["variants"].items():
+        imp = v["impact"]
+        dc = imp["closing_cash"]["delta"]
+        dn = imp["net_profit"]["delta"]
+        parts.append(
+            f"· {v['description_zh']} → 期末现金 Δ{dc} ，累计净利润 Δ{dn}"
+        )
+    followups = [
+        "查看 运营财务总览",
+        "运行 应收应付账龄",
+        "运行 异常自愈建议（healing）",
+    ]
+    return {
+        "answer_zh": "\n".join(parts),
+        "tool_calls": res["tool_calls"],
+        "evidence": {"what_if": res},
+        "followups": followups,
+        "severity": "NORMAL",
+    }
+
+
+def _answer_healing(params, session, ledger_set_id, as_of_date) -> dict[str, Any]:
+    res = healing_suggestions(
+        session, ledger_set_id=ledger_set_id, lookback_days=30
+    )
+    parts = [
+        f"【异常自愈建议 · HITL 动作清单（E4）· 扫描 {res['scanned_vouchers']} 张凭证】"
+    ]
+    parts.append(
+        f"· 检出规则命中 {res['findings_count']} 条；生成待人工确认建议 "
+        f"{len(res['suggestions'])} 条（全部 human_approval_required=True，绝不自动执行）"
+    )
+    for s in res["suggestions"][:6]:
+        if s.get("rule"):
+            parts.append(
+                f"  - [{s['severity']}] {s['rule']}（凭证 {s['source_voucher_no']}）："
+                f"{s['suggested_action_zh']}"
+            )
+        else:
+            parts.append(
+                f"  - [{s['severity']}] 断路器 {s.get('subject_id', '')}："
+                f"{s['suggested_action_zh']}"
+            )
+    if res["breaker_open_count"]:
+        parts.append(
+            f"· ⚠️ {res['breaker_open_count']} 个 Agent 断路器处于「开」状态，"
+            f"需 admin 人工复核后 anomaly_release（O11：Agent 不能自解）"
+        )
+    rank = res["severity_rank"]
+    severity = "ALERT" if rank in ("critical", "warn") else "NORMAL"
+    followups = [
+        "查看 运营财务总览",
+        "运行 应收应付账龄",
+        "运行 子账总账对账",
+    ]
+    return {
+        "answer_zh": "\n".join(parts),
+        "tool_calls": res["tool_calls"],
+        "evidence": {"healing": res},
+        "followups": followups,
+        "severity": severity,
+    }
+
+
 # ------------------------------------------------------------ 主入口
 
 
@@ -347,9 +467,10 @@ def ask(
     if not question:
         return {
             "answer_zh": "请描述你想了解的运营财务问题，例如："
-                         "「示例科技 全貌」「谁逾期了」「子账总账对账」「应收敞口集中度」。",
+                         "「示例科技 全貌」「谁逾期了」「子账总账对账」「应收敞口集中度」"
+                         "「如果加速回款会怎样」「异常怎么处理」。",
             "intent": "empty", "tool_calls": [], "evidence": {},
-            "followups": ["查看 运营财务总览", "查看 逾期催收草稿"],
+            "followups": ["查看 运营财务总览", "如果加速回款会怎样", "异常怎么处理"],
             "severity": "NORMAL",
         }
     if as_of_date is None:
@@ -367,6 +488,10 @@ def ask(
         out = _answer_unmatched(params, session, ledger_set_id, as_of_date, dim_key)
     elif intent == "foreign":
         out = _answer_foreign(params, session, ledger_set_id, as_of_date)
+    elif intent == "what_if":
+        out = _answer_whatif(params, session, ledger_set_id, as_of_date)
+    elif intent == "healing":
+        out = _answer_healing(params, session, ledger_set_id, as_of_date)
     else:  # overview
         out = _answer_overview(params, session, ledger_set_id, as_of_date, dim_key)
 
