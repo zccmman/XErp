@@ -100,6 +100,17 @@ def enforce(session: Session, *, actor_id: str, ledger_set_id: str, action: str)
         )
 
 
+def list_role_members(session: Session, *, ledger_set_id: str, role: str) -> list[str]:
+    """返回某账套下拥有某角色的主体 id 列表（P0-4 审批人解析用）。
+
+    用于把「reviewer/admin 角色」反查成内核 Subject id 候选，供
+    kernel.approval.resolve_reviewer 构造 fallback（reviewer 在前、admin 在后）。
+    空列表 = 该账套未授予该角色。
+    """
+    e = get_enforcer(session)
+    return list(e.get_users_for_role_in_domain(role, ledger_set_id))
+
+
 def check_agent_quota(session: Session, *, actor_id: str,
                       voucher_amount: Decimal) -> None:
     """Agent 自治额度：type=agent 且配置了 daily_voucher_limit 时，

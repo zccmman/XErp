@@ -56,7 +56,7 @@ def test_fresh_upgrade_head_has_all_model_columns():
         v = _columns(db, "vouchers")
         assert {"required_signers", "signatures"} <= v, "G1 签字列必须由迁移提供"
         assert "attrs" in _columns(db, "accounts"), "阶段1本体属性列"
-        assert {"daily_voucher_limit", "quota_currency"} <= _columns(db, "subjects")
+        assert {"daily_voucher_limit", "quota_currency", "external_ref"} <= _columns(db, "subjects")
         # ② 外币/数量核算列必须由迁移提供（漏写迁移会让老库查询 500）
         _vl = _columns(db, "voucher_lines")
         assert {"currency", "fx_rate", "foreign_debit", "foreign_credit",
@@ -70,7 +70,7 @@ def test_fresh_upgrade_head_has_all_model_columns():
             ver = con.execute("select version_num from alembic_version").fetchone()[0]
         finally:
             con.close()
-        assert ver == "0010_party_credit_limit"
+        assert ver == "0011_subject_external_ref"
 
 
 def test_legacy_db_upgrade_is_idempotent():
@@ -119,7 +119,7 @@ def test_legacy_db_upgrade_is_idempotent():
         _alembic_stamp(f"sqlite:///{db}", "0003")
         _alembic_upgrade(f"sqlite:///{db}")  # 0004-0007
         assert {"required_signers", "signatures"} <= _columns(db, "vouchers")
-        assert {"daily_voucher_limit", "quota_currency"} <= _columns(db, "subjects")
+        assert {"daily_voucher_limit", "quota_currency", "external_ref"} <= _columns(db, "subjects")
         assert "attrs" in _columns(db, "accounts")
         _vl = _columns(db, "voucher_lines")
         assert {"currency", "fx_rate", "foreign_debit", "foreign_credit",

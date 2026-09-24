@@ -34,6 +34,7 @@ if str(REPO) not in sys.path:
 from sqlalchemy import create_engine, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
+from kernel.approval import bind_subject_external_ref  # noqa: E402
 from kernel.authz import grant_ledger_role  # noqa: E402
 from kernel.coa import import_chart_of_accounts, load_template_rows  # noqa: E402
 from kernel.copilot import ask as copilot_ask  # noqa: E402
@@ -83,6 +84,8 @@ def init_project(
     ledger_name: str = "我的账套",
     owner_name: str = "老板",
     accounting_standard: str = "small_business",
+    owner_ref: str = "",
+    reviewer_ref: str = "",
 ) -> dict:
     """把一个目录初始化为「XErp 账套项目」。幂等：重复调用直接 replayed=true。
 
@@ -144,7 +147,13 @@ def init_project(
         grant_ledger_role(s, ledger_set_id=ls.id, subject_id=owner.id, role="admin")
         grant_ledger_role(s, ledger_set_id=ls.id, subject_id=reviewer.id, role="accountant")
         grant_ledger_role(s, ledger_set_id=ls.id, subject_id=reviewer.id, role="reviewer")
+        # WB 原生审批闭环（P0-3）：可选绑定外部身份键（WB user id / 飞书 open_id 等）
+        if owner_ref:
+            bind_subject_external_ref(s, subject_id=owner.id, external_ref=owner_ref)
+        if reviewer_ref:
+            bind_subject_external_ref(s, subject_id=reviewer.id, external_ref=reviewer_ref)
         # commit 会 expire 属性；会话关闭前捕获 id，避免 DetachedInstanceError
+        s.commit()
         ls_id, owner_id, reviewer_id = ls.id, owner.id, reviewer.id
 
     manifest = {
@@ -297,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
     ap_init.add_argument("--name", default="我的账套")
     ap_init.add_argument("--owner", default="老板")
     ap_init.add_argument("--standard", default="small_business")
+    ap_init.add_argument("--owner-ref", default="", help="老板外部身份键（WB user id 等）")
+    ap_init.add_argument("--reviewer-ref", default="", help="审批人外部身份键")
 
     ap_ask = sub.add_parser("ask", help="只读问答（确定性 Copilot，零 MCP 依赖）")
     ap_ask.add_argument("project_dir")
@@ -313,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
             ledger_name=args.name,
             owner_name=args.owner,
             accounting_standard=args.standard,
+            owner_ref=args.owner_ref,
+            reviewer_ref=args.reviewer_ref,
         )
         print(json.dumps(m, ensure_ascii=False, indent=2))
         return 0

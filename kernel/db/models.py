@@ -70,6 +70,10 @@ class Subject(Base):
     type: Mapped[str] = mapped_column(String(8))  # user | agent
     display_name: Mapped[str] = mapped_column(String(100))
     autonomy_level: Mapped[int] = mapped_column(Integer, default=1)  # L0-L3（ADR-004）
+    # WB 原生审批闭环（P0-4 / P0-3）：外部身份映射（WB user id / 飞书 open_id /
+    # 企微 userid）。NULL=未绑定。仅作「外部通道 → 内核人主体」的解析键，
+    # 不参与任何授权判定（授权仍由内核 Subject.type 派生，见 state._subject_type）。
+    external_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, default="")
     # P1-03：Agent 自治额度（仅 type=agent 生效；NULL=不限）
     daily_voucher_limit: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True

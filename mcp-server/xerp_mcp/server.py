@@ -665,6 +665,73 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("WECOM_ERROR", str(e))
 
     @mcp.tool()
+    def workbuddy_send_approval(
+        voucher_id: str,
+        wb_member_ref: str = "",
+        actor_id: str = "",
+    ) -> dict:
+        """把待审凭证推送到 WorkBuddy 项目协作审批（PUSHED 状态凭证）。
+
+        与飞书/企微卡片并列的第三通道（P0-4 WB 原生 HITL 闭环）：仅做「通知 +
+        身份解析 + 路由留痕」，不改凭证状态——终态审批由审批人在 WB 内回复后，
+        经 approve_voucher/reject_voucher 回流内核（红线全部复用）。
+
+        - wb_member_ref：手动指定审批人的外部 id（WB user id 等）；缺省按账套角色自动
+          解析（reviewer 角色优先，无则 admin 降级，见 kernel.approval.resolve_reviewer）。
+        - 路由动作写 VOUCHER_ROUTED 事件留痕，可追溯「经哪条通道送达」。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.approval import route_to_workbuddy
+                from kernel.authz import list_role_members
+
+                v = s.get(Voucher, voucher_id)
+                if v is None:
+                    return _err("VOUCHER_NOT_FOUND", f"凭证 {voucher_id} 不存在")
+                reviewers = list_role_members(
+                    s, ledger_set_id=v.ledger_set_id, role="reviewer"
+                )
+                admins = list_role_members(
+                    s, ledger_set_id=v.ledger_set_id, role="admin"
+                )
+                routed = route_to_workbuddy(
+                    s,
+                    voucher_id=voucher_id,
+                    actor={"type": "user", "id": actor_id or "workbuddy-channel"},
+                    channel="workbuddy",
+                    wb_member_ref=wb_member_ref or None,
+                    fallback_subject_ids=list(reviewers) + list(admins),
+                )
+                return _ok(
+                    voucher=_brief(v),
+                    sent_to=routed["reviewer"].id,
+                    sent_to_name=routed["reviewer"].display_name,
+                    notice=routed["notice"],
+                )
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def workbuddy_bind_member(subject_id: str, external_ref: str) -> dict:
+        """把 WorkBuddy 成员（WB user id）绑定到内核人主体 Subject（P0-4 身份映射）。
+
+        绑定后该 WB 成员即可作为审批人经 WB 通道接收/处理审批。幂等：重复绑定同值
+        无副作用，换值覆盖。external_ref 仅作「外部通道 → 内核人主体」解析键，
+        不参与任何授权判定（授权仍由内核 Subject.type 派生）。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.approval import bind_subject_external_ref
+
+                subj = bind_subject_external_ref(
+                    s, subject_id=subject_id, external_ref=external_ref
+                )
+                s.flush()
+                return _ok(subject_id=subj.id, external_ref=subj.external_ref or "")
+        except PostingError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
     def wecom_send(content: str, msg_type: str = "text", user: str = "") -> dict:
         """企业微信通知推送：text 或 markdown（agent 主动汇报用）。
 

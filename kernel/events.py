@@ -33,6 +33,9 @@ class E(StrEnum):
     # D7 多级签字：每个签字位的签署事件（Subject×角色×凭证）。
     # 全部 required_signers 签署 approved 后，由 kernel.signing 触发 VOUCHER_APPROVED。
     VOUCHER_SIGNED = "VOUCHER_SIGNED"
+    # P0-4：审批请求经某条外部通道（WorkBuddy / 飞书 / 企微）送达审批人。
+    # 仅记录「经哪条通道送达」，不改 voucher.status（终态仍由 transition 守护）。
+    VOUCHER_ROUTED = "VOUCHER_ROUTED"
 
     # ---------- 账务规则执行 ----------
     OPENING_BALANCE_IMPORTED = "OPENING_BALANCE_IMPORTED"
@@ -74,6 +77,7 @@ DESCRIPTIONS: dict[E, str] = {
     E.VOUCHER_REJECTED: "凭证审批驳回（退回制单人修改）",
     E.VOUCHER_WITHDRAWN: "凭证制单人撤回（审批前自行收回）",
     E.VOUCHER_SIGNED: "凭证签字位签署（多级签字）",
+    E.VOUCHER_ROUTED: "凭证审批请求经外部通道送达（WorkBuddy/飞书/企微）",
     E.OPENING_BALANCE_IMPORTED: "期初余额导入",
     E.OPENING_BALANCE_REVERSED: "期初余额红字冲销（force 重导前置）",
     E.CLOSING_EXECUTED: "期末损益结转执行",
