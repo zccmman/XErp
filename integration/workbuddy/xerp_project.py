@@ -34,7 +34,7 @@ if str(REPO) not in sys.path:
 from sqlalchemy import create_engine, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
-from kernel.approval import bind_subject_external_ref  # noqa: E402
+from kernel.approval import bind_subject_external_ref, resolve_reviewer  # noqa: E402
 from kernel.authz import grant_ledger_role  # noqa: E402
 from kernel.coa import import_chart_of_accounts, load_template_rows  # noqa: E402
 from kernel.copilot import ask as copilot_ask  # noqa: E402
@@ -275,6 +275,26 @@ def doctor(project_dir: str | Path) -> dict:
                     f"intent={res.get('intent')} severity={res.get('severity')}",
                 )
                 _add("08_readonly_guarantee", n_before == n_after, f"凭证数 {n_before}→{n_after}")
+
+                # WB 审批通道可用性：审批路由基板是否就绪（内核级，不依赖 MCP/WB）
+                try:
+                    reviewer_subject = resolve_reviewer(
+                        s,
+                        ledger_set_id=ls.id,
+                        fallback_subject_ids=[
+                            m.get("reviewer_subject_id", ""),
+                            m.get("owner_subject_id", ""),
+                        ],
+                    )
+                    _add(
+                        "09_wb_approval_channel",
+                        reviewer_subject is not None,
+                        f"审批路由可用 → {reviewer_subject.display_name}"
+                        if reviewer_subject is not None
+                        else "审批路由解析为空",
+                    )
+                except Exception as exc:
+                    _add("09_wb_approval_channel", False, f"审批路由不可用: {exc}")
     except Exception as exc:
         _add("09_session", False, f"会话/冒烟异常: {exc}")
 

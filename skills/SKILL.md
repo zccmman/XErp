@@ -67,6 +67,19 @@ description: >
 6. **post_voucher**：过账（APPROVED→POSTED），借贷不平衡在这里会被第二次硬拒。
 7. **query_balances** 回读该科目发生额，向用户展示结果。
 
+## WB 原生审批闭环（P0-4，WorkBuddy 项目内审批）
+
+在 WorkBuddy 项目里，审批走「原生协作」而非外部卡片：AI 把待审凭证**路由**到审批人，
+由人类在 WB 项目内点头。
+
+- `workbuddy_send_approval(voucher_id, wb_member_ref?, actor_id)`：仅 PUSHED 凭证可用，把审批请求
+  通知到审批人 WB 身份（写 `VOUCHER_ROUTED` 事件 + 返回深链 `xerp://voucher/<id>`），**只读通知，不改状态**。
+  审批人解析优先级：`wb_member_ref`（手动指定外部键）→ 账套 reviewer 角色主体 → admin 兜底；都不中报 `NO_REVIEWER`。
+- 人类确认后，用**审批人** actor_id 调 `approve_voucher`（或 `reject_voucher`）；制单人 ≠ 审批人，内核强制。
+- `workbuddy_bind_member(subject_id, external_ref)`：把 WB user id 绑定到内核主体（身份映射键，不参与授权判定）。
+  建账时 `init_ledger_set` 的 `--owner-ref/--reviewer-ref` 已自动绑定；缺失可补绑。
+- 智能体职责：push 后主动调 `workbuddy_send_approval`；收到人类确认再 approve/reject。**绝不自审、绝不无确认过账。**
+
 ## 撤销（用户说「这笔错了，撤了吧」）
 
 `cancel_post_voucher`（POSTED→DRAFT）：仅未结账期间可用；
@@ -93,3 +106,5 @@ description: >
 | cancel_post_voucher | 撤销 POSTED→DRAFT（未结账期间） |
 | get_voucher | 凭证详情 |
 | query_balances | 期间发生额投影 |
+| workbuddy_send_approval | 把待审凭证路由到审批人 WB 身份（PUSHED 才可用，只读通知） |
+| workbuddy_bind_member | 绑定 WB user id ↔ 内核主体（身份映射） |

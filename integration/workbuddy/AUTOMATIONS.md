@@ -36,4 +36,16 @@
 本项目是 XErp 账套（项目目录 <项目目录>）。请只读执行 unmatched_receipts 与
 propose_receipt_match，输出「未匹配收款清单 + 建议匹配（含置信度与证据）」。
 约束：匹配落地必须由人类在 arap_apply_clearing 前确认，AI 不自动核销。
+
+## 4. 审批待办巡检（建议：每工作日 10:00，recurring）
+
+提示词：
+
+```text
+本项目是 XErp 账套（项目目录 <项目目录>）。请只读执行审批待办巡检：
+1) 通过 MCP copilot_ask 询问「当前账套有哪些待审批（PUSHED）凭证？」，整理出凭证号 / 金额 / 制单人清单；
+2) 若发现 PUSHED 凭证，用 sprite_push（或 WB 项目消息）向审批人发送提醒：「有 N 张凭证待你审批，请在 WB 项目内打开深链 xerp://voucher/<id> 确认」；
+3) 输出「待审批清单 + 已提醒对象」。
+约束：只读 + 提醒，绝不 approve / post / reject；若 copilot_ask 未覆盖该意图，仍须向审批人发送通用提醒，不得臆造凭证数据。
+```
 ```

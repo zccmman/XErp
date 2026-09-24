@@ -26,6 +26,13 @@
    `python integration/workbuddy/xerp_project.py doctor <本项目目录>`（环境自检）
 3. 两者都不可用时：明确告知用户环境异常，**不要臆造任何数字**。
 
+## WB 原生审批闭环（P0-4）
+本项目启用 WorkBuddy 原生审批：**AI 只产草稿，终态由人类在 WB 项目内点头**。
+- 闭环：`create_voucher`（草稿）→ `push_voucher`（PUSHED 待审）→ 调 `workbuddy_send_approval(voucher_id)` 把审批请求路由到审批人 WB 身份（写 `VOUCHER_ROUTED` 事件 + 返回深链 `xerp://voucher/<id>`，**不改凭证状态**）→ 人类在 WB 项目里确认 → 调 `approve_voucher`（或 `reject_voucher`，须用审批人 actor_id 且 ≠ 制单人）→ 可选 `post_voucher`。
+- 身份绑定：`workbuddy_bind_member(subject_id, external_ref)` 把 WB user id 映射到内核主体；建账时已用 `init --owner-ref/--reviewer-ref` 自动绑定老板/审批人，可后续补绑。
+- 红线（内核强制，WB 通道自动继承）：AI 不能审自己制的单（`NO_SELF_APPROVAL`）；agent 主体禁止审批（`AGENT_APPROVAL_FORBIDDEN`）；制单人 ≠ 审批人 ≠ 过账人。
+- 智能体职责：push 之后**主动**调 `workbuddy_send_approval` 通知审批人；收到人类「通过/驳回」指令后，用审批人 actor_id 调 approve/reject。**绝不在无人类明确确认时 approve/post**。
+
 ## 开工自检
 每次会话先 get_session_context（MCP）或运行 doctor 自检；多账套先确认账套再动手。
 
