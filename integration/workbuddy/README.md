@@ -10,7 +10,7 @@
 | 指令 | `PROJECT_INSTRUCTIONS.md` | 每次会话自动带入账套上下文 + HITL 铁律（纯文本，升级最稳） |
 | 专家 | `experts/xerp-accountant/` | 「会计专家」一等协作者（包装 copilot_ask 确定性 Copilot） |
 | 技能 | 既有 `xerp` skill（`~/.workbuddy/skills/xerp/`） | 记账 SOP 与工具地图 |
-| 定时任务 | `AUTOMATIONS.md` | 月结预检 / 账龄催收 / 收款匹配，定时只读+草稿 |
+| 定时任务 | `AUTOMATIONS.md` + `AGENT_ORCHESTRATION.md` | 月结预检 / 账龄催收 / 收款匹配 + 月度财务闭环主编排，定时只读+草稿 |
 | 资产 | 三表/审计/GB-T 导出 + 本包自身 | 团队共享档案；模式包随项目走 |
 
 ## 二、分层韧性（回答「WB 升级会不会限制我的能力」）

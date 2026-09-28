@@ -2991,8 +2991,28 @@ body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backg
                 f'<p>待我审批 <b>{n_to_approve}</b> 张 · '
                 f"我推送 <b>{n_mine}</b> 张</p>"
             )
+            base = os.environ.get("XERP_WEB_BASE_URL") or ""
+            if not base:
+                fwd = request.headers.get("x-forwarded-host")
+                if fwd:
+                    proto = request.headers.get("x-forwarded-proto") or "https"
+                    base = f"{proto}://{fwd.split(',')[0].strip()}"
+                else:
+                    host = request.headers.get("host") or ""
+                    if host and "sandbox" not in host and "cloudstudio" not in host:
+                        proto = request.headers.get("x-forwarded-proto") or "https"
+                        base = f"{proto}://{host.split(':')[0]}"
+                    else:
+                        base = str(request.base_url).rstrip("/")
+            handoff = (
+                '<div class="warn"><b>审批闭环（HITL）</b>：制单人推送 → '
+                '审批人（须为非制单人的另一身份）逐张<b>同意</b> → <b>过账</b>。'
+                'AI/自动化只产草稿，终态必须人类点头；制单人不能审批自己的凭证。</div>'
+                f'<p style="color:#5f6368;font-size:12px">本页可分享链接'
+                f'（发给审批人）：<code>{html.escape(base)}/todo</code></p>'
+            )
             body = (
-                "<h2>审批待办</h2>" + err + badge + tip
+                "<h2>审批待办</h2>" + err + handoff + badge + tip
                 + "<h3>待我审批（非本人制单）</h3>"
                 + '<table><tr><th>账套</th><th>凭证号</th><th>日期</th>'
                 + "<th>制单人</th><th>摘要</th><th>操作</th></tr>"

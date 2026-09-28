@@ -1112,6 +1112,50 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("REPORT_ERROR", str(e))
 
     @mcp.tool()
+    def audit_search(
+        ledger_set_id: str,
+        query: str = "",
+        actor: str = "",
+        event_type: str = "",
+        period_year: int = 0,
+        period_month: int = 0,
+        limit: int = 50,
+    ) -> dict:
+        """审计索引检索（E · 审计索引 Cloud DB）：对不可篡改事件账本做全文 / 结构化检索。
+
+        在 `audit_trail` 的审计报告之上，提供**可检索**的审计索引——支撑"审计索引"
+        向量：既能本地 FTS5 全文+结构化检索，又能镜像到 WorkBuddy 云端 DB 做持久化、
+        跨运行时索引（由 `XERP_AUDIT_CLOUD_URL` 配置启用，未配置或失败自动降级本地）。
+
+        检索维度（可组合）：
+        - query       关键词全文检索（命中 payload / 摘要 / 事件名，如 "PZ-001"）
+        - actor       按执行人过滤（中文显示名，如 "丞辰"）
+        - event_type  按事件类型过滤（如 "voucher.approved"）
+        - period_year/period_month  按发生年月过滤（0 表示不限）
+
+        铁律：本工具**只读、零副作用**，绝不修改事件链、绝不制单/过账/结账。
+        返回 {ledger_set_id, total, hits[{ledger_set_id, event_type, label, actor,
+        summary, payload_text, occurred_at}]}。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.audit_index import get_audit_index
+
+                idx = get_audit_index()
+                hits = idx.search(
+                    s, ledger_set_id,
+                    q=query or None,
+                    actor=actor or None,
+                    event_type=event_type or None,
+                    year=period_year,
+                    month=period_month,
+                    limit=limit,
+                )
+                return _ok(ledger_set_id=ledger_set_id, total=len(hits), hits=hits)
+        except Exception as e:  # noqa: BLE001 — 检索失败透出，不影响审计链
+            return _err("AUDIT_SEARCH_ERROR", str(e))
+
+    @mcp.tool()
     def preview_closing(
         ledger_set_id: str,
         period_year: int,

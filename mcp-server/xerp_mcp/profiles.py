@@ -134,6 +134,9 @@ STANDARD_EXTRA: tuple[str, ...] = (
     "tax_vat_prep",
     # 审计追踪（v2.1 / B2）：不可篡改事件账本 → 人类可读、可证明的审计报告
     "audit_trail",
+    # 审计索引检索（E · 审计索引 Cloud DB）：在审计报告之上提供全文/结构化检索，
+    # 本地 FTS5 + 云端 DB 镜像（best-effort 降级），只读零副作用
+    "audit_search",
     # WB 原生审批闭环（P0-4）：与飞书/企微并列的第三审批通道，WB 是主入口故置于
     # 标准档；仅做通知 + 身份解析 + 路由留痕（写 VOUCHER_ROUTED），不改凭证状态；
     # 审批终态由审批人在 WB 内回复后经 transition 回流内核，红线全部复用
