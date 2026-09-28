@@ -325,3 +325,67 @@ class ArapClearing(Base):
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
     created_by: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class InventoryItem(Base):
+    """存货档案（P0-1 / 主数据，业务对象非投影）。
+
+    收发存台账**不**在此表存储——台账由凭证明细（VoucherLine.quantity + aux_dims
+    的 ``inventory_item`` 键）按 ADR-002 单一真源重建。本表仅登记货品业务属性与
+    计价方法。``default_account_code`` 默认 1405（库存商品），原材料等业务可改 1403。
+    """
+
+    __tablename__ = "inventory_items"
+    __table_args__ = (
+        UniqueConstraint("ledger_set_id", "code", name="uq_inventory_item_code"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ledger_set_id: Mapped[str] = mapped_column(
+        ForeignKey("ledger_sets.id"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(200))
+    spec: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # 计价方法：weighted_avg（月末一次加权平均，默认）/ moving_avg（移动加权）/ fifo（先进先出）
+    valuation_method: Mapped[str] = mapped_column(String(16), default="weighted_avg")
+    default_account_code: Mapped[str] = mapped_column(String(32), default="1405")
+    attrs: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AssetCard(Base):
+    """固定资产卡片（P0-1 / 主数据）。
+
+    ``accumulated_depreciation`` 仅作卡片展示便利，**不**作为余额真源；折旧真源 =
+    1602 累计折旧科目凭证明细（ADR-002）。折旧计算走 kernel/reporting/fixed_asset.py
+    纯函数，落库经既有 create_voucher HITL。
+    """
+
+    __tablename__ = "asset_cards"
+    __table_args__ = (
+        UniqueConstraint("ledger_set_id", "asset_no", name="uq_asset_no"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ledger_set_id: Mapped[str] = mapped_column(
+        ForeignKey("ledger_sets.id"), index=True
+    )
+    asset_no: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(200))
+    category_code: Mapped[str] = mapped_column(String(32), default="160101")
+    original_value: Mapped[decimal.Decimal] = mapped_column(AMOUNT)
+    salvage_rate: Mapped[decimal.Decimal] = mapped_column(
+        Numeric(6, 4), default=0, server_default="0"
+    )
+    # 折旧方法：straight（直线法，MVP 唯一）
+    method: Mapped[str] = mapped_column(String(16), default="straight")
+    useful_life_months: Mapped[int] = mapped_column(Integer)
+    start_date: Mapped[date] = mapped_column(Date)
+    accumulated_depreciation: Mapped[decimal.Decimal] = mapped_column(
+        AMOUNT, default=0, server_default="0"
+    )
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active|disposed
+    aux_dims: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

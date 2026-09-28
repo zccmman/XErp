@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from kernel.db.models import Period
+from kernel.db.models import AssetCard, InventoryItem, Period
 from kernel.operating import graph_metrics, partner_profile
 from kernel.reporting.arap import (
     ArapError,
@@ -27,6 +27,9 @@ from kernel.reporting.arap import (
 )
 from kernel.reporting.credit import collections_draft, credit_exposure
 from kernel.reporting.foreign import foreign_trial_balance
+from kernel.reporting.inventory import inventory_valuation_draft, stockcard
+from kernel.reporting.fixed_asset import depreciation_schedule
+from kernel.reporting.costing import cost_allocation_draft, cost_settlement_draft
 from kernel.healing import healing_suggestions
 from kernel.simulation import what_if as _what_if_simulation
 
@@ -51,6 +54,15 @@ _WHATIF_KW = ("如果", "假如", "假设", "会怎样", "会如何", "影响", 
 # 异常自愈（E4）：识别「异常怎么处理」「整改建议」「风控建议」等
 _HEALING_KW = ("异常", "自愈", "修复", "整改", "建议", "怎么处理", "怎么办",
                "healing", "heal", "风控建议", "风险建议", "排查", "风险点")
+# P0-1 存货：识别「存货/库存/收发存/盘点/计价」等
+_INVENTORY_KW = ("存货", "库存", "收发存", "进销存", "盘点", "存货计价",
+                 "库存商品", "原材料", "数量金额", "存货跌价", "仓库存货")
+# P0-1 固定资产：识别「固定资产/折旧/资产处置/清理/累计折旧」等
+_FIXED_ASSET_KW = ("固定资产", "折旧", "资产处置", "资产清理", "固定资产清理",
+                   "累计折旧", "计提折旧", "机器设备")
+# P0-1 成本核算：识别「生产成本/制造费用/完工/分摊/结转成本」等
+_COSTING_KW = ("生产成本", "制造费用", "完工产品", "成本分摊", "结转成本",
+               "产品成本", "成本对象", "月末成本", "完工入库")
 
 
 def _parse_whatif_levers(q: str) -> list[str]:
@@ -120,6 +132,13 @@ def _route(
         return "healing", {}
     if any(k in q for k in _WHATIF_KW):
         return "what_if", {"levers": _parse_whatif_levers(q)}
+    # P0-1 存货 / 固定资产 / 成本（域专用，优先级低于 what_if 假设性提问）
+    if any(k in q for k in _INVENTORY_KW):
+        return "inventory", {}
+    if any(k in q for k in _FIXED_ASSET_KW):
+        return "fixed_asset", {}
+    if any(k in q for k in _COSTING_KW):
+        return "costing", {}
     if any(k in q for k in _OVERVIEW_KW):
         return "overview", {}
     return "overview", {}
@@ -446,6 +465,131 @@ def _answer_healing(params, session, ledger_set_id, as_of_date) -> dict[str, Any
     }
 
 
+# ------------------------------------------------------------ P0-1 域专用作答
+
+
+def _answer_inventory(params, session, ledger_set_id, as_of_date) -> dict[str, Any]:
+    lp = _latest_period(session, ledger_set_id)
+    if lp is None:
+        return {"answer_zh": "暂无期间数据，请先初始化账套期间。",
+                "intent": "inventory", "tool_calls": [], "evidence": {},
+                "followups": ["初始化期间"], "severity": "NORMAL"}
+    y, m = lp
+    items = session.scalars(
+        select(InventoryItem).where(InventoryItem.ledger_set_id == ledger_set_id)
+    ).all()
+    if not items:
+        return {
+            "answer_zh": f"【存货 · {y}-{m:02d}】当前账套尚未登记任何存货档案。",
+            "intent": "inventory", "tool_calls": [], "evidence": {"items": []},
+            "followups": ["登记存货档案（inventory_item_register）", "查看 某存货 收发存"],
+            "severity": "NORMAL",
+        }
+    parts = [f"【存货收发存 · {y}-{m:02d}】共 {len(items)} 个存货"]
+    ev_items: list[dict[str, Any]] = []
+    for it in items:
+        try:
+            sc = stockcard(session, ledger_set_id, it.code, y, m)
+            val = inventory_valuation_draft(
+                session, ledger_set_id, it.code, y, m, method=it.valuation_method
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        parts.append(
+            f"· {it.name}({it.code})：期末 {sc['ending']['qty']}{it.unit or ''}，"
+            f"存货价值 {sc['ending']['amount']}，单位成本 {val['unit_cost']}，"
+            f"本期结转成本 {val['cogs']}"
+        )
+        ev_items.append({"code": it.code, "name": it.name,
+                         "stockcard": sc, "valuation": val})
+    tool_calls = [
+        {"tool": "inventory_stockcard",
+         "args": {"item_code": items[0].code, "period_year": y, "period_month": m}},
+        {"tool": "inventory_valuation_draft",
+         "args": {"item_code": items[0].code, "period_year": y, "period_month": m}},
+    ]
+    return {
+        "answer_zh": "\n".join(parts),
+        "intent": "inventory", "tool_calls": tool_calls,
+        "evidence": {"inventory": ev_items},
+        "followups": ["查看 某存货 收发存明细", "运行 期末计价草稿（含盘点差异）",
+                      "固定资产折旧怎么提"],
+        "severity": "NORMAL",
+    }
+
+
+def _answer_fixed_asset(params, session, ledger_set_id, as_of_date) -> dict[str, Any]:
+    lp = _latest_period(session, ledger_set_id)
+    if lp is None:
+        return {"answer_zh": "暂无期间数据，请先初始化账套期间。",
+                "intent": "fixed_asset", "tool_calls": [], "evidence": {},
+                "followups": ["初始化期间"], "severity": "NORMAL"}
+    y, m = lp
+    cards = session.scalars(
+        select(AssetCard).where(
+            AssetCard.ledger_set_id == ledger_set_id, AssetCard.status == "active"
+        )
+    ).all()
+    sched = depreciation_schedule(session, ledger_set_id, y, m)
+    parts = [
+        f"【固定资产折旧 · {y}-{m:02d}】应计提折旧合计 {sched['total_depreciation']}，"
+        f"涉及 {len(cards)} 张在用卡片"
+    ]
+    for d in sched["details"][:8]:
+        parts.append(
+            f"· {d['name']}({d['asset_no']})：月折旧 {d['monthly_depreciation']}（{d['status']}）"
+        )
+    tool_calls = [{"tool": "depreciation_schedule_draft",
+                   "args": {"period_year": y, "period_month": m}}]
+    if cards:
+        tool_calls.append({"tool": "asset_dispose_draft",
+                           "args": {"asset_no": cards[0].asset_no,
+                                    "dispose_date": as_of_date.isoformat()}})
+    return {
+        "answer_zh": "\n".join(parts),
+        "intent": "fixed_asset", "tool_calls": tool_calls,
+        "evidence": {"depreciation_schedule": sched},
+        "followups": ["运行 折旧凭证草稿（HITL 落库）", "查看 某资产 处置草稿",
+                      "存货收发存怎么看"],
+        "severity": "NORMAL",
+    }
+
+
+def _answer_costing(params, session, ledger_set_id, as_of_date) -> dict[str, Any]:
+    lp = _latest_period(session, ledger_set_id)
+    if lp is None:
+        return {"answer_zh": "暂无期间数据，请先初始化账套期间。",
+                "intent": "costing", "tool_calls": [], "evidence": {},
+                "followups": ["初始化期间"], "severity": "NORMAL"}
+    y, m = lp
+    alloc = cost_allocation_draft(session, ledger_set_id, y, m)
+    settle = cost_settlement_draft(session, ledger_set_id, y, m)
+    parts = [f"【成本核算 · {y}-{m:02d}】"]
+    parts.append(
+        f"· 制造费用 {alloc['total_overhead']}，按 {alloc['base']} 分摊至 "
+        f"{len(alloc['allocations'])} 个成本对象"
+    )
+    for a in alloc["allocations"][:6]:
+        parts.append(f"  - {a['cost_object']}：分摊 {a['allocated']}（基础 {a['base_amount']}）")
+    parts.append(
+        f"· 完工结转合计 {settle['total_completed']}，涉及 {len(settle['settlements'])} 个对象"
+    )
+    tool_calls = [
+        {"tool": "cost_allocation_draft",
+         "args": {"period_year": y, "period_month": m}},
+        {"tool": "cost_settlement_draft",
+         "args": {"period_year": y, "period_month": m}},
+    ]
+    return {
+        "answer_zh": "\n".join(parts),
+        "intent": "costing", "tool_calls": tool_calls,
+        "evidence": {"cost_allocation": alloc, "cost_settlement": settle},
+        "followups": ["运行 制造费用分摊草稿（HITL 落库）", "运行 完工结转草稿",
+                      "固定资产折旧怎么提"],
+        "severity": "NORMAL",
+    }
+
+
 # ------------------------------------------------------------ 主入口
 
 
@@ -468,9 +612,10 @@ def ask(
         return {
             "answer_zh": "请描述你想了解的运营财务问题，例如："
                          "「示例科技 全貌」「谁逾期了」「子账总账对账」「应收敞口集中度」"
+                         "「存货收发存」「本月折旧多少」「制造费用怎么分摊」"
                          "「如果加速回款会怎样」「异常怎么处理」。",
             "intent": "empty", "tool_calls": [], "evidence": {},
-            "followups": ["查看 运营财务总览", "如果加速回款会怎样", "异常怎么处理"],
+            "followups": ["查看 运营财务总览", "存货收发存怎么看", "如果加速回款会怎样"],
             "severity": "NORMAL",
         }
     if as_of_date is None:
@@ -492,6 +637,12 @@ def ask(
         out = _answer_whatif(params, session, ledger_set_id, as_of_date)
     elif intent == "healing":
         out = _answer_healing(params, session, ledger_set_id, as_of_date)
+    elif intent == "inventory":
+        out = _answer_inventory(params, session, ledger_set_id, as_of_date)
+    elif intent == "fixed_asset":
+        out = _answer_fixed_asset(params, session, ledger_set_id, as_of_date)
+    elif intent == "costing":
+        out = _answer_costing(params, session, ledger_set_id, as_of_date)
     else:  # overview
         out = _answer_overview(params, session, ledger_set_id, as_of_date, dim_key)
 

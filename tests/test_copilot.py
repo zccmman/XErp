@@ -27,7 +27,7 @@ from kernel.anomaly import trip_breaker
 from kernel.coa import import_chart_of_accounts, load_template_rows
 from kernel.copilot import ask
 from kernel.db.base import Base
-from kernel.db.models import Period, Subject
+from kernel.db.models import AssetCard, InventoryItem, Period, Subject
 from kernel.posting import post_voucher
 from kernel.reporting.credit import set_credit_limit
 from kernel.seed import seed_demo_ledger
@@ -248,3 +248,53 @@ def test_route_healing_alert_with_breaker(sess, env, tmp_path):
         assert raw["state"] == "alert"
     finally:
         os.environ.pop("XERP_OPERATOR_STATE_FILE", None)
+
+
+# ------------------------------------------------------------ P0-1 域专用意图
+
+
+def test_route_inventory(sess, env):
+    sess.add(InventoryItem(
+        ledger_set_id=env["ledger_set_id"], code="T1", name="测试品", unit="件",
+        valuation_method="weighted_avg", default_account_code="1405",
+    ))
+    sess.flush()
+    _post(sess, env, [
+        {"account_code": "1405", "debit": "1000", "credit": "", "quantity": "10",
+         "unit": "件", "aux_dims": {"inventory_item": "T1"}},
+        {"account_code": "1002", "debit": "", "credit": "1000"},
+    ])
+    out = ask(sess, ledger_set_id=env["ledger_set_id"], question_zh="存货收发存怎么样",
+              as_of_date=date(2026, 8, 31))
+    assert out["intent"] == "inventory"
+    assert "测试品" in out["answer_zh"]
+    assert any(tc["tool"] in ("inventory_stockcard", "inventory_valuation_draft")
+               for tc in out["tool_calls"])
+
+
+def test_route_fixed_asset(sess, env):
+    sess.add(AssetCard(
+        ledger_set_id=env["ledger_set_id"], asset_no="FA1", name="设备A",
+        category_code="160101", original_value=Decimal("120000"),
+        salvage_rate=Decimal("0"), useful_life_months=60,
+        start_date=date(2026, 1, 1), status="active",
+    ))
+    sess.flush()
+    out = ask(sess, ledger_set_id=env["ledger_set_id"], question_zh="本月折旧多少",
+              as_of_date=date(2026, 8, 31))
+    assert out["intent"] == "fixed_asset"
+    assert "2000.00" in out["answer_zh"]  # 120000/60 月折旧
+    assert any(tc["tool"] == "depreciation_schedule_draft" for tc in out["tool_calls"])
+
+
+def test_route_costing(sess, env):
+    _post(sess, env, [
+        {"account_code": "500101", "debit": "8000", "credit": "",
+         "aux_dims": {"project": "P1"}},
+        {"account_code": "1002", "debit": "", "credit": "8000"},
+    ])
+    out = ask(sess, ledger_set_id=env["ledger_set_id"], question_zh="制造费用怎么分摊",
+              as_of_date=date(2026, 8, 31))
+    assert out["intent"] == "costing"
+    assert any(tc["tool"] == "cost_allocation_draft" for tc in out["tool_calls"])
+    assert any(tc["tool"] == "cost_settlement_draft" for tc in out["tool_calls"])

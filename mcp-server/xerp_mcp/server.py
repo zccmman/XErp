@@ -3400,6 +3400,396 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             ],
         }
 
+    # ---------- P0-1 存货 / 固定资产 / 成本核算（标准档）----------
+    @mcp.tool()
+    def inventory_item_register(
+        ledger_set_id: str,
+        action: str = "list",
+        code: str = "",
+        name: str = "",
+        spec: str = "",
+        unit: str = "",
+        valuation_method: str = "weighted_avg",
+        default_account_code: str = "1405",
+        attrs: dict | None = None,
+    ) -> dict:
+        """存货档案登记（P0-1 / 写主数据，低风险）。
+
+        action：list（默认，列全部）/ create / update / get。
+        仅登记货品业务属性（编码/名称/计价方法/默认存货科目），**不碰账本与余额**；
+        收发存与计价由凭证明细重建（ADR-002）。create/update 落库经本工具直接写入主数据表
+        （非凭证），属主数据 CRUD，不触发 HITL 审批。
+
+        valuation_method：weighted_avg（月末一次加权平均，默认）/ moving_avg / fifo。
+        default_account_code：1405 库存商品（默认）/ 1403 原材料 等。
+        返回 {ok, action, item | items}。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.db.models import InventoryItem
+                from kernel.reporting.inventory import InventoryError
+
+                if action in ("create", "update"):
+                    if not code or not name:
+                        return _err("INVALID_ARG", "create/update 时 code 与 name 必填")
+                    if valuation_method not in ("weighted_avg", "moving_avg", "fifo"):
+                        return _err(
+                            "INVALID_ARG",
+                            "valuation_method 仅支持 weighted_avg / moving_avg / fifo",
+                        )
+                    item = s.scalars(
+                        select(InventoryItem).where(
+                            InventoryItem.ledger_set_id == ledger_set_id,
+                            InventoryItem.code == code,
+                        )
+                    ).first()
+                    if action == "create":
+                        if item is not None:
+                            return _err("DUPLICATE", f"存货编码 {code} 已存在")
+                        item = InventoryItem(
+                            ledger_set_id=ledger_set_id, code=code, name=name,
+                            spec=spec or None, unit=unit or None,
+                            valuation_method=valuation_method,
+                            default_account_code=default_account_code, attrs=attrs,
+                        )
+                        s.add(item)
+                        s.flush()
+                    else:
+                        if item is None:
+                            return _err("NOT_FOUND", f"存货编码 {code} 不存在")
+                        item.name = name
+                        item.spec = spec or item.spec
+                        item.unit = unit or item.unit
+                        item.valuation_method = valuation_method
+                        item.default_account_code = default_account_code
+                        item.attrs = attrs
+                    return _ok(
+                        action=action,
+                        item={
+                            "code": item.code, "name": item.name,
+                            "method": item.valuation_method,
+                            "account": item.default_account_code, "unit": item.unit,
+                        },
+                    )
+                if action == "get":
+                    item = s.scalars(
+                        select(InventoryItem).where(
+                            InventoryItem.ledger_set_id == ledger_set_id,
+                            InventoryItem.code == code,
+                        )
+                    ).first()
+                    if item is None:
+                        return _err("NOT_FOUND", f"存货编码 {code} 不存在")
+                    return _ok(action="get", item={
+                        "code": item.code, "name": item.name, "spec": item.spec,
+                        "unit": item.unit, "method": item.valuation_method,
+                        "account": item.default_account_code, "attrs": item.attrs,
+                    })
+                # list
+                items = s.scalars(
+                    select(InventoryItem).where(
+                        InventoryItem.ledger_set_id == ledger_set_id
+                    )
+                ).all()
+                return _ok(action="list", items=[
+                    {"code": it.code, "name": it.name, "unit": it.unit,
+                     "method": it.valuation_method, "account": it.default_account_code}
+                    for it in items
+                ])
+        except InventoryError as e:
+            return _err("INVENTORY_ERROR", str(e))
+        except Exception as e:  # noqa: BLE001
+            return _err("REGISTER_ERROR", str(e))
+
+    @mcp.tool()
+    def asset_register(
+        ledger_set_id: str,
+        action: str = "list",
+        asset_no: str = "",
+        name: str = "",
+        category_code: str = "160101",
+        original_value: str = "",
+        salvage_rate: str = "0",
+        useful_life_months: int = 0,
+        start_date: str = "",
+        aux_dims: dict | None = None,
+        status: str = "active",
+    ) -> dict:
+        """固定资产卡片登记（P0-1 / 写主数据，低风险）。
+
+        action：list（默认）/ create / update / get / dispose（标记卡片为已处置）。
+        仅登记卡片属性，**折旧真源仍是 1602 凭证明细**（ADR-002）；本工具不直接记折旧凭证。
+        create 落库经本工具直接写主数据表（非凭证），不触发 HITL 审批。
+
+        category_code：160101 机器设备 / 160102 运输工具 / 160103 电子设备 / 160104 房屋建筑物。
+        start_date：开始折旧日（YYYY-MM-DD）。
+        返回 {ok, action, card | cards}。
+        """
+        try:
+            from decimal import Decimal as _D
+
+            from kernel.db.models import AssetCard
+            from kernel.reporting.fixed_asset import AssetError
+
+            with repo.session() as s:
+                if action in ("create", "update"):
+                    if not asset_no or not name or not start_date:
+                        return _err("INVALID_ARG", "create/update 时 asset_no/name/start_date 必填")
+                    if useful_life_months <= 0:
+                        return _err("INVALID_ARG", "useful_life_months 必须为正整数")
+                    try:
+                        ov = _D(original_value)
+                        sr = _D(salvage_rate)
+                        sd = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    except (InvalidOperation, ValueError):
+                        return _err("INVALID_ARG", "original_value/salvage_rate/start_date 格式非法")
+                    card = s.scalars(
+                        select(AssetCard).where(
+                            AssetCard.ledger_set_id == ledger_set_id,
+                            AssetCard.asset_no == asset_no,
+                        )
+                    ).first()
+                    if action == "create":
+                        if card is not None:
+                            return _err("DUPLICATE", f"资产编号 {asset_no} 已存在")
+                        card = AssetCard(
+                            ledger_set_id=ledger_set_id, asset_no=asset_no, name=name,
+                            category_code=category_code, original_value=ov,
+                            salvage_rate=sr, useful_life_months=useful_life_months,
+                            start_date=sd, aux_dims=aux_dims, status="active",
+                        )
+                        s.add(card)
+                        s.flush()
+                    else:
+                        if card is None:
+                            return _err("NOT_FOUND", f"资产编号 {asset_no} 不存在")
+                        card.name = name
+                        card.category_code = category_code
+                        card.original_value = ov
+                        card.salvage_rate = sr
+                        card.useful_life_months = useful_life_months
+                        card.start_date = sd
+                        card.aux_dims = aux_dims
+                        if status:
+                            card.status = status
+                    return _ok(action=action, card={
+                        "asset_no": card.asset_no, "name": card.name,
+                        "original_value": str(card.original_value),
+                        "useful_life_months": card.useful_life_months,
+                        "start_date": card.start_date.isoformat(), "status": card.status,
+                    })
+                if action == "dispose":
+                    card = s.scalars(
+                        select(AssetCard).where(
+                            AssetCard.ledger_set_id == ledger_set_id,
+                            AssetCard.asset_no == asset_no,
+                        )
+                    ).first()
+                    if card is None:
+                        return _err("NOT_FOUND", f"资产编号 {asset_no} 不存在")
+                    card.status = "disposed"
+                    return _ok(action="dispose", card={"asset_no": card.asset_no, "status": "disposed"})
+                if action == "get":
+                    card = s.scalars(
+                        select(AssetCard).where(
+                            AssetCard.ledger_set_id == ledger_set_id,
+                            AssetCard.asset_no == asset_no,
+                        )
+                    ).first()
+                    if card is None:
+                        return _err("NOT_FOUND", f"资产编号 {asset_no} 不存在")
+                    return _ok(action="get", card={
+                        "asset_no": card.asset_no, "name": card.name,
+                        "category_code": card.category_code,
+                        "original_value": str(card.original_value),
+                        "salvage_rate": str(card.salvage_rate),
+                        "useful_life_months": card.useful_life_months,
+                        "start_date": card.start_date.isoformat(), "status": card.status,
+                        "aux_dims": card.aux_dims,
+                    })
+                cards = s.scalars(
+                    select(AssetCard).where(AssetCard.ledger_set_id == ledger_set_id)
+                ).all()
+                return _ok(action="list", cards=[
+                    {"asset_no": c.asset_no, "name": c.name, "original_value": str(c.original_value),
+                     "useful_life_months": c.useful_life_months,
+                     "start_date": c.start_date.isoformat(), "status": c.status}
+                    for c in cards
+                ])
+        except AssetError as e:
+            return _err("ASSET_ERROR", str(e))
+        except Exception as e:  # noqa: BLE001
+            return _err("REGISTER_ERROR", str(e))
+
+    @mcp.tool()
+    def inventory_stockcard(
+        ledger_set_id: str,
+        item_code: str,
+        period_year: int = 0,
+        period_month: int = 0,
+    ) -> dict:
+        """存货收发存台账（P0-1 / 只读）：由 POSTED 凭证明细重建（ADR-002）。
+
+        必须传 period_year/period_month（0 无效）。返回期初/本期收/本期发/期末的数量与金额。
+        库存类科目为资产方向：借方收、贷方发。
+        """
+        try:
+            if not (period_year and period_month):
+                return _err("INVALID_ARG", "period_year/period_month 必填且非零")
+            with repo.session() as s:
+                from kernel.reporting.inventory import InventoryError, stockcard
+
+                r = stockcard(s, ledger_set_id, item_code, period_year, period_month)
+                return _ok(**r)
+        except InventoryError as e:
+            return _err("INVENTORY_ERROR", str(e))
+
+    @mcp.tool()
+    def inventory_valuation_draft(
+        ledger_set_id: str,
+        item_code: str,
+        period_year: int = 0,
+        period_month: int = 0,
+        method: str = "",
+        physical_count_qty: str = "",
+    ) -> dict:
+        """存货期末计价 + 结转凭证草稿（P0-1 / 只读草稿）。
+
+        必须传 period_year/period_month。method 留空=用档案默认值
+        （weighted_avg 月末一次加权平均 / moving_avg 移动加权 / fifo 先进先出）。
+        physical_count_qty 填实地盘点数量可额外产出盘盈/盘亏调整 lines。
+
+        **铁律：只读、零副作用**；输出 lines（借 6401/贷 库存商品 结转成本，
+        或盘盈盘亏 1901）由 AI 经既有 create_voucher 落库（HITL），本工具绝不制单。
+        返回 {ok, item, unit_cost, ending_value, cogs, lines, summary}。
+        """
+        try:
+            if not (period_year and period_month):
+                return _err("INVALID_ARG", "period_year/period_month 必填且非零")
+            pc = Decimal(physical_count_qty) if physical_count_qty not in (None, "") else None
+            with repo.session() as s:
+                from kernel.reporting.inventory import InventoryError, inventory_valuation_draft
+
+                r = inventory_valuation_draft(
+                    s, ledger_set_id, item_code, period_year, period_month,
+                    method or None, pc,
+                )
+                return _ok(**r)
+        except InventoryError as e:
+            return _err("INVENTORY_ERROR", str(e))
+
+    @mcp.tool()
+    def depreciation_schedule_draft(
+        ledger_set_id: str,
+        period_year: int = 0,
+        period_month: int = 0,
+    ) -> dict:
+        """固定资产折旧计提草稿（P0-1 / 只读草稿，直线法）。
+
+        必须传 period_year/period_month。对每张 active 卡片按
+        月折旧 = 原值×(1−残值率)/使用年限 计算；提满或尚未开始则跳过。
+
+        **铁律：只读、零副作用**；输出 lines（借 费用科目/贷 1602 累计折旧）由 AI 经
+        既有 create_voucher 落库（HITL）。返回 {ok, total_depreciation, details, lines}。
+        """
+        try:
+            if not (period_year and period_month):
+                return _err("INVALID_ARG", "period_year/period_month 必填且非零")
+            with repo.session() as s:
+                from kernel.reporting.fixed_asset import depreciation_schedule
+
+                r = depreciation_schedule(s, ledger_set_id, period_year, period_month)
+                return _ok(**r)
+        except Exception as e:  # noqa: BLE001
+            return _err("ASSET_ERROR", str(e))
+
+    @mcp.tool()
+    def asset_dispose_draft(
+        ledger_set_id: str,
+        asset_no: str,
+        dispose_date: str,
+        proceeds: str = "0",
+        proceed_account: str = "1002",
+    ) -> dict:
+        """固定资产处置凭证草稿（P0-1 / 只读草稿）。
+
+        dispose_date：处置日（YYYY-MM-DD）。proceeds：处置收款（默认 0 无偿调出）。
+        proceed_account：收款科目（默认 1002 银行存款）。
+
+        累计折旧由 1602 凭证明细重建（单一真源）；处置损益走小企业准则 6301/6711。
+        **铁律：只读**；输出 lines 由 AI 经 create_voucher 落库（HITL）。
+        返回 {ok, original_value, accumulated_depreciation, net_book_value, lines}。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.fixed_asset import AssetError, asset_dispose_draft
+
+                r = asset_dispose_draft(
+                    s, ledger_set_id, asset_no, dispose_date,
+                    Decimal(proceeds), proceed_account,
+                )
+                return _ok(**r)
+        except AssetError as e:
+            return _err("ASSET_ERROR", str(e))
+        except (InvalidOperation, ValueError):
+            return _err("INVALID_ARG", "proceeds 不是合法金额")
+
+    @mcp.tool()
+    def cost_allocation_draft(
+        ledger_set_id: str,
+        period_year: int = 0,
+        period_month: int = 0,
+        base: str = "direct_material",
+    ) -> dict:
+        """制造费用分摊草稿（P0-1 / 只读草稿，零新表）。
+
+        必须传 period_year/period_month。把 5101 当期发生额按 base 分摊到各 5001 成本对象：
+        base=direct_material（默认，按各对象 500101 直接材料金额占比）/
+        direct_labor（按 500102 直接人工占比）。MVP 仅金额类基础。
+
+        **铁律：只读**；输出 lines（借 500103/贷 5101）由 AI 经 create_voucher 落库（HITL）。
+        返回 {ok, total_overhead, allocations, lines}。
+        """
+        try:
+            if not (period_year and period_month):
+                return _err("INVALID_ARG", "period_year/period_month 必填且非零")
+            with repo.session() as s:
+                from kernel.reporting.costing import CostingError, cost_allocation_draft
+
+                r = cost_allocation_draft(s, ledger_set_id, period_year, period_month, base)
+                return _ok(**r)
+        except CostingError as e:
+            return _err("COSTING_ERROR", str(e))
+
+    @mcp.tool()
+    def cost_settlement_draft(
+        ledger_set_id: str,
+        period_year: int = 0,
+        period_month: int = 0,
+        ending_wip: str = "0",
+    ) -> dict:
+        """完工产品成本结转草稿（P0-1 / 只读草稿，零新表）。
+
+        必须传 period_year/period_month。简化口径：某成本对象完工 =
+        期初在产(5001 期初净额) + 本期投入(5001 本期净额) − 期末在产(ending_wip)。
+        期末在产默认 0（全部完工）；给定则按各对象当前 5001 余额(WIP)比例分摊。
+
+        **铁律：只读**；输出 lines（借 1405/贷 5001）由 AI 经 create_voucher 落库（HITL）。
+        返回 {ok, total_completed, settlements, lines}。
+        """
+        try:
+            if not (period_year and period_month):
+                return _err("INVALID_ARG", "period_year/period_month 必填且非零")
+            with repo.session() as s:
+                from kernel.reporting.costing import cost_settlement_draft
+
+                r = cost_settlement_draft(
+                    s, ledger_set_id, period_year, period_month, Decimal(ending_wip)
+                )
+                return _ok(**r)
+        except Exception as e:  # noqa: BLE001
+            return _err("COSTING_ERROR", str(e))
+
     # ---------- 工具分层（P0-B）----------
     # profile 来自 mcp.json 的 disabledTools / 环境变量 XERP_PROFILE；
     # pro 或 None 不裁剪，其余档位按 profiles.py 单一真源禁用对应工具。

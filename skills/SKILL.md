@@ -80,6 +80,15 @@ description: >
   建账时 `init_ledger_set` 的 `--owner-ref/--reviewer-ref` 已自动绑定；缺失可补绑。
 - 智能体职责：push 后主动调 `workbuddy_send_approval`；收到人类确认再 approve/reject。**绝不自审、绝不无确认过账。**
 
+## 存货 / 固定资产 / 成本核算（P0-1，业财一体化）
+
+P0-1 把**存货、固定资产、生产成本**纳入既有记账内核：**收发存台账、累计折旧、成本对象发生额全部由 POSTED 凭证明细重建（ADR-002 单一真源），不建任何投影表**。6 个 `*_draft` 工具只读、零副作用，只产出凭证草稿 lines；落库一律经 `create_voucher` HITL（人类确认）。
+
+- **存货**：`inventory_item_register`（create/get/list/update 货品档案：编码/名称/计价方法/默认存货科目）→ 记收发凭证时，库存科目（1405 库存商品 / 1403 原材料）行带 `aux_dims={"inventory_item":"<货品编码>"}` 与 `quantity` 字段（借=收、贷=发）→ `inventory_stockcard`（收发存台账：期初/收/发/期末数量与金额）+ `inventory_valuation_draft`（月末一次加权平均 / 移动加权 / 先进先出，产出结转成本草稿；传 `physical_count_qty` 额外产出盘盈盘亏 1901 调整）。
+- **固定资产**：`asset_register`（create/get/list/update/dispose 卡片：原值/残值率/年限/开始折旧日）→ 折旧/处置凭证的 1602/1601 行带 `aux_dims={"asset_no":"<资产编号>"}` → `depreciation_schedule_draft`（直线法月折旧，每卡片一对「借 6602 / 贷 1602」带 asset_no）+ `asset_dispose_draft`（转入清理→收款→处置损益，小企业准则收益走 6301 / 损失走 6711）。
+- **成本核算（零新表）**：生产成本 5001 + 辅助维度（project/department）承载成本对象；制造费用 5101 当月发生额经 `cost_allocation_draft` 按直接材料/直接人工占比分摊到各 5001 对象 → `cost_settlement_draft` 完工结转（借 1405 / 贷 5001，期末在产 WIP 由用户/AI 输入，默认 0 全部完工）。
+- **铁律**：`inventory_item_register` / `asset_register` 只写主数据表，**不碰账本与余额**；6 个 `*_draft` 只读不改账，绝不制单。自然语言问「存货收发存」「本月折旧多少」「制造费用怎么分摊」由 `copilot_ask` 确定性路由到上述内核。
+
 ## 撤销（用户说「这笔错了，撤了吧」）
 
 `cancel_post_voucher`（POSTED→DRAFT）：仅未结账期间可用；
@@ -108,3 +117,11 @@ description: >
 | query_balances | 期间发生额投影 |
 | workbuddy_send_approval | 把待审凭证路由到审批人 WB 身份（PUSHED 才可用，只读通知） |
 | workbuddy_bind_member | 绑定 WB user id ↔ 内核主体（身份映射） |
+| inventory_item_register | 存货档案登记（create/get/list/update，写主数据） |
+| asset_register | 固定资产卡片登记（create/get/list/update/dispose，写主数据） |
+| inventory_stockcard | 存货收发存台账（只读，由凭证明细重建） |
+| inventory_valuation_draft | 存货期末计价 + 结转成本草稿（只读） |
+| depreciation_schedule_draft | 固定资产直线法折旧 + 折旧凭证草稿（只读） |
+| asset_dispose_draft | 固定资产处置凭证草稿（只读） |
+| cost_allocation_draft | 制造费用分摊到成本对象 + 草稿（只读） |
+| cost_settlement_draft | 完工产品成本结转草稿（只读） |

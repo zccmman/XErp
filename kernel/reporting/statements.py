@@ -69,8 +69,15 @@ def ending_balance(code: str, debits: Decimal, credits: Decimal) -> Decimal:
 
     对外暴露是为了让 Web 科目余额表与三大报表共用同一口径，
     避免「报表一个数、页面另一个数」这种最伤信任的不一致。
+
+    前缀口径（小企业/企业准则通用）：
+    - 1 资产 / 5 成本(在产品·在制，属存货类流动资产) / 6 费用 → 借方为正；
+    - 6 中的 6001 营业收入、6051 其他业务收入、6301 营业外收入为贷方为正（收入）；
+    - 其余（2 负债 / 3 权益 / 4 损益类备抵等）→ 贷方为正。
+    此前漏掉 5 前缀，导致生产成本/制造费用（期末未结转=在产品）被按贷方为正
+    取数，资产负债表存货项出现负值、试算不平衡（P0-1 成本核算暴露）。
     """
-    if code.startswith(("1", "6")) and not code.startswith(("6001", "6051", "6301")):
+    if code.startswith(("1", "5", "6")) and not code.startswith(("6001", "6051", "6301")):
         return debits - credits
     return credits - debits
 

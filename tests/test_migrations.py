@@ -65,12 +65,15 @@ def test_fresh_upgrade_head_has_all_model_columns():
             "Phase A 未清项核销表必须由迁移提供"
         assert "credit_limit" in _columns(db, "parties"), \
             "Phase B 授信额度列必须由迁移提供"
+        # P0-1 主数据表必须由迁移提供（收货/资产卡片，非投影）
+        assert _columns(db, "inventory_items"), "P0-1 存货档案表必须由迁移提供"
+        assert _columns(db, "asset_cards"), "P0-1 固定资产卡片表必须由迁移提供"
         con = sqlite3.connect(db)
         try:
             ver = con.execute("select version_num from alembic_version").fetchone()[0]
         finally:
             con.close()
-        assert ver == "0011_subject_external_ref"
+        assert ver == "0012_inventory_asset"
 
 
 def test_legacy_db_upgrade_is_idempotent():
