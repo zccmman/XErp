@@ -295,9 +295,10 @@ def render_fragment(state: OperatorState | None = None) -> str:
     s = state or current_state()
     svg = render_svg(s)
     label = state_label(s)
+    svg_big = svg.replace('width="24" height="24"', 'width="40" height="40"')
     detail = (
         f'<div class="op-detail op-{s.value}" role="tooltip">'
-        f'<div class="op-detail-svg">{svg.replace("width=\"24\" height=\"24\"", "width=\"40\" height=\"40\"")}</div>'
+        f'<div class="op-detail-svg">{svg_big}</div>'
         f'<div class="op-detail-text">{label}</div>'
         "</div>"
     )
