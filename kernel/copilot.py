@@ -4,7 +4,8 @@
 - 自然语言理解内核走**确定性路由**——规则/关键词意图匹配 + 复用各只读内核；
   完全离线、可审计、零 LLM 成本；未配置 LLM 也能跑（与 ADR 一致）。
 - ``ask()`` 把中文问题路由到 operating / arap / credit / foreign / simulation / healing
-  的只读内核，输出 {answer_zh, intent, tool_calls, evidence, followups, severity}。
+  / audit_index（E·审计索引检索）的只读内核，输出 {answer_zh, intent, tool_calls,
+  evidence, followups, severity}。
 - 每条数字都来自被调用的只读内核（ADR-002 单一真源），``tool_calls`` 逐条溯源。
 - 严重项（信用超额 / 子账失配 / 异常自愈 critical）→ 经 ``operator.signal(ALERT)``
   联动算子（E5，复用跨进程信号桥，无需 websocket）；推送 ≠ 执行，不改账。
@@ -16,9 +17,11 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+import re
+
 from sqlalchemy import select
 
-from kernel.db.models import AssetCard, InventoryItem, Period
+from kernel.db.models import AssetCard, InventoryItem, Period, Subject
 from kernel.operating import graph_metrics, partner_profile
 from kernel.reporting.arap import (
     ArapError,
@@ -32,6 +35,7 @@ from kernel.reporting.fixed_asset import depreciation_schedule
 from kernel.reporting.costing import cost_allocation_draft, cost_settlement_draft
 from kernel.healing import healing_suggestions
 from kernel.simulation import what_if as _what_if_simulation
+from kernel.reporting.audit_index import get_audit_index
 
 ZERO = Decimal("0.00")
 
@@ -63,6 +67,41 @@ _FIXED_ASSET_KW = ("固定资产", "折旧", "资产处置", "资产清理", "�
 # P0-1 成本核算：识别「生产成本/制造费用/完工/分摊/结转成本」等
 _COSTING_KW = ("生产成本", "制造费用", "完工产品", "成本分摊", "结转成本",
                "产品成本", "成本对象", "月末成本", "完工入库")
+# E 审计索引：识别「审计索引/审计记录/操作日志/谁改过/audit」等
+_AUDIT_KW = ("审计", "审计索引", "审计记录", "审计轨迹", "操作日志", "操作痕迹",
+             "干了什么", "谁改过", "谁做过", "查账记录", "痕迹",
+             "audit", "audit_search", "audit_trail")
+# E 审计索引：事件类型关键词 → 内核事件枚举（大写，与 kernel.events.E 对齐）
+_AUDIT_EVENT_KW = (
+    ("审批", "VOUCHER_APPROVED"), ("核准", "VOUCHER_APPROVED"),
+    ("过账", "VOUCHER_POSTED"), ("记账", "VOUCHER_POSTED"), ("入账", "VOUCHER_POSTED"),
+    ("推送", "VOUCHER_PUSHED"), ("提交", "VOUCHER_PUSHED"),
+    ("制单", "VOUCHER_CREATED"), ("草稿", "VOUCHER_CREATED"),
+    ("创建", "VOUCHER_CREATED"), ("新建", "VOUCHER_CREATED"),
+    ("作废", "VOUCHER_CANCELLED"), ("撤销", "VOUCHER_CANCELLED"), ("取消", "VOUCHER_CANCELLED"),
+    ("驳回", "VOUCHER_REJECTED"), ("撤回", "VOUCHER_WITHDRAWN"),
+    ("签字", "VOUCHER_SIGNED"), ("签署", "VOUCHER_SIGNED"),
+    ("路由", "VOUCHER_ROUTED"), ("送审", "VOUCHER_ROUTED"),
+)
+
+
+def _is_audit_query(question: str) -> bool:
+    """判断问题是否指向审计索引检索（E）。
+
+    命中三类信号之一即视为审计意图：
+    ① 审计类关键词（审计/操作日志/查账…）；② 事件类型关键词（审批/过账/制单/作废…）；
+    ③ 凭证号形态（记-0007 / PZ-001 / 纯数字编号）。
+    任一命中即路由到 ``audit``，具体过滤在 ``_answer_audit`` 内确定性抽取。
+    """
+    q = question.lower()
+    if any(k in q for k in _AUDIT_KW):
+        return True
+    if any(kw in q for kw, _ in _AUDIT_EVENT_KW):
+        return True
+    if re.search(r"(?:记|凭证|记字|pz|voucher)[-_ ]?\d{3,}", question):
+        return True
+    return False
+
 
 
 def _parse_whatif_levers(q: str) -> list[str]:
@@ -120,6 +159,8 @@ def _route(
 
     # ② 关键词全局意图
     q = question.lower()
+    if _is_audit_query(question):
+        return "audit", {"query": question}
     if any(k in q for k in _RECONCILE_KW):
         return "reconcile", {}
     if any(k in q for k in _COLLECTIONS_KW):
@@ -590,6 +631,106 @@ def _answer_costing(params, session, ledger_set_id, as_of_date) -> dict[str, Any
     }
 
 
+def _decorate_audit_actors(session, ledger_set_id: str, hits: list[dict]) -> list[dict]:
+    """把审计命中里的 ``actor`` 字段（可能只是 subject id 串）翻成 display_name。
+
+    ``events.actor`` 在生产里常存 ``{"id": "..."}``（无 display_name），索引落库时
+    ``_actor_name`` 只能回退到 id 串；这里用 ``subjects`` 表做离线解析，纯展示增强、
+    不改事件链。命中里的 actor 若已是人类可读名（不在 id 表里）则原样保留。
+    """
+    try:
+        rows = session.execute(
+            select(Subject.id, Subject.display_name)
+        ).all()
+        name_map = {sid: dn for sid, dn in rows}
+    except Exception:  # noqa: BLE001 — 解析失败不影响检索结果
+        name_map = {}
+    for h in hits:
+        a = (h.get("actor") or "").strip()
+        if a and a in name_map:
+            h["actor"] = name_map[a]
+    return hits
+
+
+def _answer_audit(params, session, ledger_set_id, as_of_date) -> dict[str, Any]:
+    """审计索引检索（E · 审计索引 Cloud DB）：对不可篡改事件账本做结构化检索。
+
+    复用 ``get_audit_index()``（本地 FTS5 + 云端镜像降级），绝不改事件链、绝不制单/过账。
+
+    自然语言查询的坑：整句当 FTS 短语查必 0 命中。这里改为**确定性抽取**：
+    - 事件类型关键词（审批/过账/制单/作废…）→ 结构化 ``event_type`` 过滤（最可靠）；
+    - 凭证号（记-0007 / PZ-001 / 纯数字）→ 从宽集合里按摘要/载荷精筛；
+    - 都不命中 → 缺省展示最新审计轨迹（``q=None``）。
+    """
+    q = (params.get("query") or "").strip()
+    ql = q.lower()
+    limit = 50
+
+    # ① 抽取事件类型（结构化过滤）
+    ev_type = None
+    for kw, ev in _AUDIT_EVENT_KW:
+        if kw in ql:
+            ev_type = ev
+            break
+
+    # ② 抽取凭证号：保留用户原样（含「记-0007」连字符），再取纯数字兜底
+    m = re.search(r"(?:记|凭证|记字|pz|voucher)[-_ ]?\d{3,}", q)
+    raw_vn = m.group(0) if m else None
+    digits = re.search(r"\d{3,}", raw_vn).group(0) if raw_vn else None
+
+    idx = get_audit_index()
+    try:
+        # 凭证号精筛需要较宽集合：先按事件类型拉取，否则拉最新轨迹
+        fetch_limit = 500 if (raw_vn or digits) else limit
+        hits = idx.search(
+            session, ledger_set_id, event_type=ev_type, limit=fetch_limit
+        )
+    except Exception as e:  # noqa: BLE001 — 索引不可用透出，不中断对话
+        return {
+            "answer_zh": f"审计索引检索暂不可用：{e}",
+            "tool_calls": [{"tool": "audit_search",
+                            "args": {"query": q, "event_type": ev_type}}],
+            "evidence": {}, "followups": ["查看 运营财务总览"], "severity": "NORMAL",
+        }
+
+    if raw_vn or digits:
+        def _vn_match(h: dict) -> bool:
+            s = (h.get("summary") or "") + (h.get("payload_text") or "")
+            if raw_vn and raw_vn in s:
+                return True
+            return bool(digits and digits in s)
+        hits = [h for h in hits if _vn_match(h)]
+
+    # ③ 解析执行人显示名（events.actor 仅存 subject id 时翻成显示名）
+    hits = _decorate_audit_actors(session, ledger_set_id, hits)
+
+    parts = [f"【审计索引检索 · 命中 {len(hits)} 条（最新优先）】"]
+    if not hits:
+        parts.append(
+            "· 未命中。可尝试更具体的关键词：凭证号（如 记-0007）、"
+            "事件类型（审批 / 过账 / 制单 / 作废）、执行人姓名，或留空查全部。"
+        )
+    for h in hits[:10]:
+        actor = h.get("actor") or "系统"
+        parts.append(
+            f"· [{h['occurred_at']}] {h['label']}（{actor}）：{h['summary'] or '—'}"
+        )
+    followups = [
+        "运行 审计索引检索（指定事件类型，如 审批 / 过账 / 制单）",
+        "查看 运营财务总览",
+        "运行 异常自愈建议（healing）",
+    ]
+    return {
+        "answer_zh": "\n".join(parts),
+        "tool_calls": [{"tool": "audit_search",
+                        "args": {"query": q, "event_type": ev_type,
+                                 "voucher_no": raw_vn, "limit": limit}}],
+        "evidence": {"audit_hits": hits[:10]},
+        "followups": followups,
+        "severity": "NORMAL",
+    }
+
+
 # ------------------------------------------------------------ 主入口
 
 
@@ -613,7 +754,8 @@ def ask(
             "answer_zh": "请描述你想了解的运营财务问题，例如："
                          "「示例科技 全貌」「谁逾期了」「子账总账对账」「应收敞口集中度」"
                          "「存货收发存」「本月折旧多少」「制造费用怎么分摊」"
-                         "「如果加速回款会怎样」「异常怎么处理」。",
+                         "「如果加速回款会怎样」「异常怎么处理」"
+                         "「查一下 记-0007 的审计记录」「审计索引」。",
             "intent": "empty", "tool_calls": [], "evidence": {},
             "followups": ["查看 运营财务总览", "存货收发存怎么看", "如果加速回款会怎样"],
             "severity": "NORMAL",
@@ -643,6 +785,8 @@ def ask(
         out = _answer_fixed_asset(params, session, ledger_set_id, as_of_date)
     elif intent == "costing":
         out = _answer_costing(params, session, ledger_set_id, as_of_date)
+    elif intent == "audit":
+        out = _answer_audit(params, session, ledger_set_id, as_of_date)
     else:  # overview
         out = _answer_overview(params, session, ledger_set_id, as_of_date, dim_key)
 
