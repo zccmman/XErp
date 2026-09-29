@@ -22,6 +22,9 @@ Thumbs.db
 ledgeros_dev.db
 ledgeros_dev.db.bak
 ledgeros_dev.db.dogfood_bak*
+# SQLite WAL 运行时侧文件（P0-2 开启 WAL 后生成）
+*.db-wal
+*.db-shm
 deploy/demo_state.json
 logs/
 web/node_modules/

@@ -55,159 +55,303 @@ def _op_event(state) -> None:
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _CSS = """<style>
-/* 怀旧皮肤：复刻经典财务软件的观感——深蓝标题栏、宋体正文、密集网格、
-   印章式状态。改的是观感不是结构，语义与内核术语保持一致。 */
-body{font-family:SimSun,'宋体','NSimSun',serif;
-     max-width:1000px;margin:0 auto;padding:0 0 40px;color:#1a1a1a;font-size:14px;
-     background:#eef1f5}
-.wrap{background:#fff;border:1px solid #9fb0c4;border-top:0;padding:16px 20px 24px}
-h1{font-size:16px;margin:0;padding:10px 20px;color:#fff;background:#1f4e79;
-   letter-spacing:2px;font-weight:bold}
-h1 .badge{background:#3d7ab8;color:#eaf2fb;margin-left:8px}
-h2{font-size:15px;margin:22px 0 8px;padding-left:8px;border-left:4px solid #1f4e79}
-h3{font-size:14px;margin:18px 0 6px;color:#1f4e79}
-table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
-th,td{border:1px solid #a9b8c8;padding:4px 8px;text-align:left}
-th{background:#dbe5f1;color:#1f3d5c;font-weight:bold}
-tbody tr:nth-child(even){background:#f6f8fa}
-.badge{display:inline-block;padding:0 6px;border-radius:2px;font-size:12px;
-       border:1px solid #888;color:#555;background:#f2f2f2}
-.st-DRAFT{border-color:#8a8a8a;color:#5a5a5a;background:#f0f0f0}
-.st-PUSHED{border-color:#c98a00;color:#8a5d00;background:#fff6de}
-.st-APPROVED{border-color:#1f4e79;color:#1f4e79;background:#e3edf8}
-.st-POSTED{border-color:#2e7d32;color:#1b5e20;background:#e8f5e9;font-weight:bold}
-.st-REJECTED{border-color:#a32d2d;color:#a32d2d;background:#fcebeb}
-.st-WITHDRAWN{border-color:#8a8a8a;color:#5a5a5a;background:#eceff1}
-.err{color:#a32d2d;background:#fcebeb;border:1px solid #e5b4b4;padding:8px 12px}
-.warn{color:#7a4a00;background:#fff7e6;border:1px solid #ffd591;
-      padding:10px 14px;margin:8px 0;font-size:13px;line-height:1.7}
+:root{
+ --bg:#f5f5f7; --surface:#fff; --border:rgba(0,0,0,.08); --border-strong:rgba(0,0,0,.14);
+ --text:#1d1d1f; --text-2:#515154; --text-3:#86868b;
+ --accent:#0071e3; --accent-press:#0077ed; --accent-soft:#e8f1fd;
+ --green:#34c759; --green-d:#1a8a3a; --orange:#ff9500; --red:#ff3b30; --red-d:#d33;
+ --radius:12px; --radius-sm:9px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+     background:var(--bg);color:var(--text);font-size:14px;line-height:1.6;
+     -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+/* ── App 外壳：侧边栏 + 主区 ── */
+.app{display:flex;min-height:100vh}
+.sidebar{width:240px;flex:0 0 240px;background:var(--surface);border-right:0.5px solid var(--border);
+         padding:20px 14px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.brand{padding:4px 10px 18px}
+.brand-name{font-size:18px;font-weight:600;letter-spacing:.2px}
+.brand-sub{font-size:12px;color:var(--text-3);margin-top:2px}
+.menu{display:flex;flex-direction:column;gap:2px}
+.menu-group{margin:6px 0;padding-top:8px;border-top:0.5px solid var(--border)}
+.group-label{font-size:11px;color:var(--text-3);padding:0 10px 6px;letter-spacing:.3px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:var(--radius-sm);
+          color:var(--text);font-size:13.5px;text-decoration:none;transition:background .15s}
+.nav-item:hover{background:rgba(0,0,0,.04)}
+.nav-item.active{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.nav-ic{width:18px;height:18px;flex:0 0 18px;display:inline-flex;align-items:center;justify-content:center;opacity:.9}
+.nav-badge{margin-left:auto;background:var(--red);color:#fff;font-size:11px;padding:1px 7px;border-radius:10px}
+.sidebar-foot{margin-top:auto;padding:12px 10px 0;font-size:11px;color:var(--text-3);border-top:0.5px solid var(--border)}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;
+        padding:14px 28px;border-bottom:0.5px solid var(--border);background:var(--surface)}
+.topbar-title{font-size:16px;font-weight:500}
+.topbar-status{display:flex;align-items:center;gap:14px;font-size:12.5px;color:var(--text-2)}
+.identity{display:flex;align-items:center;gap:8px}
+.id-dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
+.identity b{color:var(--text);font-weight:500}
+.topbar-status a{color:var(--accent);text-decoration:none;margin-left:4px}
+.topbar-status a:hover{text-decoration:underline}
+.content{padding:24px 28px;flex:1}
+.bottombar{display:flex;align-items:center;justify-content:space-between;
+           padding:12px 28px;border-top:0.5px solid var(--border);
+           font-size:11.5px;color:var(--text-3)}
+.bottombar a{color:var(--text-3);text-decoration:none;margin-left:16px}
+.bottombar a:hover{color:var(--text-2)}
+/* ── 内容卡片 ── */
+.card{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin:14px 0}
+.wrap{background:transparent;border:none;padding:0;max-width:none;margin:0 auto}
+/* ── 标题 ── */
+h1{font-size:20px;font-weight:600;margin:0 0 4px}
+h2{font-size:15px;font-weight:600;margin:22px 0 10px}
+h3{font-size:14px;font-weight:500;margin:18px 0 6px;color:var(--text-2)}
+/* ── 表格 ── */
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+th,td{padding:10px 12px;text-align:left;border-bottom:0.5px solid var(--border)}
+th{color:var(--text-3);font-weight:500;font-size:12px;background:transparent}
+tbody tr:nth-child(even){background:rgba(0,0,0,.015)}
+tbody tr:hover{background:rgba(0,0,0,.03)}
+/* ── 状态徽章 ── */
+.badge{display:inline-block;padding:1px 9px;border-radius:20px;font-size:12px;
+       background:rgba(0,0,0,.06);color:var(--text-2);border:none}
+.st-DRAFT{background:rgba(0,0,0,.06);color:#8e8e93}
+.st-PUSHED{background:#fff4e0;color:#b06a00}
+.st-APPROVED{background:var(--accent-soft);color:var(--accent)}
+.st-POSTED{background:#e6f8ec;color:var(--green-d);font-weight:500}
+.st-REJECTED{background:#ffe9e9;color:var(--red-d)}
+.st-WITHDRAWN{background:rgba(0,0,0,.04);color:#8e8e93}
+/* ── 提示块 ── */
+.err{color:var(--red-d);background:#ffe9e9;border:0.5px solid #f3c2c2;padding:10px 14px;border-radius:var(--radius-sm)}
+.warn{color:#7a4a00;background:#fff7e6;border:0.5px solid #ffe0a3;
+      padding:12px 16px;margin:10px 0;font-size:13px;line-height:1.7;border-radius:var(--radius-sm)}
 .warn ul{margin:6px 0 6px 20px;padding:0}
-.ok{color:#1b5e20;background:#e8f5e9;border:1px solid #a5d6a7;padding:10px 14px;
-    margin:8px 0;font-size:13px;line-height:1.7}
-a{color:#154c8a;text-decoration:none}a:hover{text-decoration:underline}
-.nav{font-size:13px;margin:0 0 14px;padding:6px 10px;background:#dbe5f1;border:1px solid #a9b8c8}
-.ops{background:#f4f7fb;border:1px solid #b9c8d8;padding:12px 16px;margin:14px 0}
-.ops form{margin:6px 0}
-button.danger{background:#a32d2d}
-input,textarea{font-family:inherit;width:100%;padding:5px;margin:4px 0;box-sizing:border-box;
-               border:1px solid #a9b8c8}
+.ok{color:var(--green-d);background:#e6f8ec;border:0.5px solid #b8e6c4;padding:12px 16px;
+    margin:10px 0;font-size:13px;line-height:1.7;border-radius:var(--radius-sm)}
+p.note{background:#fff8e8;border-left:3px solid #ff9500;padding:9px 13px;color:#6b5400;margin:12px 0;border-radius:var(--radius-sm)}
+/* ── 表单与按钮 ── */
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+input,select,textarea{font-family:inherit;width:100%;padding:8px 10px;margin:4px 0;box-sizing:border-box;
+               border:0.5px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13.5px}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}
 label{font-size:13px;cursor:pointer;user-select:none}
-button{padding:5px 16px;background:#1f4e79;color:#fff;border:1px solid #163d5e;
-       border-radius:2px;cursor:pointer;font-family:inherit;font-size:13px}
-button:hover{background:#2b62a3}
-button.ghost{background:#fff;color:#1f4e79}
-.userbar{float:right;font-size:12px;color:#eaf2fb;margin-top:-26px;margin-right:20px}
-.userbar b{color:#fff}.userbar a{color:#cfe0f2}
-select{font-family:inherit;width:100%;padding:4px;margin:4px 0;box-sizing:border-box;
-       border:1px solid #a9b8c8}
-/* 工具条：老软件的「制单/审核/记账」一排按钮，肌肉记忆的落点 */
-.toolbar{background:#dbe5f1;border:1px solid #a9b8c8;padding:6px 10px;margin:10px 0;
-         font-size:13px}
-.toolbar a,.toolbar span.sep{color:#1f4e79;margin-right:14px}
-.toolbar .sep{color:#9fb0c4}
-.num{text-align:right;font-family:'Courier New',monospace}
-.vno{font-family:'Courier New',monospace;font-weight:bold}
+button{font-family:inherit;font-size:13.5px;padding:7px 16px;border-radius:8px;cursor:pointer;
+       background:var(--accent);color:#fff;border:0.5px solid var(--accent);transition:background .15s}
+button:hover{background:var(--accent-press)}
+button.ghost{background:var(--surface);color:var(--accent);border-color:var(--border-strong)}
+button.ghost:hover{background:rgba(0,0,0,.03)}
+button.danger{background:var(--red);border-color:var(--red)}
+button.danger:hover{background:#ff5147}
+/* 工具条 */
+.toolbar{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius-sm);
+         padding:8px 12px;margin:12px 0;font-size:13px;display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+.toolbar a,.toolbar span.sep{color:var(--accent);margin-right:0}
+.toolbar .sep{color:var(--text-3)}
+.ops{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin:14px 0}
+.ops form{margin:6px 0}
+/* 数字 / 凭证号 */
+.num{text-align:right;font-family:"SF Mono",ui-monospace,"Courier New",monospace}
+.vno{font-family:"SF Mono",ui-monospace,"Courier New",monospace;font-weight:600}
 /* 结账体检清单 */
 .check{list-style:none;padding:0;margin:8px 0}
-.check li{border:1px solid #d5dde6;padding:8px 12px;margin:6px 0;font-size:13px;line-height:1.7}
-.check li.pass{border-left:4px solid #2e7d32;background:#f3faf4}
-.check li.fail{border-left:4px solid #a32d2d;background:#fdf4f4}
-.check .item{font-weight:bold}
-.check .hint{color:#8a5d00}
-/* 月末结账向导卡 · 交互式状态机（超级AI总账） */
-.guide{background:#fbfdff;border:1px solid #c3d4e6;padding:12px 16px;margin:8px 0;
-  font-size:13px;line-height:1.7}
-.guide-counts{color:#456;margin:4px 0 8px;font-size:12px}
+.check li{border:0.5px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;margin:6px 0;font-size:13px;line-height:1.7}
+.check li.pass{border-left:3px solid var(--green)}
+.check li.fail{border-left:3px solid var(--red)}
+.check .item{font-weight:600}
+.check .hint{color:#b06a00}
+/* 月末结账向导卡 · 交互式状态机 */
+.guide{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin:10px 0;font-size:13px;line-height:1.7}
+.guide-counts{color:var(--text-2);margin:4px 0 8px;font-size:12px}
 .steps{list-style:none;padding:0;margin:6px 0 0}
-.step{display:flex;gap:10px;padding:8px 10px;margin:6px 0;border-left:4px solid #cbd5e0;
-  background:#fff}
-.step.s-done{border-left-color:#2e7d32}
-.step.s-active{border-left-color:#1f4e79;background:#eef4fb}
-.step.s-blocked{border-left-color:#a32d2d;background:#fdf5f5}
-.step.s-pending{border-left-color:#cbd5e0;opacity:.72}
-.step-no{flex:0 0 22px;height:22px;line-height:22px;text-align:center;border-radius:50%;
-  background:#cbd5e0;color:#fff;font-weight:bold;font-size:12px}
-.step.s-done .step-no{background:#2e7d32}
-.step.s-active .step-no{background:#1f4e79}
-.step.s-blocked .step-no{background:#a32d2d}
+.step{display:flex;gap:10px;padding:10px 12px;margin:6px 0;border-radius:var(--radius-sm);background:var(--surface);border:0.5px solid var(--border)}
+.step.s-done{border-left:3px solid var(--green)}
+.step.s-active{border-left:3px solid var(--accent);background:var(--accent-soft)}
+.step.s-blocked{border-left:3px solid var(--red)}
+.step.s-pending{opacity:.7}
+.step-no{flex:0 0 22px;height:22px;line-height:22px;text-align:center;border-radius:50%;background:rgba(0,0,0,.12);color:#fff;font-weight:600;font-size:12px}
+.step.s-done .step-no{background:var(--green)}
+.step.s-active .step-no{background:var(--accent)}
+.step.s-blocked .step-no{background:var(--red)}
 .step-body{flex:1}
-.step-head{margin-bottom:2px}
-.step-detail{color:#345;font-size:12.5px}
-.step-badge{display:inline-block;padding:0 6px;border-radius:2px;font-size:11px;
-  border:1px solid #999;color:#555;background:#f2f2f2}
-.sb-done{color:#1b5e20;background:#e8f5e9;border-color:#a5d6a7}
-.sb-active{color:#1f4e79;background:#e3edf8;border-color:#9bb8de}
-.sb-blocked{color:#a32d2d;background:#fcebeb;border-color:#e5b4b4}
-.sb-pending{color:#888;background:#f0f0f0;border-color:#ccc}
-.step-btn{display:inline-block;margin:6px 10px 0 0;padding:3px 12px;background:#1f4e79;
-  color:#fff !important;border-radius:2px;font-size:12px}
-.step-btn:hover{text-decoration:none;background:#2b62a3}
-/* 算子 · 账本精灵（产品方案 §8）；右上角常驻 24×24；hover 展开 80×80 详情卡。
-   五条红线在 operator.py docstring 中钉死。 */
-.op-container{position:fixed;top:8px;right:16px;z-index:1000;display:inline-block}
+.step-head{margin-bottom:2px;font-weight:500}
+.step-detail{color:var(--text-2);font-size:12.5px}
+.step-badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;background:rgba(0,0,0,.06);color:var(--text-2)}
+.sb-done{color:var(--green-d);background:#e6f8ec}
+.sb-active{color:var(--accent);background:var(--accent-soft)}
+.sb-blocked{color:var(--red-d);background:#ffe9e9}
+.sb-pending{color:var(--text-3);background:rgba(0,0,0,.04)}
+.step-btn{display:inline-block;margin:8px 10px 0 0;padding:4px 14px;background:var(--accent);color:#fff !important;border-radius:8px;font-size:12px}
+.step-btn:hover{text-decoration:none;background:var(--accent-press)}
+/* 算子 · 账本精灵：嵌入顶栏右侧，不再 fixed */
+.op-container{display:inline-flex;align-items:center;position:static;top:auto;right:auto;z-index:auto}
 .op-container.op-hidden{display:none}
 .op-container .op-svg{cursor:help;vertical-align:middle}
-.op-container .op-detail{display:none;position:absolute;top:30px;right:0;
-   background:#fff;border:1px solid #9fb0c4;padding:10px 12px;border-radius:4px;
-   box-shadow:0 2px 6px rgba(0,0,0,.08);white-space:nowrap;font-size:13px;
-   color:#1a1a1a}
+.op-container .op-detail{display:none;position:absolute;top:54px;right:28px;
+   background:var(--surface);border:0.5px solid var(--border-strong);padding:10px 12px;border-radius:10px;
+   box-shadow:0 4px 16px rgba(0,0,0,.10);white-space:nowrap;font-size:13px;color:var(--text)}
 .op-container:hover .op-detail,.op-container:focus .op-detail{display:block}
-.op-detail-text{margin-top:6px;color:#1f4e79;font-weight:bold;text-align:center}
+.op-detail-text{margin-top:6px;color:var(--accent);font-weight:600;text-align:center}
 .op-detail-svg{display:flex;justify-content:center}
-/* 审批待办行内操作（G1 收口）：同意/驳回+原因/查看 一格放下 */
+/* 审批待办行内操作 */
 .todo-ops{display:flex;gap:8px;align-items:center;margin:0;flex-wrap:wrap}
 .todo-ops input[name=reason]{width:11em;margin:0;padding:3px 6px;font-size:12px}
 .todo-ops button{margin:0;padding:3px 10px;font-size:12px}
+/* 迷你趋势条 */
 .spark{display:inline-flex;gap:2px;align-items:center;min-width:120px}
-.spark .sp{display:inline-block;height:8px;border-radius:1px}
-.spark .sp-pos{background:#1f4e79}
-.spark .sp-neg{background:#b0413e}
+.spark .sp{display:inline-block;height:8px;border-radius:2px}
+.spark .sp-pos{background:var(--accent)}
+.spark .sp-neg{background:#ff3b30}
 table.trend td{padding:4px 8px;border:none}
 /* 业务语言向导（S1） */
-.wiz-search input{width:420px;max-width:70vw;padding:7px 9px;border:1px solid #b9c8d8;border-radius:4px}
-.wiz-search a{margin-left:10px;color:#1f4e79}
+.wiz-search input{width:420px;max-width:70vw;padding:9px 12px;border:0.5px solid var(--border-strong);border-radius:9px}
+.wiz-search a{margin-left:10px;color:var(--accent)}
 .wiz-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:14px}
-.wiz-card{border:1px solid #dde3ea;background:#fff;border-radius:8px;padding:12px 14px;text-decoration:none;color:#1f2d3d;display:block}
-.wiz-card:hover{border-color:#1f4e79;box-shadow:0 2px 10px rgba(31,78,121,.14)}
-.wiz-card b{font-size:15px}.wiz-card .tags{margin:7px 0}.wiz-card .tag{display:inline-block;background:#eef3f8;color:#1f4e79;border-radius:10px;padding:1px 8px;font-size:11px;margin-right:4px}
-.wiz-card small{color:#8a97a5}
-.wiz-form table{border-collapse:collapse;margin:10px 0}
+.wiz-card{border:0.5px solid var(--border);background:var(--surface);border-radius:var(--radius);padding:14px 16px;text-decoration:none;color:var(--text);display:block;transition:border-color .15s,box-shadow .15s}
+.wiz-card:hover{border-color:var(--accent);box-shadow:0 2px 12px rgba(0,113,227,.12)}
+.wiz-card b{font-size:15px}.wiz-card .tags{margin:7px 0}.wiz-card .tag{display:inline-block;background:var(--accent-soft);color:var(--accent);border-radius:10px;padding:1px 8px;font-size:11px;margin-right:4px}
+.wiz-card small{color:var(--text-3)}
+.wiz-form table{border-collapse:collapse;margin:10px 0;width:100%}
 .wiz-form td{padding:7px 10px;vertical-align:middle}
-.wiz-form td:first-child{width:170px;color:#445}
+.wiz-form td:first-child{width:170px;color:var(--text-2)}
 .wiz-preview{border-collapse:collapse;width:100%;margin:10px 0}
-.wiz-preview th,.wiz-preview td{border:1px solid #e3e8ee;padding:7px 10px;text-align:left;vertical-align:top}
-.wiz-preview th{background:#f4f7fb}
-.wiz-preview .why{color:#5a6b7b;font-size:13px;max-width:360px}
-p.note{background:#fff8e8;border-left:3px solid #e0a300;padding:9px 13px;color:#6b5400;margin:12px 0}
-.wiz-back{color:#1f4e79;font-size:13px}
+.wiz-preview th,.wiz-preview td{border:0.5px solid var(--border);padding:9px 12px;text-align:left;vertical-align:top}
+.wiz-preview th{background:rgba(0,0,0,.02);color:var(--text-2);font-weight:500}
+.wiz-preview .why{color:var(--text-2);font-size:13px;max-width:360px}
+.wiz-back{color:var(--accent);font-size:13px}
 /* v2.0 集团合并报表视图 */
-.muted{color:#6b7785;font-size:12.5px}
+.muted{color:var(--text-3);font-size:12.5px}
 .rep{margin:10px 0 16px}
-.rep tr.tot td{background:#dbe5f1;font-weight:bold;border-top:2px solid #1f4e79}
-.chk{display:block;margin:4px 0;padding:4px 8px;border:1px solid #d5dde6;background:#fff}
+.rep tr.tot td{background:rgba(0,0,0,.03);font-weight:600;border-top:2px solid var(--text)}
+.chk{display:block;margin:4px 0;padding:6px 10px;border:0.5px solid var(--border);border-radius:var(--radius-sm);background:var(--surface)}
 .chks{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;margin:8px 0 14px}
 .repwrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:22px;align-items:start}
+.userbar{font-size:12px;color:var(--text-2)}
+.userbar b{color:var(--text);font-weight:500}.userbar a{color:var(--accent)}
+.nav{font-size:13px}
+/* ── 移动端响应式（P0-3）：窄屏把固定侧边栏折叠为抽屉 ── */
+.menu-toggle{display:none}
+.scrim{display:none}
+@media (max-width:820px){
+  .sidebar{position:fixed;left:0;top:0;height:100vh;width:264px;z-index:50;
+           transform:translateX(-100%);transition:transform .25s ease;
+           box-shadow:0 0 30px rgba(0,0,0,.18)}
+  .sidebar.open{transform:translateX(0)}
+  .menu-toggle{display:inline-flex;align-items:center;justify-content:center;
+               width:34px;height:34px;padding:0;margin-right:10px;border-radius:8px;
+               background:transparent;color:var(--text);border:0.5px solid var(--border)}
+  .topbar{position:sticky;top:0;z-index:30;padding:12px 14px}
+  .topbar-title{font-size:15px}
+  .content{padding:16px 14px}
+  .bottombar{padding:10px 14px}
+  .scrim{display:none;position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:40}
+  .app.scrim-show .scrim{display:block}
+  .wiz-search input{width:100%;max-width:none}
+  .repwrap{grid-template-columns:1fr}
+  .chks{grid-template-columns:1fr}
+}
 </style>"""
 
 
-def _page(title: str, body: str, user: str | None = None,
-          show_operator: bool = False) -> HTMLResponse:
-    """渲染页面。user 非空时在右上角显示当前身份与退出入口——
-    让「这笔账记在谁名下」始终可见，是审计可追溯的第一道防线。
 
-    show_operator=True 时在右上角注入算子 fragment（M1 制单 / M2 期初 /
-    M3 月结 / M4 报表四类核心页开启，遵守产品方案 §8.2 "不能喧宾夺主"红线）。
-    渲染前同步算子信号桥：MCP 进程（create_voucher / push_voucher /
-    anomaly_scan）写、Web 进程读——跨进程状态经此单向汇合（ADR-007 迭代2）；
-    随后「用户到场」：仅 IDLE/OFFLINE 升 LISTENING，不抹掉起草/待审/异常
-    等有效信息（ADR-007 迭代4）。
+
+# ── Apple 极简风外壳：侧边栏图标（线性，currentColor） ──
+_IC = {
+    "home": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v9h14v-9"/></svg>',
+    "doc": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>',
+    "chart": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V4M4 20h16M8 16v-5M12 16V8M16 16v-9"/></svg>',
+    "gauge": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-5"/></svg>',
+    "cal": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9h16M8 3v4M16 3v4"/></svg>',
+    "check": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>',
+    "layers": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>',
+    "help": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.1.9-1.1 1.8"/><circle cx="11.9" cy="17" r=".7" fill="currentColor" stroke="none"/></svg>',
+}
+
+_SIDEBAR = (
+    '<aside class="sidebar"><div class="brand"><div class="brand-name">XErp</div>'
+    '<div class="brand-sub">AI 账房 · 属于你自己</div></div>'
+    '<nav class="menu">'
+    f'<a class="nav-item" data-path="/" href="/"><span class="nav-ic">{_IC["home"]}</span>工作区</a>'
+    '<div class="menu-group" id="ledgerGroup" hidden>'
+    '<div class="group-label">当前账套</div>'
+    f'<a class="nav-item" data-ls-suffix="" href="#"><span class="nav-ic">{_IC["doc"]}</span>凭证中心</a>'
+    f'<a class="nav-item" data-ls-suffix="/reports" href="#"><span class="nav-ic">{_IC["chart"]}</span>报表中心</a>'
+    f'<a class="nav-item" data-ls-suffix="/boss" href="#"><span class="nav-ic">{_IC["gauge"]}</span>经营总览</a>'
+    f'<a class="nav-item" data-ls-suffix="/close" href="#"><span class="nav-ic">{_IC["cal"]}</span>月末结账</a>'
+    '</div>'
+    f'<a class="nav-item" data-path="/todo" href="/todo"><span class="nav-ic">{_IC["check"]}</span>审批待办</a>'
+    f'<a class="nav-item" data-path="/group" href="/group"><span class="nav-ic">{_IC["layers"]}</span>集团合并</a>'
+    f'<a class="nav-item" data-path="/help" href="/help"><span class="nav-ic">{_IC["help"]}</span>帮助</a>'
+    '</nav>'
+    '<div class="sidebar-foot">本地账套 · 数据本机</div></aside>'
+)
+
+_SHELL_JS = """<script>
+(function(){
+  var p = location.pathname;
+  var m = p.match(/\\/ledger\\/([^\\/]+)/);
+  var lsId = m ? m[1] : null;
+  if (lsId) {
+    var g = document.getElementById('ledgerGroup');
+    if (g) g.hidden = false;
+    var items = document.querySelectorAll('[data-ls-suffix]');
+    for (var i = 0; i < items.length; i++) {
+      items[i].setAttribute('href', '/ledger/' + lsId + items[i].getAttribute('data-ls-suffix'));
+    }
+  }
+  var navs = document.querySelectorAll('.nav-item');
+  for (var j = 0; j < navs.length; j++) {
+    var a = navs[j];
+    var dp = a.getAttribute('data-path');
+    if (dp) {
+      if ((dp === '/' && p === '/') || (dp !== '/' && p.indexOf(dp) === 0)) a.classList.add('active');
+    } else if (lsId) {
+      var suf = a.getAttribute('data-ls-suffix') || '';
+      var tgt = '/ledger/' + lsId + suf;
+      if (p === tgt || p.indexOf(tgt + '/') === 0) a.classList.add('active');
+    }
+  }
+  /* 移动端抽屉（P0-3）：开关 + 点击导航自动收起 */
+  window.XERP = window.XERP || {};
+  XERP.toggleNav = function(){
+    var s = document.querySelector('.sidebar');
+    var app = document.querySelector('.app');
+    if (!s) return;
+    if (s.classList.contains('open')) { XERP.closeNav(); }
+    else { s.classList.add('open'); if (app) app.classList.add('scrim-show'); }
+  };
+  XERP.closeNav = function(){
+    var s = document.querySelector('.sidebar');
+    var app = document.querySelector('.app');
+    if (s) s.classList.remove('open');
+    if (app) app.classList.remove('scrim-show');
+  };
+  for (var k = 0; k < navs.length; k++) {
+    navs[k].addEventListener('click', function(){
+      if (window.innerWidth <= 820) XERP.closeNav();
+    });
+  }
+})();
+</script>"""
+
+def _page(title: str, body: str, user: str | None = None,
+          show_operator: bool = False, period_label: str | None = None) -> HTMLResponse:
+    """渲染页面（Apple 极简风外壳：左侧导航菜单 + 顶部状态栏 + 底边栏）。
+
+    user 非空时在状态栏显示当前身份（绿点 + 姓名）与退出入口——让「这笔账记在谁名
+    下」始终可见，是审计可追溯的第一道防线。period_label 为可选，账套页传入
+    「2026-09 - 开放」之类的期间状态，落在状态栏左侧。
+
+    show_operator=True 时在状态栏注入算子 fragment（M1 制单 / M2 期初 /
+    M3 月结 / M4 报表四类核心页开启，遵守产品方案 - 8.2 "不能喧宾夺主"红线）。
     """
     userbar = ""
     if user:
         userbar = (
-            f'<div class="userbar">当前身份：<b>{html.escape(user)}</b>'
-            f'　<a href="/help">帮助</a>　<a href="/logout">退出</a></div>'
+            f'<span class="identity"><span class="id-dot"></span>'
+            f'<b>{html.escape(user)}</b></span>'
+            f'<a href="/help">帮助</a><a href="/logout">退出</a>'
         )
     if show_operator:
         try:
@@ -216,16 +360,26 @@ def _page(title: str, body: str, user: str | None = None,
         except Exception:  # noqa: BLE001 桥失败绝不阻塞渲染
             pass
     operator_html = _render_operator() if show_operator else ''
-    nav = ('<div class=nav><a href="/">工作区</a> · '
-           '<a href="/todo">审批待办</a> · '
-           '<a href="/group">集团合并</a></div>')
+    status_extra = f'<span>{html.escape(period_label)}</span>' if period_label else ''
     return HTMLResponse(
         f"<!doctype html><html lang=zh><head><meta charset=utf-8>"
-        f"<title>{html.escape(title)} · XErp</title>{_CSS}</head>"
-        f"<body><h1>XErp <span class=badge>v0.1-dev</span></h1>{userbar}{operator_html}"
-        f'<div class=wrap>{nav}{body}</div></body></html>'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>{html.escape(title)} - XErp</title>{_CSS}</head>"
+        f"<body><div class=app>{_SIDEBAR}"
+        f'<div class=scrim onclick="XERP.closeNav()"></div>'
+        f"<div class=main>"
+        f'<header class=topbar>'
+        f'<button class="menu-toggle" aria-label="打开菜单" onclick="XERP.toggleNav()">'
+        f'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        f'stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>'
+        f'</button>'
+        f'<div class=topbar-title>{html.escape(title)}</div>'
+        f'<div class=topbar-status>{status_extra}{userbar}{operator_html}</div></header>'
+        f'<div class=content>{body}</div>'
+        f'<footer class=bottombar><span>XErp v0.1 - 数据本地存储 - 零月费</span>'
+        f'<span><a href=/help>帮助</a><a href=/logout>退出</a></span></footer>'
+        f"</div></div>{_SHELL_JS}</body></html>"
     )
-
 
 def _fmt(d) -> str:
     return f"{(d or 0):.2f}"
@@ -426,11 +580,11 @@ function recalc(){
       sf=document.getElementById('sumDiff'), hint=document.getElementById('balanceHint');
   if(sd) sd.textContent = d.toFixed(2);
   if(sc) sc.textContent = c.toFixed(2);
-  if(sf){ sf.textContent = diff.toFixed(2); sf.style.color = ok?'#3b6d11':'#a32d2d'; }
+  if(sf){ sf.textContent = diff.toFixed(2); sf.style.color = ok?'#3b6d11':'#ff3b30'; }
   if(hint){
     hint.textContent = ok ? '借贷已平衡，可以提交'
                           : '借贷不等，差额 ' + diff.toFixed(2) + '（提交会被拒绝）';
-    hint.style.color = ok?'#3b6d11':'#a32d2d';
+    hint.style.color = ok?'#3b6d11':'#ff3b30';
   }
 }
 function addLine(){
@@ -565,7 +719,7 @@ def _voucher_form(ls_id: str, accounts: list, period, values: dict | None = None
             f'placeholder="如 customer=甲公司" '
             f'value="{html.escape(str(r.get("aux_dims") or ""))}"></td>'
             '<td><button type=button class="del" '
-            'style="padding:2px 8px;background:#fff;color:#a32d2d;border:1px solid #ddd">'
+            'style="padding:2px 8px;background:#fff;color:#ff3b30;border:1px solid rgba(255,59,48,.4)">'
             "删除</button></td></tr>"
         )
 
@@ -656,7 +810,7 @@ document.addEventListener('DOMContentLoaded', function(){{
 <p>凭证类别：<select name=voucher_type onchange="this.form.querySelector(
    'select[name=voucher_type]').blur()" style="max-width:220px;display:inline-block"
    >{type_opts}</select>
-   <span id=typeHint style="margin-left:10px;color:#1f4e79"></span></p>
+   <span id=typeHint style="margin-left:10px;color:#0071e3"></span></p>
 <p>科目过滤：<input id=acctFilter oninput="filterAccounts(this.value)"
    placeholder="输入编码或名称，如 1002 或 银行"
    style="max-width:320px;display:inline-block"></p>
@@ -675,8 +829,8 @@ document.addEventListener('DOMContentLoaded', function(){{
   <th></th><th></th>
 </tr></tfoot>
 </table>
-<p><button type=button onclick="addLine()" style="background:#fff;color:#185fa5;
-   border:1px solid #185fa5">+ 增加一行</button>
+<p><button type=button onclick="addLine()" style="background:#fff;color:#0071e3;
+   border:1px solid #0071e3">+ 增加一行</button>
    <span id=balanceHint style="margin-left:12px;font-size:14px"></span></p>
 <p>日期：<input type=date name=voucher_date value="{vdate}"
    style="max-width:200px;display:inline-block"></p>
@@ -844,13 +998,13 @@ def _svg_line_chart(title: str, series: list, labels: list | None = None) -> str
     def y(v):
         return pad + plot_h - (plot_h * (v - vmin) / rng)
 
-    colors = ['#1f4e79', '#b0413e', '#2e7d32', '#e0a300', '#6a5acd']
+    colors = ['#0071e3', '#ff3b30', '#34c759', '#ff9500', '#af52de']
     svg = [f'<svg viewBox="0 0 {W} {H}" width=100% style="max-width:640px">']
     for g in range(5):
         gy = pad + plot_h * g / 4
-        svg.append(f'<line x1={pad} y1={gy:.1f} x2={W-pad} y2={gy:.1f} stroke=#e3e8ee />')
+        svg.append(f'<line x1={pad} y1={gy:.1f} x2={W-pad} y2={gy:.1f} stroke=#e8e8ed />')
         val = vmax - rng * g / 4
-        svg.append(f'<text x=2 y={gy+3:.1f} font-size=9 fill=#8a97a5>{val:,.0f}</text>')
+        svg.append(f'<text x=2 y={gy+3:.1f} font-size=9 fill=#86868b>{val:,.0f}</text>')
     for idx, (name, vals) in enumerate(series):
         c = colors[idx % len(colors)]
         pts = ' '.join(f'{x(i):.1f},{y(v):.1f}' for i, v in enumerate(vals))
@@ -858,7 +1012,7 @@ def _svg_line_chart(title: str, series: list, labels: list | None = None) -> str
         for i, v in enumerate(vals):
             svg.append(f'<circle cx={x(i):.1f} cy={y(v):.1f} r=2.5 fill={c} />')
     for i, lb in enumerate(labels):
-        svg.append(f'<text x={x(i):.1f} y={H-8} font-size=9 fill=#8a97a5 text-anchor=middle>{html.escape(str(lb))}</text>')
+        svg.append(f'<text x={x(i):.1f} y={H-8} font-size=9 fill=#86868b text-anchor=middle>{html.escape(str(lb))}</text>')
     svg.append('</svg>')
     legend = ' '.join(
         f'<span style="color:{colors[idx % len(colors)]}">● {html.escape(name)}</span>'
@@ -876,7 +1030,7 @@ def _svg_donut(title: str, segments: list) -> str:
     W = 240
     r, cx, cy = 70, 120, 90
     circ = 2 * 3.1415926 * r
-    colors = ['#1f4e79', '#e0a300', '#2e7d32', '#b0413e', '#6a5acd', '#3d7ab8']
+    colors = ['#0071e3', '#ff9500', '#34c759', '#ff3b30', '#af52de', '#5ac8fa']
     svg = [f'<svg viewBox="0 0 {W} 180" width=100% style="max-width:240px">']
     offset = 0.0
     for i, (name, val) in enumerate(segs):
@@ -889,8 +1043,8 @@ def _svg_donut(title: str, segments: list) -> str:
             f'transform="rotate(-90 {cx} {cy})" />'
         )
         offset += len_
-    svg.append(f'<text x={cx} y={cy-4} font-size=14 fill=#1f4e79 text-anchor=middle font-weight=bold>合计</text>')
-    svg.append(f'<text x={cx} y={cy+14} font-size=12 fill=#1f4e79 text-anchor=middle>{total:,.0f}</text>')
+    svg.append(f'<text x={cx} y={cy-4} font-size=14 fill=#0071e3 text-anchor=middle font-weight=bold>合计</text>')
+    svg.append(f'<text x={cx} y={cy+14} font-size=12 fill=#0071e3 text-anchor=middle>{total:,.0f}</text>')
     svg.append('</svg>')
     legend = ''.join(
         f'<div style="font-size:12px"><span style="color:{colors[i % len(colors)]}">●</span> '
@@ -905,8 +1059,8 @@ def _mini_progress(done: int, total: int, label: str) -> str:
     return (
         f'<div style="margin:6px 0"><div style="font-size:12px">{html.escape(label)} '
         f'<b>{done}/{total}</b>（{pct}%）</div>'
-        f'<div style="background:#e3e8ee;height:10px;border-radius:5px;overflow:hidden">'
-        f'<div style="background:#1f4e79;height:100%;width:{pct}%"></div></div></div>'
+        f'<div style="background:#e8e8ed;height:10px;border-radius:5px;overflow:hidden">'
+        f'<div style="background:#0071e3;height:100%;width:{pct}%"></div></div></div>'
     )
 
 
@@ -996,9 +1150,31 @@ def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
 
 def build_app(db_url: str | None = None) -> FastAPI:
     url = db_url or os.environ.get("XERP_DB") or f"sqlite:///{_REPO_ROOT / 'ledgeros_dev.db'}"
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, event
 
-    engine = create_engine(url)
+    # 并发韧性（P0-2）：SQLite WAL + Busy-Retry，根治 database is locked，
+    # 支撑团队模式（NAS/SMB 共享账套）多人协同审批 / 查询并发。
+    connect_args: dict = {}
+    is_sqlite = url.startswith("sqlite")
+    if is_sqlite:
+        connect_args["timeout"] = 5  # DBAPI 忙等待 5s，降低瞬时锁冲突
+    engine = create_engine(url, connect_args=connect_args)
+    if is_sqlite:
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragmas(dbapi_conn, conn_record):
+            try:
+                cur = dbapi_conn.cursor()
+                # WAL：读不锁写，读写并发不再互相阻塞
+                cur.execute("PRAGMA journal_mode=WAL")
+                # 忙等待 5s 再报 database is locked，配合写事务重试
+                cur.execute("PRAGMA busy_timeout=5000")
+                # NORMAL 同步：WAL 下仍保证掉电不丢已提交数据，且写吞吐更高
+                cur.execute("PRAGMA synchronous=NORMAL")
+                cur.close()
+            except Exception:
+                # 只读库 / 部分网络文件系统（不支持 -wal/-shm）静默降级为默认模式
+                pass
+
     Base.metadata.create_all(engine)
 
     app = FastAPI(title="XErp Web")
@@ -1411,6 +1587,10 @@ def build_app(db_url: str | None = None) -> FastAPI:
             plabel = (
                 f"{period.year}-{period.month:02d}" if period is not None else "无期间"
             )
+            period_label = (
+                f"{period.year}-{period.month:02d} · {period_zh(period.status)}"
+                if period is not None else None
+            )
             body = (
                 f"<h2>账套：{html.escape(ls.name)}</h2>"
                 + _toolbar(
@@ -1443,7 +1623,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
 """
             )
             return _page(f"{ls.name}", body, request.state.subject_name,
-                         show_operator=True)
+                         show_operator=True, period_label=period_label)
 
     @app.post("/ledger/{ls_id}/opening")
     def opening_import(
@@ -1937,13 +2117,13 @@ def build_app(db_url: str | None = None) -> FastAPI:
             ]
             health_html = "<div style='display:flex;flex-wrap:wrap;gap:10px'>"
             for name, ok, hint in health:
-                color = "#2e7d32" if ok else "#a32d2d"
+                color = "#34c759" if ok else "#ff3b30"
                 dot = "🟢" if ok else "🔴"
                 health_html += (
                     f"<div style='border:1px solid {color};border-radius:8px;padding:8px 12px;min-width:150px'>"
                     f"<div style='font-size:20px'>{dot}</div>"
                     f"<div style='font-weight:bold'>{html.escape(name)}</div>"
-                    f"<div style='font-size:12px;color:#555'>{html.escape(hint)}</div></div>"
+                    f"<div style='font-size:12px;color:#86868b'>{html.escape(hint)}</div></div>"
                 )
             health_html += "</div>"
             tips_html = "".join(f"<li>{t}</li>" for t in d["tips"])
@@ -2118,17 +2298,17 @@ def build_app(db_url: str | None = None) -> FastAPI:
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>{html.escape(ls.name)} 财报卡片</title>
 <style>
-body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#eef1f5;margin:0;padding:20px;display:flex;justify-content:center}}
-.card{{background:#fff;max-width:380px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 6px 24px rgba(31,78,121,.18)}}
-.hd{{background:linear-gradient(135deg,#1f4e79,#3d7ab8);color:#fff;padding:18px 20px}}
+body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#e8e8ed;margin:0;padding:20px;display:flex;justify-content:center}}
+.card{{background:#fff;max-width:380px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.10)}}
+.hd{{background:linear-gradient(135deg,#0071e3,#5ac8fa);color:#fff;padding:18px 20px}}
 .hd .nm{{font-size:18px;font-weight:bold}}
 .hd .pd{{font-size:13px;opacity:.85;margin-top:2px}}
 .bd{{padding:18px 20px}}
-.row{{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #eef1f5;font-size:14px}}
+.row{{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #e8e8ed;font-size:14px}}
 .row .k{{color:#5a6b7b}}.row .v{{font-weight:bold;color:#1f2d3d}}
-.v.pos{{color:#2e7d32}}.v.neg{{color:#a32d2d}}
+.v.pos{{color:#34c759}}.v.neg{{color:#ff3b30}}
 .tag{{display:inline-block;background:#e8f5e9;color:#1b5e20;border-radius:10px;padding:2px 10px;font-size:12px;margin-top:10px}}
-.cmt{{font-size:13px;color:#345;background:#f4f7fb;border-radius:8px;padding:10px;margin-top:12px;line-height:1.6}}
+.cmt{{font-size:13px;color:#345;background:#e8e8ed;border-radius:8px;padding:10px;margin-top:12px;line-height:1.6}}
 .ft{{font-size:11px;color:#9aa7b5;text-align:center;padding:12px}}
 </style></head><body><div class=card>
 <div class=hd><div class=nm>{html.escape(ls.name)}</div><div class=pd>{yr} 年 {mo} 月 · 经营月报</div></div>
