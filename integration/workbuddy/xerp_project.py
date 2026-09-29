@@ -39,6 +39,7 @@ from kernel.authz import grant_ledger_role  # noqa: E402
 from kernel.coa import import_chart_of_accounts, load_template_rows  # noqa: E402
 from kernel.copilot import ask as copilot_ask  # noqa: E402
 from kernel.db.base import Base  # noqa: E402
+from kernel.migrate import ensure_schema_current, read_schema_version  # noqa: E402
 from kernel.db.models import Account, LedgerSet, Period, Subject, Voucher  # noqa: E402
 
 MANIFEST_NAME = "xerp.project.json"
@@ -107,7 +108,8 @@ def init_project(
             pass
 
     engine = create_engine(_sqlite_url(p / DB_REL))
-    Base.metadata.create_all(engine)
+    # 内置迁移器：零依赖补齐表/列（替代 create_all，抗漂移，复制旧账套也安全）
+    ensure_schema_current(_sqlite_url(p / DB_REL))
     today = date.today()
     with Session(engine) as s:
         ls = s.scalars(select(LedgerSet).where(LedgerSet.name == ledger_name)).first()
@@ -177,6 +179,8 @@ def open_session(project_dir: str | Path) -> Iterator[Session]:
     """按项目清单打开该账套的只读/事务会话（commit/rollback 自动管理）。"""
     m = load_manifest(project_dir)
     p = Path(project_dir).expanduser().resolve()
+    # 打开即升级：复制旧账套目录到新机器/新版本也零感知补齐表/列
+    ensure_schema_current(_sqlite_url(p / m["db"]))
     engine = create_engine(_sqlite_url(p / m["db"]))
     s = Session(engine)
     try:
@@ -225,6 +229,18 @@ def doctor(project_dir: str | Path) -> dict:
 
     dbf = p / m.get("db", DB_REL)
     _add("02_db_file", dbf.exists(), dbf)
+
+    # 00 内置迁移器：打开即零感知升级 Schema（复制旧账套目录到新机器也安全）
+    try:
+        pre = read_schema_version(_sqlite_url(dbf))
+        res = ensure_schema_current(_sqlite_url(dbf))
+        added = res.get("added_columns") or []
+        detail = f"升级 {pre}→{res['schema_version']}" + (
+            f" 补齐{len(added)}列" if added else " 已是最新"
+        )
+        _add("00_schema_migrate", True, detail)
+    except Exception as exc:
+        _add("00_schema_migrate", False, f"迁移失败: {exc}")
 
     try:
         with open_session(p) as s:

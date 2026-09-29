@@ -1151,6 +1151,7 @@ def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
 def build_app(db_url: str | None = None) -> FastAPI:
     url = db_url or os.environ.get("XERP_DB") or f"sqlite:///{_REPO_ROOT / 'ledgeros_dev.db'}"
     from sqlalchemy import create_engine, event
+    from kernel.migrate import ensure_schema_current  # 内置迁移器：零依赖补齐表/列
 
     # 并发韧性（P0-2）：SQLite WAL + Busy-Retry，根治 database is locked，
     # 支撑团队模式（NAS/SMB 共享账套）多人协同审批 / 查询并发。
@@ -1175,7 +1176,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 # 只读库 / 部分网络文件系统（不支持 -wal/-shm）静默降级为默认模式
                 pass
 
-    Base.metadata.create_all(engine)
+    # 内置迁移器：零依赖补齐表/列（替代 create_all，抗漂移，老库打开即升级）
+    ensure_schema_current(url)
 
     app = FastAPI(title="XErp Web")
 
