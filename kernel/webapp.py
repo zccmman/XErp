@@ -20,8 +20,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kernel.coa import CoaImportError, import_chart_of_accounts, load_template_rows
 from kernel.classic import period_zh, status_zh, voucher_prefix
+from kernel.provisioning import (
+    list_templates,
+    owned_ledger_for_subject,
+    provision_personal_ledger,
+)
 from kernel.db.base import Base
 from kernel.db.models import (
     Account,
@@ -1191,7 +1195,9 @@ def build_app(db_url: str | None = None) -> FastAPI:
     from kernel import webauth
 
     # 无需登录即可访问的路径（企微回调由签名校验保护，不能走会话）
-    PUBLIC_PATHS = ("/login", "/logout", "/wecom/callback", "/help")
+    # 身份联邦端点（/api/identity/* 与 /login/wb）首次接入即「一键开通」个人账套，
+    # 是创建第一个身份的唯一途径，必须公开，否则形成「无身份→不能开通→无身份」死锁。
+    PUBLIC_PATHS = ("/login", "/logout", "/wecom/callback", "/help", "/api/identity", "/login/wb")
 
     def _is_fresh_install(s: Session) -> bool:
         """库中尚无任何操作身份 —— 即全新安装、从未建账。"""
@@ -1404,7 +1410,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
     # ---------- 建账向导 ----------
 
     @app.get("/init", response_class=HTMLResponse)
-    def init_form(request: Request, error: str = ""):
+    def init_form(request: Request, error: str = "", quick: str = ""):
         with session() as s:
             fresh = _is_fresh_install(s)
         err = f'<p class="err">{html.escape(error)}</p>' if error else ""
@@ -1424,14 +1430,30 @@ def build_app(db_url: str | None = None) -> FastAPI:
             if fresh and not webauth.is_open_mode()
             else ""
         )
+        # 起步模板选项（一键开通可选开账档案）
+        tpl_opts = "".join(
+            f'<option value="{t["key"]}">{html.escape(t["label"])}</option>'
+            for t in list_templates()
+        )
+        default_name = "我的账套" if quick else ""
+        default_owner = "老板" if quick else ""
+        quick_link = (
+            '<p><a class="btn" href="/init?quick=1">⚡ 一键开通（默认小微企业模板）</a></p>'
+            if not quick
+            else ""
+        )
         body = (
             err
             + boot_note
-            + "<h2>建账向导</h2><form method=post action=/init>"
-            + "账套名称<br><input name=name required><br>"
-            + "所有者姓名（制单人身份）<br><input name=owner_name required><br>"
+            + "<h2>一键开通我的账套</h2>"
+            + quick_link
+            + '<form method=post action=/init>'
+            + f'账套名称<br><input name=name value="{html.escape(default_name)}" required><br>'
+            + f'所有者姓名（制单人身份）<br><input name=owner_name value="{html.escape(default_owner)}" required><br>'
+            + "起步模板（决定开账档案与引导清单）<br>"
+            f'<select name=template>{tpl_opts}</select><br>'
             + pwd_field
-            + "<br><button type=submit>创建（自动导入小企业会计准则科目）</button></form>"
+            + "<br><button type=submit>创建（自动导入科目 + 建审批人身份）</button></form>"
             + "<p>创建后请在账套页录入期初余额（试算平衡自动校验）。</p>"
         )
         return _page("建账", body, request.state.subject_name)
@@ -1441,6 +1463,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
         request: Request,
         name: str = Form(""),
         owner_name: str = Form(""),
+        template: str = Form(""),
         password: str = Form(""),
     ):
         name, owner_name = name.strip(), owner_name.strip()
@@ -1454,30 +1477,103 @@ def build_app(db_url: str | None = None) -> FastAPI:
             exists = s.scalars(select(LedgerSet).where(LedgerSet.name == name)).first()
             if exists is not None:
                 return RedirectResponse(f"/ledger/{exists.id}", status_code=303)
-            ls = LedgerSet(name=name, accounting_standard="small_business")
-            s.add(ls)
-            s.flush()
-            try:
-                import_chart_of_accounts(s, ls.id, load_template_rows())
-            except CoaImportError as e:
-                s.rollback()
-                return RedirectResponse(f"/init?error={e}", status_code=303)
-            today = date.today()
-            s.add(Period(ledger_set_id=ls.id, year=today.year, month=today.month, status="OPEN"))
-            owner = Subject(type="user", display_name=owner_name, autonomy_level=3)
-            s.add(owner)
-            s.commit()
-            resp = RedirectResponse(f"/ledger/{ls.id}", status_code=303)
+            # 一键开通：复用内核 provision_personal_ledger（双身份 + 144 科目 + 当期 OPEN + 模板）
+            # - 未登录（全新安装）：按 owner_name 派生稳定外部键，幂等（同人重复提交不双建）
+            # - 已登录：把 admin 授予当前主体并新建一套账套（一个主体可有多个账套，不复用既有）
+            cur_sub = getattr(request.state, "subject_id", "") or ""
+            if cur_sub:
+                res = provision_personal_ledger(
+                    s, owner_subject_id=cur_sub, display_name=owner_name,
+                    ledger_name=name, template=template or None,
+                )
+            else:
+                ext_ref = f"web:{owner_name}"
+                res = provision_personal_ledger(
+                    s, external_ref=ext_ref, display_name=owner_name,
+                    ledger_name=name, template=template or None,
+                )
+            resp = RedirectResponse(f"/ledger/{res['ledger_set_id']}", status_code=303)
             if anonymous:
                 # 建账即登录：全新安装时不必建完再去登录页选一次身份
                 resp.set_cookie(
                     webauth.COOKIE_NAME,
-                    webauth.issue_token(owner.id, owner_name),
+                    webauth.issue_token(res["subject_id"], owner_name),
                     httponly=True,
                     samesite="lax",
                     max_age=webauth.SESSION_TTL_SECONDS,
                 )
             return resp
+
+    # ---------- 身份联邦（A · 寄生 WB 平台）：外部身份 ↔ XERP 个人账套 ----------
+    # 思路：外部身份（WB uid / 飞书 open_id / 本地主体）首次接入即「一键开通」个人账套（C），
+    # 之后该外部身份始终映射到同一账套；平台层结构性保证制单≠审批。
+    # 内核零 WorkBuddy 依赖：external_ref 由调用方传入，本模块只做确定性建账。
+
+    @app.post("/api/identity/bind")
+    def identity_bind(external_ref: str = Form(""), display_name: str = Form("")):
+        """外部身份首次接入：幂等开通/绑定个人账套 + 主体，返回 ids。"""
+        if not external_ref:
+            return JSONResponse({"error": "external_ref 缺失"}, status_code=400)
+        with session() as s:
+            res = provision_personal_ledger(
+                s, external_ref=external_ref, display_name=display_name or ""
+            )
+        return JSONResponse(
+            {
+                "subject_id": res["subject_id"],
+                "ledger_set_id": res["ledger_set_id"],
+                "reviewer_subject_id": res["reviewer_subject_id"],
+                "is_new": res["is_new"],
+                "template": res["template"],
+            }
+        )
+
+    @app.get("/api/identity/status")
+    def identity_status(request: Request):
+        """当前 XERP 会话主体是否已联邦绑定个人账套（公开端点，直接解析会话 Cookie）。"""
+        payload = webauth.parse_token(request.cookies.get(webauth.COOKIE_NAME))
+        sub_id = (payload or {}).get("sub", "")
+        if not sub_id:
+            return JSONResponse({"bound": False})
+        with session() as s:
+            owned = owned_ledger_for_subject(s, sub_id)
+            if not owned:
+                return JSONResponse({"bound": False})
+            subj = s.get(Subject, sub_id)
+            return JSONResponse(
+                {
+                    "bound": True,
+                    "external_ref": subj.external_ref or "",
+                    "ledger_set_id": owned,
+                }
+            )
+
+    @app.post("/login/wb")
+    def login_wb(
+        external_ref: str = Form(""), display_name: str = Form(""), next: str = Form("/"),
+    ):
+        """联邦 SSO 桥接：确保外部身份已开通（首次即一键开通），并以该主体置 XERP 会话。
+
+        登录后 created_by 即联邦主体，制单与审批在不同外部身份下天然分离，
+        平台层加固 maker≠approver。
+        """
+        if not external_ref:
+            return RedirectResponse("/login?error=外部身份缺失", status_code=303)
+        with session() as s:
+            res = provision_personal_ledger(
+                s, external_ref=external_ref, display_name=display_name or ""
+            )
+            subj = s.get(Subject, res["subject_id"])
+            name = subj.display_name if subj else ""
+        resp = RedirectResponse(next or "/", status_code=303)
+        resp.set_cookie(
+            webauth.COOKIE_NAME,
+            webauth.issue_token(res["subject_id"], name),
+            httponly=True,
+            samesite="lax",
+            max_age=webauth.SESSION_TTL_SECONDS,
+        )
+        return resp
 
     # ---------- 账套仪表盘 ----------
 

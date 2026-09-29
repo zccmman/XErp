@@ -35,9 +35,8 @@ from sqlalchemy import create_engine, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from kernel.approval import bind_subject_external_ref, resolve_reviewer  # noqa: E402
-from kernel.authz import grant_ledger_role  # noqa: E402
-from kernel.coa import import_chart_of_accounts, load_template_rows  # noqa: E402
 from kernel.copilot import ask as copilot_ask  # noqa: E402
+from kernel.provisioning import list_templates, provision_personal_ledger  # noqa: E402
 from kernel.db.base import Base  # noqa: E402
 from kernel.migrate import ensure_schema_current, read_schema_version  # noqa: E402
 from kernel.db.models import Account, LedgerSet, Period, Subject, Voucher  # noqa: E402
@@ -85,13 +84,15 @@ def init_project(
     ledger_name: str = "我的账套",
     owner_name: str = "老板",
     accounting_standard: str = "small_business",
+    template: str | None = None,
     owner_ref: str = "",
     reviewer_ref: str = "",
 ) -> dict:
     """把一个目录初始化为「XErp 账套项目」。幂等：重复调用直接 replayed=true。
 
     产出：``<project_dir>/xerp/ledger.db`` + ``<project_dir>/xerp.project.json``。
-    双身份（老板 admin / 审批人 accountant+reviewer）+ 144 科目模板 + 当期 OPEN 期间。
+    委托内核 ``provision_personal_ledger`` 建账（双身份 admin / 审批人 + 144 科目模板
+    + 当期 OPEN 期间 + 起步模板引导），单一真源、零重复配平逻辑。
     """
     p = Path(project_dir).expanduser().resolve()
     (p / "xerp").mkdir(parents=True, exist_ok=True)
@@ -110,53 +111,27 @@ def init_project(
     engine = create_engine(_sqlite_url(p / DB_REL))
     # 内置迁移器：零依赖补齐表/列（替代 create_all，抗漂移，复制旧账套也安全）
     ensure_schema_current(_sqlite_url(p / DB_REL))
-    today = date.today()
+    # 外部身份键：优先 owner_ref，否则按项目路径派生稳定键（复制目录 = 复制账套）
+    ext_ref = owner_ref or f"project:{p.as_posix()}"
     with Session(engine) as s:
-        ls = s.scalars(select(LedgerSet).where(LedgerSet.name == ledger_name)).first()
-        if ls is None:
-            ls = LedgerSet(name=ledger_name, accounting_standard=accounting_standard)
-            s.add(ls)
-            s.flush()
-        stats = import_chart_of_accounts(s, ls.id, load_template_rows())
-
-        period = s.scalars(
-            select(Period).where(
-                Period.ledger_set_id == ls.id,
-                Period.year == today.year,
-                Period.month == today.month,
-            )
-        ).first()
-        if period is None:
-            s.add(Period(ledger_set_id=ls.id, year=today.year, month=today.month, status="OPEN"))
-            s.flush()
-
-        owner = s.scalars(
-            select(Subject).where(Subject.display_name == owner_name, Subject.type == "user")
-        ).first()
-        if owner is None:
-            owner = Subject(type="user", display_name=owner_name, autonomy_level=3)
-            s.add(owner)
-            s.flush()
-        reviewer = s.scalars(
-            select(Subject).where(Subject.display_name == REVIEWER_NAME, Subject.type == "user")
-        ).first()
-        if reviewer is None:
-            reviewer = Subject(type="user", display_name=REVIEWER_NAME, autonomy_level=3)
-            s.add(reviewer)
-            s.flush()
-
-        s.commit()  # SQLite：先落盘主体再授权（防 casbin 自锁）
-        grant_ledger_role(s, ledger_set_id=ls.id, subject_id=owner.id, role="admin")
-        grant_ledger_role(s, ledger_set_id=ls.id, subject_id=reviewer.id, role="accountant")
-        grant_ledger_role(s, ledger_set_id=ls.id, subject_id=reviewer.id, role="reviewer")
-        # WB 原生审批闭环（P0-3）：可选绑定外部身份键（WB user id / 飞书 open_id 等）
-        if owner_ref:
-            bind_subject_external_ref(s, subject_id=owner.id, external_ref=owner_ref)
+        res = provision_personal_ledger(
+            s,
+            external_ref=ext_ref,
+            display_name=owner_name,
+            ledger_name=ledger_name,
+            template=template or accounting_standard,
+        )
+        # WB 原生审批闭环（P0-3）：可选补绑审批人外部身份键（WB user id / 飞书 open_id 等）
         if reviewer_ref:
-            bind_subject_external_ref(s, subject_id=reviewer.id, external_ref=reviewer_ref)
-        # commit 会 expire 属性；会话关闭前捕获 id，避免 DetachedInstanceError
+            bind_subject_external_ref(
+                s, subject_id=res["reviewer_subject_id"], external_ref=reviewer_ref
+            )
         s.commit()
-        ls_id, owner_id, reviewer_id = ls.id, owner.id, reviewer.id
+        ls_id, owner_id, reviewer_id = (
+            res["ledger_set_id"],
+            res["subject_id"],
+            res["reviewer_subject_id"],
+        )
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -165,9 +140,10 @@ def init_project(
         "ledger_set_id": ls_id,
         "owner_subject_id": owner_id,
         "reviewer_subject_id": reviewer_id,
-        "accounting_standard": accounting_standard,
+        "accounting_standard": res["accounting_standard"],
+        "template": res["template"],
         "db": DB_REL,
-        "accounts": stats,
+        "accounts": {"created": res["accounts_created"], "skipped": 0},
         "replayed": False,
     }
     mp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -337,13 +313,21 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="XErp × WorkBuddy：项目即账套")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    ap_init = sub.add_parser("init", help="在项目目录初始化账套（幂等）")
+    ap_init = sub.add_parser("init", help="在项目目录初始化账套（一键开通，幂等）")
     ap_init.add_argument("project_dir")
     ap_init.add_argument("--name", default="我的账套")
     ap_init.add_argument("--owner", default="老板")
-    ap_init.add_argument("--standard", default="small_business")
+    ap_init.add_argument("--standard", default="small_business", help="会计准则（默认小企业）")
+    ap_init.add_argument(
+        "--template",
+        default="",
+        help="起步模板（small_business/individual/sole_proprietor_ltd/nonprofit），空=同 --standard",
+    )
     ap_init.add_argument("--owner-ref", default="", help="老板外部身份键（WB user id 等）")
     ap_init.add_argument("--reviewer-ref", default="", help="审批人外部身份键")
+
+    ap_tpl = sub.add_parser("templates", help="列出可用起步模板（一键开通可选档案）")
+    ap_tpl.add_argument("--json", action="store_true", help="以 JSON 输出")
 
     ap_ask = sub.add_parser("ask", help="只读问答（确定性 Copilot，零 MCP 依赖）")
     ap_ask.add_argument("project_dir")
@@ -360,10 +344,20 @@ def main(argv: list[str] | None = None) -> int:
             ledger_name=args.name,
             owner_name=args.owner,
             accounting_standard=args.standard,
+            template=args.template or None,
             owner_ref=args.owner_ref,
             reviewer_ref=args.reviewer_ref,
         )
         print(json.dumps(m, ensure_ascii=False, indent=2))
+        return 0
+    if args.cmd == "templates":
+        tpls = list_templates()
+        if args.json:
+            print(json.dumps(tpls, ensure_ascii=False, indent=2))
+        else:
+            for t in tpls:
+                print(f"  {t['key']:<20} {t['label']}")
+                print(f"      {t['description']}")
         return 0
     if args.cmd == "ask":
         res = ask_project(args.project_dir, " ".join(args.question))

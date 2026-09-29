@@ -102,9 +102,23 @@ LLM/Copilot 出草稿 ──► 人类核对（制单≠审批）──► 审�
 | 阶段 | 状态 | 内容 |
 |---|---|---|
 | P0 整饬 | ✅ 完成 | Apple 设计回内核 · WAL 并发 · 移动端响应式 · 内置迁移器 |
-| P1 内核 & UI 统一 | 🟢 进行 | 内置迁移器（本里程碑）· MCP 分层统一文档 |
-| P2 离线交付包 | ⏳ 待启 | 两份本文档 + 私有交付包 + 一键开通个人账套 |
+| P1 内核 & UI 统一 | ✅ 完成 | 内置迁移器 · MCP 分层统一文档 |
+| P2 离线交付包 | ✅ 完成 | 两份本文档 + 私有交付包 + **一键开通个人账套（产品化，见 `PROVISIONING.md`）** |
 | P3 市场生态 | 🔜 规划 | WB 应用商店 / 平台级 license / 多租户集团合并 |
+
+### P2 收口要点：一键开通个人账套产品化
+
+- **单一真源**：`kernel/provisioning.py` 的 `provision_personal_ledger` 取代此前分散在
+  `xerp-web-demo` 部署分支的 `provisioning.py / IdentityBinding`，成为 CLI（`xerp_project.py init`）
+  与 Web（`/init` 向导 + `/api/identity/*` + `/login/wb`）唯一建账原语，消除内核↔部署分支分叉。
+- **两种语义**：① 外部身份首次接入幂等开通（external_ref）；② 已登录用户主动新建账套
+  （owner_subject_id，一个主体可多账套，不复用既有）。
+- **起步模板**：`small_business / individual / sole_proprietor_ltd / nonprofit` 四档开账档案，
+  统一复用小企业准则 144 科目，差异在命名/准则/引导清单。
+- **HITL 结构性保证**：建账即创建独立「审批人」身份并授予 accountant+reviewer，owner 仅 admin，
+  制单≠审批靠结构而非约定。`kernel/authz.list_role_members` 改为按角色动作集合反查 `p` 策略
+  （XErp 不依赖 Casbin `g` 角色继承），修复了 reviewer/admin 反查恒空的老 bug。
+- **零宿主依赖**：建账内核零 WorkBuddy 依赖，`tests/test_provisioning.py` 钉死红线。
 
 ---
 

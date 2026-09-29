@@ -36,8 +36,13 @@ description: >
 
 两步工具调用即可从零到可记账（对话中先确认再执行）：
 
-1. **确认账套名与所有者** → `init_ledger_set(name, owner_name)`
+1. **确认账套名与所有者** → `init_ledger_set(name, owner_name[, template])`
    - 自动：导入小企业会计准则 144 科目 + 创建当月 OPEN 期间 + 注册所有者身份
+   - 可选 `template` 选择起步模板（开账档案）：`small_business`（小微企业，默认）/
+     `individual`（个体户简易账）/ `sole_proprietor_ltd`（一人有限公司）/ `nonprofit`（非营利社团）。
+     四档统一复用小企业准则科目，差异在命名/准则/引导清单，帮助用户"开对第一套账"。
+   - **双身份 + HITL 结构性保证**：建账即创建独立「审批人」身份（授予 accountant+reviewer），
+     所有者仅 admin，制单≠审批靠结构而非约定。
    - 同名账套已存在会返回 replayed=true，此时直接改用返回的既有 id
 2. **收集期初余额** → 逐项向用户确认（科目候选 + 金额），
    借方余额科目填 debit，贷方余额科目（如实收资本/借款）填 credit
@@ -79,6 +84,14 @@ description: >
 - `workbuddy_bind_member(subject_id, external_ref)`：把 WB user id 绑定到内核主体（身份映射键，不参与授权判定）。
   建账时 `init_ledger_set` 的 `--owner-ref/--reviewer-ref` 已自动绑定；缺失可补绑。
 - 智能体职责：push 后主动调 `workbuddy_send_approval`；收到人类确认再 approve/reject。**绝不自审、绝不无确认过账。**
+
+## 一键开通与身份联邦（P2 产品化）
+
+外部身份（WB uid / 飞书 open_id / 本地 Web 会话 / CLI `--owner-ref`）首次接入即**幂等**开通个人账套，
+之后同一身份始终映射到同一账套；内核级零 WorkBuddy 依赖，建账逻辑在 `kernel/provisioning.py`
+（详见 `integration/workbuddy/PROVISIONING.md`）。Agent 在跨入口建账时无需关心底层差异——
+CLI `init`、Web `/init` 向导、`/api/identity/bind`、`/login/wb` 全部收敛到同一内核原语，
+**双身份 + HITL 由结构保证**，你只需在回复里明示「已用审批人身份批准」即可。
 
 ## 存货 / 固定资产 / 成本核算（P0-1，业财一体化）
 

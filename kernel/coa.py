@@ -46,8 +46,18 @@ def builtin_template_path() -> Path:
     return Path(__file__).parent / "data" / "coa_small_business.csv"
 
 
-def load_template_rows() -> list[dict[str, str]]:
-    with builtin_template_path().open(encoding="utf-8-sig", newline="") as f:
+def load_template_rows(filename: str | None = None) -> list[dict[str, str]]:
+    """读取 COA 模板行。``filename`` 为 ``kernel/data`` 下的 CSV（默认内置小企业准则模板）。
+
+    起步模板（provisioning.TEMPLATES）当前统一复用内置模板；预留 ``filename`` 以便
+    后续为个体户 / 非营利等场景提供专属科目表，单一真源不变。
+    """
+    path = (
+        Path(__file__).parent / "data" / filename
+        if filename
+        else builtin_template_path()
+    )
+    with path.open(encoding="utf-8-sig", newline="") as f:
         return list(csv.DictReader(f))
 
 

@@ -100,7 +100,11 @@ python integration/workbuddy/xerp_project.py doctor <项目目录>
 - 发布载体：`xerp-web-demo/`（脱敏云部署副本，含 `main.py` 硬编码 `0.0.0.0` + `XERP_WEB_HOST` + 同目录 SQLite，依赖已剔除 PG/psycopg/fastmcp 以过沙箱预检）。
 - 重新发布：调用 WorkBuddy 发布能力，`directory=xerp-web-demo`、`startCmd=python main.py`、`installCmd=pip install -r requirements.txt`，复用既有 `xerp-demo` 应用覆盖。
 
-> 注意：`xerp-web-demo` 与内核 `webapp.py` 存在部署专属差异（cloud_config / provisioning / IdentityBinding），**Apple 风等设计层改动已回内核**，但部署分支不回写内核（避免冲掉云端逻辑）。
+> 注意：`xerp-web-demo` 与内核 `webapp.py` 曾存在部署专属差异（cloud_config / provisioning / IdentityBinding）。
+> **P2 已收敛**：`provisioning` 能力已产品化为内核 `kernel/provisioning.py` 的 `provision_personal_ledger`
+> （单一真源，取代 demo 分支的 `IdentityBinding`），CLI 与 Web 均收敛其上；`IdentityBinding` 不再需要。
+> Apple 风等设计层改动已回内核。部署分支仅在云端专属逻辑（cloud_config / 网关鉴权）上保留差异，
+> 不回写内核（避免冲掉云端逻辑）。详见 `PROVISIONING.md`。
 
 ---
 

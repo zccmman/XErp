@@ -106,9 +106,21 @@ def list_role_members(session: Session, *, ledger_set_id: str, role: str) -> lis
     用于把「reviewer/admin 角色」反查成内核 Subject id 候选，供
     kernel.approval.resolve_reviewer 构造 fallback（reviewer 在前、admin 在后）。
     空列表 = 该账套未授予该角色。
+
+    注意：XErp 的授权模型把角色展开成具体动作，直接写 ``p`` 策略
+    ``(subject, ledger_set_id, act)``（不使用 casbin 的 ``g`` 角色继承），
+    因此「角色成员」须按该角色的动作集合反查 ``p`` 策略，
+    而非 ``get_users_for_role_in_domain``（那只会查 ``g`` 继承，对本模型恒为空）。
     """
     e = get_enforcer(session)
-    return list(e.get_users_for_role_in_domain(role, ledger_set_id))
+    acts = set(ROLES.get(role, []))
+    if not acts:
+        return []
+    members: list[str] = []
+    for sub, _dom, act in e.get_filtered_policy(1, ledger_set_id):
+        if act in acts and sub not in members:
+            members.append(sub)
+    return members
 
 
 def check_agent_quota(session: Session, *, actor_id: str,
