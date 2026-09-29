@@ -68,12 +68,15 @@ def test_fresh_upgrade_head_has_all_model_columns():
         # P0-1 主数据表必须由迁移提供（收货/资产卡片，非投影）
         assert _columns(db, "inventory_items"), "P0-1 存货档案表必须由迁移提供"
         assert _columns(db, "asset_cards"), "P0-1 固定资产卡片表必须由迁移提供"
+        # ERP 模块纵深：预算主数据表必须由迁移提供（漏写迁移会让老库查询 500）
+        assert _columns(db, "budgets"), "0013 预算主表必须由迁移提供"
+        assert _columns(db, "budget_lines"), "0013 预算明细表必须由迁移提供"
         con = sqlite3.connect(db)
         try:
             ver = con.execute("select version_num from alembic_version").fetchone()[0]
         finally:
             con.close()
-        assert ver == "0012_inventory_asset"
+        assert ver == "0013_budget"
 
 
 def test_legacy_db_upgrade_is_idempotent():
@@ -127,5 +130,7 @@ def test_legacy_db_upgrade_is_idempotent():
         _vl = _columns(db, "voucher_lines")
         assert {"currency", "fx_rate", "foreign_debit", "foreign_credit",
                 "quantity", "unit"} <= _vl, "② 外币/数量列必须由迁移提供"
+        assert _columns(db, "budgets"), "0013 预算主表必须由迁移提供"
+        assert _columns(db, "budget_lines"), "0013 预算明细表必须由迁移提供"
         # 再跑一遍 head：幂等，不抛异常
         _alembic_upgrade(f"sqlite:///{db}")

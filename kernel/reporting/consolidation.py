@@ -415,6 +415,151 @@ def consolidate(
     }
 
 
+# ---------------------------------------------------------- 合并工作底稿（可视化层）
+
+def consolidation_workbook(
+    session: Session, ledger_set_ids: list[str], year: int, month: int,
+    standard: str = "small_business",
+    ownership: dict[str, object] | None = None,
+    eliminations: list[dict] | None = None,
+    fx_rates: dict[str, object] | None = None,
+) -> dict:
+    """合并工作底稿（只读，单一真源）。
+
+    在 ``consolidate`` 之上，把「逐主体贡献」与「内部抵消」并排成一张可审计的
+    工作底稿：每个 BS 大类 / IS 项目都有——各主体分项 + 主体小计 + 抵消调整
+    + 合并数 四列。**抵消调整列 = 主体小计 − 合并数**，由 ``consolidate`` 已应用的
+    结果反推，不另起抵消逻辑，守住 ADR-002 单一真源（合并数永远以 consolidate 为准）。
+
+    抵消明细另取 ``consolidated_posting_levels``（PL00/PL20/合并数 code 级拆解）与
+    已应用消除对（dr_code/cr_code/amount）并列呈现，供 Boss 审阅「这一行里有多少是
+    抵消出来的」。
+
+    设计取舍：IS 工作底稿只并入映射内的经营项目（收入/费用），「少数股东损益」与
+    「归属于母公司净利润」属披露行（非主体分项），单独列示于汇总区，不混入贡献矩阵。
+    """
+    c = consolidate(session, ledger_set_ids, year, month, standard,
+                    ownership, eliminations, fx_rates)
+    bs = c["balance_sheet"]
+    inc = c["income_statement"]
+
+    # 逐主体分项（pre-elimination）：复用单主体 balance_sheet / income_statement 单一真源
+    entities = []
+    for ls in _ledger_sets(session, ledger_set_ids):
+        ebs = balance_sheet(session, ls.id, year, month, standard)
+        eis = income_statement(session, ls.id, year, month, standard)
+        entities.append({
+            "ledger_set_id": ls.id,
+            "name": ls.name,
+            "currency": ls.functional_currency or "CNY",
+            "ownership": c["owned"].get(ls.id, "1"),
+            "bs": ebs,
+            "is": eis,
+        })
+
+    def _bs_groups(ebs: dict, major: str) -> dict[str, Decimal]:
+        return {row["group"]: row["amount"] for row in ebs[major]["items"]}
+
+    def _is_items(eis: dict) -> dict[str, Decimal]:
+        return {it["item"]: it["amount"] for it in eis["items"]}
+
+    def _ws_major(major: str) -> dict:
+        """构建某 BS 大类（assets/liabilities/equity）的工作底稿行。"""
+        consolidated_map = {
+            row["group"]: row["amount"]
+            for row in bs["consolidated"][major]["items"]
+        }
+        contribs_per_entity = [_bs_groups(e["bs"], major) for e in entities]
+        # 行序：先合并表的行（保持报表顺序），再补主体独有但合并已抵消为 0 的行
+        all_groups: list[str] = list(consolidated_map.keys())
+        seen = set(all_groups)
+        for ec in contribs_per_entity:
+            for g in ec:
+                if g not in seen:
+                    all_groups.append(g)
+                    seen.add(g)
+        rows = []
+        for g in all_groups:
+            contr = [ec.get(g, ZERO) for ec in contribs_per_entity]
+            subtotal = sum(contr, ZERO)
+            consolidated_amt = consolidated_map.get(g, ZERO)
+            elim = subtotal - consolidated_amt
+            rows.append({
+                "group": g,
+                "contributions": contr,
+                "subtotal": subtotal,
+                "elimination": elim,
+                "consolidated": consolidated_amt,
+            })
+        return {"rows": rows, "total": bs["consolidated"][major]["total"]}
+
+    # IS：只并入映射内经营项目；少数股权/归属母公司为披露行，单列
+    inc_consolidated_map = {it["item"]: it["amount"] for it in inc["items"]}
+    is_contrs = [_is_items(e["is"]) for e in entities]
+    all_items = list(inc_consolidated_map.keys())
+    seen = set(all_items)
+    for ec in is_contrs:
+        for it in ec:
+            if it not in seen:
+                all_items.append(it)
+                seen.add(it)
+    disclosure = {
+        it for it in all_items
+        if it.startswith("少数股东损益") or it.startswith("归属于母公司")
+    }
+    is_rows = []
+    for it in all_items:
+        if it in disclosure:
+            continue
+        contr = [ec.get(it, ZERO) for ec in is_contrs]
+        subtotal = sum(contr, ZERO)
+        consolidated_amt = inc_consolidated_map.get(it, ZERO)
+        elim = subtotal - consolidated_amt
+        is_rows.append({
+            "item": it,
+            "contributions": contr,
+            "subtotal": subtotal,
+            "elimination": elim,
+            "consolidated": consolidated_amt,
+        })
+
+    # 抵消明细（code 级 PL00/PL20/合并数 + 已应用消除对）
+    pl = consolidated_posting_levels(
+        session, ledger_set_ids, year, month, standard, eliminations, fx_rates
+    )
+
+    return {
+        "period": c["period"],
+        "standard": standard,
+        "currency": c["currency"],
+        "entity_names": [e["name"] for e in entities],
+        "entity_ids": [e["ledger_set_id"] for e in entities],
+        "owned": c["owned"],
+        "balance_sheet": {
+            "assets": _ws_major("assets"),
+            "liabilities": _ws_major("liabilities"),
+            "equity": _ws_major("equity"),
+        },
+        "income_statement": {
+            "rows": is_rows,
+            "net_profit": inc["net_profit"],
+            "minority_interest": inc["minority_interest"],
+            "net_profit_parent": inc["net_profit_parent"],
+            "disclosure": sorted(disclosure),
+        },
+        "eliminations": c["eliminations"],
+        "posting_levels": pl["levels"],
+        "balances": {
+            "assets": bs["consolidated"]["assets"]["total"],
+            "liabilities": bs["consolidated"]["liabilities"]["total"],
+            "equity": bs["consolidated"]["equity"]["total"],
+            "minority_interest": bs.get("minority_interest", ZERO),
+        },
+        "balanced": bs.get("balanced"),
+        "check": bs.get("check"),
+    }
+
+
 # ---------------------------------------------------------- 阶段0 派生（P0-1 血缘 / P0-2 posting level）
 
 

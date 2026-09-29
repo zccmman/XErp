@@ -1,6 +1,9 @@
 # Python
 __pycache__/
 *.py[cod]
+
+# 本地项目记忆（.workbuddy 存储项目级 memory / 运行态，非交付物）
+.workbuddy/
 .venv/
 venv/
 *.egg-info/

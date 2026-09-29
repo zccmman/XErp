@@ -2104,8 +2104,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
     @mcp.tool()
     def fx_revaluation_draft(
         ledger_set_id: str,
-        year: int,
-        month: int,
+        period_year: int,
+        period_month: int,
         fx_rates: dict,
         fx_gain_loss_account: str = "660304",
     ) -> dict:
@@ -2116,6 +2116,7 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         调整额=目标本币−当前账面本币，生成借贷恒等的重估分录草稿（差额对冲到汇兑损益科目）。
 
         铁律：只读、只出草稿，绝不写账；落库由 fx_revaluation_create（HITL）执行。
+        - period_year / period_month：重估期间（与全系统期间参数一致）；
         - fx_rates：{币种: 期末汇率}（如 {"USD": 7.18, "EUR": 7.85}）；缺某币种汇率则跳过该币种并在 notes 标注；
         - fx_gain_loss_account：汇兑损益科目（默认 660304，需账套存在该叶子科目）；
         - 返回 lines（每科目调整 + 汇兑损益平衡分录，含 foreign_net/rate/delta/side）
@@ -2127,7 +2128,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             with repo.session() as s:
                 return _ok(
                     report=_fx(
-                        s, ledger_set_id=ledger_set_id, year=year, month=month,
+                        s, ledger_set_id=ledger_set_id,
+                        year=period_year, month=period_month,
                         fx_rates=fx_rates,
                         fx_gain_loss_account=fx_gain_loss_account,
                     )
@@ -2138,8 +2140,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
     @mcp.tool()
     def fx_revaluation_create(
         ledger_set_id: str,
-        year: int,
-        month: int,
+        period_year: int,
+        period_month: int,
         fx_rates: dict,
         actor_id: str,
         fx_gain_loss_account: str = "660304",
@@ -2147,8 +2149,9 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
     ) -> dict:
         """把汇兑损益重估草稿落成待审（PUSHED）凭证（HITL 写动作，绝不自动过账）。
 
-        AI 产草稿：生成 PUSHED 凭证（待人审→过账才生效）。幂等：同期已生成→ALREADY_RUN。
+         AI 产草稿：生成 PUSHED 凭证（待人审→过账才生效）。幂等：同期已生成→ALREADY_RUN。
         典型闭环：fx_revaluation_draft（只读）→ 人工确认汇率/分录 → fx_revaluation_create 落 PUSHED → Boss 审批过账。
+        - period_year / period_month：重估期间（与全系统期间参数一致）；
         - actor_id：操作人 subject id（制单人≠审批人，终态须人类点头）；
         - voucher_date：凭证日期 ISO，空=当月28日。
         """
@@ -2164,7 +2167,8 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             with repo.session() as s:
                 return _ok(
                     report=create_fx_revaluation_voucher(
-                        s, ledger_set_id=ledger_set_id, year=year, month=month,
+                        s, ledger_set_id=ledger_set_id,
+                        year=period_year, month=period_month,
                         fx_rates=fx_rates, actor={"id": actor_id},
                         fx_gain_loss_account=fx_gain_loss_account,
                         voucher_date=_vd,
@@ -3039,6 +3043,107 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         except Exception as e:  # pragma: no cover
             return _err("SPRITE_PUSH_FAILED", f"主动推送失败：{e}")
 
+    # ---------- 预算编制与对比（ERP 模块纵深 · 计划/控制） ----------
+
+    @mcp.tool()
+    def budget_create(
+        ledger_set_id: str,
+        name: str,
+        fiscal_year: int,
+        lines: list[dict],
+        created_by: str = "",
+        note: str = "",
+    ) -> dict:
+        """编制一套预算（DRAFT）。
+
+        预算是经营计划的量化表达，**绝不**写凭证、绝不进余额投影；对比时实际数来自
+        单一真源 amounts_by_code。每行：{account_code, period(0=年度/1..12=月), amount, note?}。
+        返回 {budget_id, version, lines_count}。修订请走 budget_copy 升版本。
+        """
+        try:
+            from kernel.budget import BudgetError, create_budget
+
+            with repo.session() as s:
+                return _ok(
+                    budget=create_budget(
+                        s, ledger_set_id=ledger_set_id, name=name,
+                        fiscal_year=fiscal_year, lines=lines,
+                        created_by=created_by, note=note or None,
+                    )
+                )
+        except BudgetError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def budget_copy(
+        budget_id: str,
+        new_name: str = "",
+        new_fiscal_year: int = 0,
+    ) -> dict:
+        """克隆一套预算为新版本（DRAFT），用于滚动修订。
+
+        new_fiscal_year=0 沿用原年度。返回新预算摘要（含 copied_from）。
+        """
+        try:
+            from kernel.budget import BudgetError, copy_budget
+
+            with repo.session() as s:
+                return _ok(
+                    budget=copy_budget(
+                        s, budget_id,
+                        new_name=new_name or None,
+                        new_fiscal_year=new_fiscal_year or None,
+                    )
+                )
+        except BudgetError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def budget_activate(budget_id: str) -> dict:
+        """将某版本预算置为 ACTIVE（生效对比基准）；同 (账套, 年度) 其余版本自动 SUPERSEDED。"""
+        try:
+            from kernel.budget import BudgetError, activate_budget
+
+            with repo.session() as s:
+                return _ok(result=activate_budget(s, budget_id))
+        except BudgetError as e:
+            return _err(e.code, e.message_zh, e.details)
+
+    @mcp.tool()
+    def budget_list(ledger_set_id: str) -> dict:
+        """列出账套全部预算（按年度、版本倒序）。"""
+        from kernel.budget import list_budgets
+
+        with repo.session() as s:
+            return _ok(budgets=list_budgets(s, ledger_set_id))
+
+    @mcp.tool()
+    def budget_vs_actual(
+        ledger_set_id: str,
+        fiscal_year: int,
+        period_month: int,
+        budget_id: str = "",
+    ) -> dict:
+        """预算 v.s. 实际对比（只读，单一真源）。
+
+        预算来源：budget_id 指定，否则取该 (账套, 年度) 的 ACTIVE 预算。
+        实际数来自 amounts_by_code（与三表同口径）。差异 = 实际 − 预算（同符号约定，可直接相减）。
+        **正差异 = 实际高于预算**（费用类为超支、收入类为超额完成），由调用方按科目性质解读。
+        返回 rows（按 code 排序）+ totals + note。
+        """
+        try:
+            from kernel.budget import BudgetError, budget_vs_actual
+
+            with repo.session() as s:
+                return _ok(
+                    report=budget_vs_actual(
+                        s, ledger_set_id=ledger_set_id, fiscal_year=fiscal_year,
+                        period_month=period_month, budget_id=budget_id or None,
+                    )
+                )
+        except BudgetError as e:
+            return _err(e.code, e.message_zh, e.details)
+
     @mcp.tool()
     def consolidate_reports(
         ledger_set_ids: list[str],
@@ -3108,6 +3213,66 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err("CONSOLIDATION_ERROR", str(e))
         except Exception as e:  # pragma: no cover
             return _err("CONSOLIDATE_FAILED", f"合并报表失败：{e}")
+
+    @mcp.tool()
+    def consolidation_workbook(
+        ledger_set_ids: list[str],
+        period_year: int,
+        period_month: int,
+        standard: str = "small_business",
+        ownership: dict | None = None,
+        eliminations: list | None = None,
+        fx_rates: dict | None = None,
+    ) -> dict:
+        """合并工作底稿（可视化层，只读）：把「逐主体贡献」与「内部抵消」并排成一张可审计底稿。
+
+        在 consolidate_reports 之上，每个资产负债表大类 / 利润表项目都给出四列：
+        各主体分项 + 主体小计 + 抵消调整 + 合并数。**抵消调整 = 主体小计 − 合并数**，
+        由 consolidate 已应用的结果反推，不另起抵消逻辑（单一真源，合并数永远以
+        consolidate 为准）。抵消明细另含 code 级 PL00/PL20/合并数（consolidate_posting_levels）
+        与已应用消除对（dr_code/cr_code/amount），供 Boss 审阅「这一行里有多少是抵消出来的」。
+
+        完全只读——绝不写账；AI 只出合并建议，抵消项确认与结账仍由 Boss 操作。
+
+        ledger_set_ids：参与合并的账套 ID 列表（母公司自身账套 + 各子公司）。
+        period_year/period_month：合并期间（必填）。
+        ownership：可选 {账套ID: 持股比例(0~1)}，缺省按 1.0（全资）。
+        eliminations：可选抵消项列表，每项 {dr_code, cr_code, amount}（HITL 显式提供）。
+        fx_rates：可选 {账套ID: 汇率}，多币种集团折算到报告币种。
+
+        返回 {ok, period, currency, entity_names, balance_sheet{assets,liabilities,equity
+        (rows 含 contributions/subtotal/elimination/consolidated)}, income_statement
+        {rows, net_profit, minority_interest, net_profit_parent}, eliminations,
+        posting_levels, balances, balanced, check}。
+        """
+        try:
+            from kernel.reporting import consolidation as CONS
+
+            if not ledger_set_ids:
+                return _err("NO_LEDGERS", "ledger_set_ids 不能为空")
+
+            with repo.session() as s:
+                result = CONS.consolidation_workbook(
+                    s, ledger_set_ids, year, month, standard,
+                    ownership=ownership, eliminations=eliminations,
+                    fx_rates=fx_rates,
+                )
+            return _ok(
+                period=result["period"],
+                currency=result["currency"],
+                entity_names=result["entity_names"],
+                balance_sheet=result["balance_sheet"],
+                income_statement=result["income_statement"],
+                eliminations=result["eliminations"],
+                posting_levels=result["posting_levels"],
+                balances=result["balances"],
+                balanced=result["balanced"],
+                check=result["check"],
+            )
+        except CONS.ConsolidationError as e:
+            return _err("CONSOLIDATION_ERROR", str(e))
+        except Exception as e:  # pragma: no cover
+            return _err("WORKBOOK_FAILED", f"合并工作底稿失败：{e}")
 
     @mcp.tool()
     def consolidate_lineage(

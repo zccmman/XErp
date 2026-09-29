@@ -389,3 +389,59 @@ class AssetCard(Base):
     status: Mapped[str] = mapped_column(String(16), default="active")  # active|disposed
     aux_dims: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Budget(Base):
+    """预算（ERP 模块纵深 · 计划/控制，非凭证、非投影）。
+
+    预算是经营计划的量化表达，与账本严格隔离：它**不**改写任何凭证或余额，
+    仅在预算 v.s. 实际对比时通过 amounts_by_code（单一真源）读取实际发生额做差异分析。
+    - 一套账套一个会计年度可有多个版本（version），用于滚动修订；同一 (ledger_set_id, fiscal_year)
+      仅一个 ACTIVE 版本生效，activate_budget 时自动让同组其余版本回退为 SUPERSEDED。
+    - 控制强度由调用方决定（预警 or 硬拦截），内核只负责编制与对比，不下发强制约束。
+    """
+
+    __tablename__ = "budgets"
+    __table_args__ = (
+        UniqueConstraint(
+            "ledger_set_id", "fiscal_year", "version", name="uq_budget_rev"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ledger_set_id: Mapped[str] = mapped_column(
+        ForeignKey("ledger_sets.id"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    fiscal_year: Mapped[int] = mapped_column(Integer)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    # DRAFT（编制中，可改）| ACTIVE（生效，对比基准）| SUPERSEDED（被新版取代）
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BudgetLine(Base):
+    """预算明细行（按科目 code × 期间 量化）。
+
+    period=0 表示「年度总额」（对比时按期间均摊或按年累计）；period∈[1,12] 表示对应月份预算。
+    amount 为预算净额（与 ending_balance 同口径：资产/费用借方为正、负债/权益/收入贷方为正），
+    所以预算 v.s. 实际的差异可直接相减，不发生符号错配。
+    """
+
+    __tablename__ = "budget_lines"
+    __table_args__ = (
+        UniqueConstraint(
+            "budget_id", "account_code", "period", name="uq_budget_line"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    budget_id: Mapped[str] = mapped_column(
+        ForeignKey("budgets.id"), index=True
+    )
+    account_code: Mapped[str] = mapped_column(String(32))
+    period: Mapped[int] = mapped_column(Integer, default=0)  # 0=年度, 1..12=月
+    amount: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)

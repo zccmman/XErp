@@ -354,6 +354,7 @@ def _page(title: str, body: str, user: str | None = None,
     if user:
         userbar = (
             f'<span class="identity"><span class="id-dot"></span>'
+            f'<span class="id-label">当前身份</span>'
             f'<b>{html.escape(user)}</b></span>'
             f'<a href="/help">帮助</a><a href="/logout">退出</a>'
         )
@@ -2360,6 +2361,152 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 "<div class=repwrap>" + bs_html + is_html + "</div>"
             )
             return _page("集团合并", body, request.state.subject_name, show_operator=True)
+
+    @app.get("/group/workbook", response_class=HTMLResponse)
+    def group_workbook(request: Request, ids: list[str] = Query(default=[]),
+                       year: int = 0, month: int = 0, ownership: str = ""):
+        """合并工作底稿可视化（只读）：逐主体贡献矩阵 + 内部抵消明细。
+
+        复用 kernel.reporting.consolidation.consolidation_workbook（与 MCP 同源，
+        单一真源）。每行列出「各主体分项 → 主体小计 → 抵消调整 → 合并数」，并附
+        code 级 PL00/PL20/合并数抵消明细与已应用消除对。合并数永远以 consolidate 为准。
+        """
+        from decimal import Decimal as _D
+        import json as _json
+
+        from kernel.reporting import consolidation as CONS
+
+        with session() as s:
+            own: dict[str, _D] = {}
+            if ownership:
+                try:
+                    for k, v in _json.loads(ownership).items():
+                        own[k] = _D(str(v)) / _D("100")
+                except Exception:  # noqa: BLE001
+                    own = {}
+
+            selected = [x for part in ids for x in part.split(",") if x]
+            if not selected:
+                body = (
+                    "<h2>合并工作底稿</h2>"
+                    "<p class=muted>只读可视化：把各主体分项、主体小计、抵消调整与合并数并排成"
+                    "一张可审计底稿。请先在「集团合并」页选好账套与期间，或直接在此指定参数。</p>"
+                    "<p>用法：<code>/group/workbook?ids=母,子1,子2&amp;year=2026&amp;month=9"
+                    "&amp;ownership={%22子2%22:80}</code></p>"
+                )
+                return _page("合并工作底稿", body, request.state.subject_name)
+
+            if not year or not month:
+                return _page(
+                    "合并工作底稿", "<p class=err>请指定合并期间（年/月）</p>",
+                    request.state.subject_name,
+                )
+
+            try:
+                res = CONS.consolidation_workbook(
+                    s, selected, year, month, ownership=own or None
+                )
+            except CONS.ConsolidationError as e:
+                return _page(
+                    "合并工作底稿", f"<p class=err>{html.escape(str(e))}</p>",
+                    request.state.subject_name,
+                )
+
+            names = res["entity_names"]
+
+            def _ws_table(section: dict, label_key: str) -> str:
+                head = (
+                    "<tr><th>项目</th>"
+                    + "".join(f"<th class=num>{html.escape(n)}</th>" for n in names)
+                    + "<th class=num>主体小计</th>"
+                    + "<th class=num>抵消调整</th>"
+                    + "<th class=num>合并数</th></tr>"
+                )
+                rows = "".join(
+                    f"<tr><td>{html.escape(r[label_key])}</td>"
+                    + "".join(f"<td class=num>{_fmt(c)}</td>" for c in r["contributions"])
+                    + f"<td class=num>{_fmt(r['subtotal'])}</td>"
+                    + f"<td class=num>{_fmt(r['elimination'])}</td>"
+                    + f"<td class=num><b>{_fmt(r['consolidated'])}</b></td></tr>"
+                    for r in section["rows"]
+                )
+                tot_label = "大类合计" if label_key == "group" else "合计"
+                tot = (
+                    f"<tr class=tot><td>{tot_label}</td>"
+                    + "".join("<td class=num></td>" for _ in names)
+                    + "<td class=num></td><td class=num></td>"
+                    + f"<td class=num><b>{_fmt(section['total'])}</b></td></tr>"
+                )
+                return (
+                    f"<table class=rep><thead>{head}</thead><tbody>{rows}{tot}</tbody></table>"
+                )
+
+            bs = res["balance_sheet"]
+            bs_html = (
+                "<h3>资产负债表工作底稿</h3>"
+                + _ws_table(bs["assets"], "group")
+                + _ws_table(bs["liabilities"], "group")
+                + _ws_table(bs["equity"], "group")
+            )
+            inc = res["income_statement"]
+            is_html = (
+                "<h3>利润表工作底稿</h3>"
+                + _ws_table({"rows": inc["rows"], "total": inc["net_profit"]}, "item")
+                + "<p class=muted>净利润（100% 口径）"
+                f"{_fmt(inc['net_profit'])} · 少数股东损益 {_fmt(inc['minority_interest'])}"
+                f" · 归属于母公司净利润 {_fmt(inc['net_profit_parent'])}</p>"
+            )
+
+            # 抵消明细：code 级 PL00/PL20/合并数 + 已应用消除对
+            pl_rows = "".join(
+                f"<tr><td>{html.escape(lv['code'])}</td>"
+                f"<td>{html.escape(lv['report_line'])}</td>"
+                f"<td class=num>{_fmt(lv['pl00_entity_reported'])}</td>"
+                f"<td class=num>{_fmt(lv['pl20_elimination'])}</td>"
+                f"<td class=num>{_fmt(lv['consolidated'])}</td></tr>"
+                for lv in res["posting_levels"]
+            )
+            pl_html = (
+                "<h3>抵消明细（code 级 · Posting Level）</h3>"
+                + (
+                    "<table class=rep><thead><tr><th>科目</th><th>报表行</th>"
+                    "<th class=num>PL00 主体上报</th><th class=num>PL20 抵消</th>"
+                    "<th class=num>合并数</th></tr></thead><tbody>"
+                    f"{pl_rows}</tbody></table>"
+                    if pl_rows else
+                    "<p class=muted>本期无内部抵消（PL20 均为 0）。</p>"
+                )
+            )
+            elim_pairs = res["eliminations"] or []
+            elim_html = (
+                "<h3>已应用消除对（HITL 显式提供）</h3>"
+                + (
+                    "<table class=rep><thead><tr><th>借 code</th><th>贷 code</th>"
+                    "<th class=num>金额</th></tr></thead><tbody>"
+                    + "".join(
+                        f"<tr><td>{html.escape(e['dr_code'])}</td>"
+                        f"<td>{html.escape(e['cr_code'])}</td>"
+                        f"<td class=num>{html.escape(str(e['amount']))}</td></tr>"
+                        for e in elim_pairs
+                    )
+                    + "</tbody></table>"
+                    if elim_pairs else
+                    "<p class=muted>无已应用消除对。</p>"
+                )
+            )
+
+            chk = res["check"]
+            badge = ("🟢 表内平衡" if res["balanced"]
+                     else f"🔴 差 {chk['diff']}")
+            body = (
+                f"<h2>合并工作底稿 · {year}-{month:02d}（{res['currency']}）</h2>"
+                f"<p class=muted>参与主体 {len(names)} 个（"
+                + "、".join(html.escape(n) for n in names)
+                + f"）· {badge} · 合并数以 consolidate 为准，抵消调整=主体小计−合并数。</p>"
+                "<div class=repwrap>" + bs_html + is_html + pl_html + elim_html + "</div>"
+                "<p class=muted>合并为只读聚合，内部抵消项与结账仍需你确认（人是 Boss）。</p>"
+            )
+            return _page("合并工作底稿", body, request.state.subject_name, show_operator=True)
 
     # ---------- v1.3 月度财报卡片（可分享 · O16 趣味） ----------
     @app.get("/ledger/{ls_id}/card", response_class=HTMLResponse)
