@@ -2508,6 +2508,120 @@ def build_app(db_url: str | None = None) -> FastAPI:
             )
             return _page("合并工作底稿", body, request.state.subject_name, show_operator=True)
 
+    # ---------- JEV 确定性决策控制台（只读） ----------
+    @app.get("/jev", response_class=HTMLResponse)
+    def jev_console(
+        request: Request,
+        ledger_set_id: str = "",
+        decision_type: str = "",
+        voucher_id: str = "",
+        fiscal_year: int = 0,
+        period_month: int = 0,
+        budget_id: str = "",
+        partner: str = "",
+        as_of_date: str = "",
+        window_days: int = 7,
+    ):
+        """JEV 确定性决策控制台（只读）：列出可用决策，或运行单个决策看决策草稿。
+
+        复用 kernel.decide.run_decision（与 MCP 同源，单一真源）。绝不触发过账/支付/改账。
+        用法：/jev?ledger_set_id=LS&decision_type=budget_variance&fiscal_year=2026&period_month=9
+              /jev?ledger_set_id=LS&decision_type=risk_severity&voucher_id=V1
+        """
+        from datetime import date as _date
+
+        from kernel.decide import DecideError, list_decisions, run_decision
+
+        if not decision_type:
+            items = list_decisions()
+            body = (
+                "<h2>JEV 确定性决策控制台</h2>"
+                "<p class=muted>JEV（Just Enough Verification）是 XErp 100% 确定性内核。"
+                "以下决策均为只读、零外部依赖，对高频财务小决策做判断/打分/选择，"
+                "绝不触发过账/支付/改账（终态须人类 HITL 点头）。</p>"
+                "<table class=grid><thead><tr><th>决策类型</th><th>标题</th>"
+                f"<th>说明</th></tr></thead><tbody>"
+                + "".join(
+                    f"<tr><td><code>{html.escape(i['name'])}</code></td>"
+                    f"<td>{html.escape(i['title'])}</td>"
+                    f"<td>{html.escape(i['description'])}</td></tr>"
+                    for i in items
+                )
+                + "</tbody></table>"
+            )
+            return _page("JEV 决策控制台", body, request.state.subject_name)
+
+        if not ledger_set_id:
+            return _page(
+                "JEV 决策控制台", "<p class=err>请指定 ledger_set_id</p>",
+                request.state.subject_name,
+            )
+
+        params: dict = {}
+        if voucher_id:
+            params["voucher_id"] = voucher_id
+        if fiscal_year:
+            params["fiscal_year"] = fiscal_year
+        if period_month:
+            params["period_month"] = period_month
+        if budget_id:
+            params["budget_id"] = budget_id
+        if partner:
+            params["partner"] = partner
+        if as_of_date:
+            try:
+                params["as_of_date"] = _date.fromisoformat(as_of_date)
+            except ValueError:
+                return _page(
+                    "JEV 决策控制台",
+                    f"<p class=err>as_of_date 格式应为 YYYY-MM-DD：{html.escape(as_of_date)}</p>",
+                    request.state.subject_name,
+                )
+        params["window_days"] = window_days
+
+        try:
+            with session() as s:
+                d = run_decision(decision_type, s, ledger_set_id=ledger_set_id, **params)
+        except DecideError as e:
+            return _page(
+                "JEV 决策控制台",
+                f"<p class=err>{html.escape(e.code)}：{html.escape(e.message_zh)}</p>",
+                request.state.subject_name,
+            )
+
+        sev_color = {
+            "info": "#3b82f6", "low": "#22c55e", "medium": "#eab308",
+            "high": "#f97316", "critical": "#ef4444",
+        }.get(d.severity.value, "#64748b")
+        basis_html = "".join(
+            f"<li>{html.escape(b)}</li>" for b in d.basis
+        ) or "<li class=muted>—</li>"
+        ev = d.to_dict()["evidence"]
+        ev_html = (
+            "<ul class=ev>"
+            + "".join(
+                f"<li><code>{html.escape(k)}</code>: {html.escape(str(v))}</li>"
+                for k, v in ev.items()
+            )
+            + "</ul>"
+        ) if ev else "<p class=muted>无</p>"
+        flag = (
+            "<span class=badge style='background:#ef4444'>需人工复核</span>"
+            if d.human_review_required else
+            "<span class=badge style='background:#22c55e'>确定</span>"
+        )
+        body = (
+            f"<h2>JEV 决策：{html.escape(d.label)}</h2>"
+            f"<p><span class=badge style='background:{sev_color}'>"
+            f"severity={html.escape(d.severity.value)}</span> {flag} "
+            f"· confidence={html.escape(str(d.confidence))} · kind={html.escape(d.kind)}</p>"
+            f"<p class=big>结论：<b>{html.escape(str(d.value))}</b></p>"
+            f"<h3>可解释依据（命中规则/阈值）</h3><ul>{basis_html}</ul>"
+            f"<h3>引用的真源数值</h3>{ev_html}"
+            f"<p class=muted>决策草稿仅辅助判断，过账/支付/改账仍须人类 HITL 终态。</p>"
+        )
+        return _page("JEV 决策结果", body, request.state.subject_name, show_operator=True)
+
     # ---------- v1.3 月度财报卡片（可分享 · O16 趣味） ----------
     @app.get("/ledger/{ls_id}/card", response_class=HTMLResponse)
     def month_card(request: Request, ls_id: str, year: int = 0, month: int = 0):

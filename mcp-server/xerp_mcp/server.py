@@ -3145,6 +3145,49 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             return _err(e.code, e.message_zh, e.details)
 
     @mcp.tool()
+    def jev_decide(
+        decision_type: str,
+        ledger_set_id: str,
+        params_json: str = "{}",
+    ) -> dict:
+        """JEV 确定性决策（只读，零外部依赖）：对财务流程中的高频小决策做判断/打分/选择。
+
+        决策类型（decision_type）与参数（params_json，JSON 字符串）：
+        - budget_variance：预算差异分级(F11)。params: fiscal_year(int), period_month(int), budget_id?(str)
+        - risk_severity：凭证风险严重度(F14)。params: voucher_id(str), thresholds?(obj)
+        - duplicate_voucher：重复凭证标记(F3)。params: voucher_id(str), window_days?(int,默认7)
+        - ap_open_health：应付未清项健康度(F1)。params: partner?(str), as_of_date?(YYYY-MM-DD), buckets?(int[])
+        - expense_compliance：费用合规判定(F6)。params: voucher_id(str), policy?(obj)
+        - approval_route：费用审批路由(F7)。params: voucher_id(str)
+
+        返回 Decision{kind,label,value,confidence,severity,human_review_required,basis,evidence}；
+        human_review_required=true 表示歧义/硬约束未满足，须人工或 LLM 复核——本工具
+        绝不触发过账/支付/改账（与 HITL 铁律一致）。decision_type 留空/未知会返回可用列表。
+        """
+        try:
+            import json
+            from datetime import date as _date
+
+            from kernel.decide import DecideError, list_decisions, run_decision
+
+            if not decision_type:
+                return _ok(decisions=list_decisions())
+            raw = json.loads(params_json or "{}")
+            if isinstance(raw.get("as_of_date"), str):
+                raw["as_of_date"] = _date.fromisoformat(raw["as_of_date"])
+            if isinstance(raw.get("buckets"), list):
+                raw["buckets"] = tuple(raw["buckets"])
+            params = dict(raw)
+            params["ledger_set_id"] = ledger_set_id
+            with repo.session() as s:
+                d = run_decision(decision_type, s, **params)
+                return _ok(decision=d.to_dict(), decision_type=decision_type)
+        except DecideError as e:
+            return _err(e.code, e.message_zh, e.details)
+        except (ValueError, TypeError, json.JSONDecodeError) as e:
+            return _err("JEV_BAD_PARAMS", f"参数解析失败：{e}")
+
+    @mcp.tool()
     def consolidate_reports(
         ledger_set_ids: list[str],
         period_year: int,
