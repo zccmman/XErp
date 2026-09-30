@@ -22,7 +22,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from kernel.decide import Decision, Severity, _dispatch_local, set_cloud_backend
+from kernel.decide import Decision, Severity, _dispatch_local, run_decision, set_cloud_backend
 from kernel.db.models import JevCloudSetting
 
 _ENDPOINT = "https://api.typesafe.ai/v1/systemone"

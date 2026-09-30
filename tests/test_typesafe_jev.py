@@ -175,6 +175,39 @@ def test_cloud_dispatch_cloud_failure_falls_back_local():
     assert md.called
 
 
+def test_run_decision_routes_to_cloud_via_ledger_set_id():
+    """回归：run_decision 经 ledger_set_id 转发云端后端时，不得把 ledger_set_id 既作
+    显式 kwarg 又留在 **params 中（否则 TypeError: multiple values），且应把 ledger_set_id
+    恰好传一次；云端成功时 backend=typesafe 而非静默回退本地。"""
+    from decimal import Decimal
+
+    from kernel.decide import run_decision
+
+    base = Decision(
+        kind="classify", label="费用合规判定", value="合规",
+        severity=Severity.LOW, confidence=Decimal("1"),
+        basis=["本地基线与云端无关"], evidence={"flags": []},
+    )
+    setting = MagicMock()
+    setting.backend = "typesafe"
+    setting.cloud_consent = True
+    sess = MagicMock()
+    sess.get.return_value = setting
+    with patch.dict(os.environ, {"TYPESAFE_API_KEY": "K"}):
+        with patch("kernel.decide._dispatch_local", return_value=base) as mlocal, \
+             patch("kernel.adapters.typesafe_jev.run_decision_cloud",
+                   return_value=base) as mcloud:
+            d = run_decision("expense_compliance", sess, ledger_set_id="LS", voucher_id="V")
+    # 云端后端必须被调用（证明未因重复传参异常而静默回退本地）
+    mcloud.assert_called_once()
+    kw = mcloud.call_args.kwargs
+    assert kw.get("ledger_set_id") == "LS"
+    assert kw.get("voucher_id") == "V"
+    assert d.evidence.get("backend") == "typesafe"
+    assert d.evidence.get("cloud_fallback") is None
+    assert mlocal.called
+
+
 def test_build_and_map_duplicate_noul():
     base = Decision(
         kind="classify", label="重复凭证标记", value="唯一", severity=Severity.LOW,

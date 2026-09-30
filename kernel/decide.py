@@ -657,7 +657,10 @@ def run_decision(name: str, session, **params) -> Decision:
     ls = params.get("ledger_set_id")
     if CLOUD_BACKEND is not None and ls:
         try:
-            return CLOUD_BACKEND(name, session, ledger_set_id=ls, **params)
+            # 注意：params 可能已含 ledger_set_id（调用方常以 kwarg 传入），
+            # 转发云端后端时须剔除，避免与显式 ledger_set_id 重复触发 multiple-values 异常。
+            cloud_params = {k: v for k, v in params.items() if k != "ledger_set_id"}
+            return CLOUD_BACKEND(name, session, ledger_set_id=ls, **cloud_params)
         except Exception:  # noqa: BLE001 —— 云端失败/未授权一律回退本地，不改本地判定
             local.evidence.setdefault("backend", "local")
             local.evidence["cloud_fallback"] = True
