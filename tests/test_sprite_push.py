@@ -56,7 +56,7 @@ def ls_info(env):
     return (ls.id, ls.accounting_standard, per.year, per.month)
 
 
-VALID_TYPES = {"month_end", "anomaly", "report_card", "health", "credit", "collections", "receipt_matching"}
+VALID_TYPES = {"month_end", "anomaly", "report_card", "health", "credit", "collections", "receipt_matching", "fx_revaluation", "subledger_gl", "jev_decision"}
 VALID_SEV = {"info", "warn", "alert"}
 
 

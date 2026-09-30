@@ -1142,6 +1142,9 @@ def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
             if it["type"] in ("month_end", "anomaly", "health", "credit", "collections",
                               "receipt_matching", "fx_revaluation", "subledger_gl")]
 
+    # AI 决策引擎（JEV）：独立面板渲染，不混入通用提醒列表（结构更丰富）。
+    jev_items = [it for it in _sp["items"] if it["type"] == "jev_decision"]
+
     return {
         'labels': labels,
         'asset_t': asset_t, 'liab_t': liab_t, 'eq_t': eq_t,
@@ -1149,7 +1152,7 @@ def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
         'asset_segs': asset_segs,
         'bs_now': bs_now, 'inc_now': inc_now, 'cf_now': cf_now,
         'rec': rec, 'unposted': unposted, 'posted': posted, 'total_v': total_v,
-        'closed': closed, 'guide': guide, 'tips': tips,
+        'closed': closed, 'guide': guide, 'tips': tips, 'jev_items': jev_items,
     }
 
 
@@ -2176,8 +2179,89 @@ def build_app(db_url: str | None = None) -> FastAPI:
                          show_operator=True)
 
     # ---------- v1.3 老板经营看板（可视化 + 趣味 + 精灵提醒 O18 雏形） ----------
+    def _jev_sev_label(sev: str) -> str:
+        """JEV/账本精灵严重度 → 中文标签。"""
+        return {"info": "正常", "low": "绿", "warn": "提醒", "alert": "告警",
+                "medium": "提醒", "high": "告警", "critical": "告警"}.get(sev, sev)
+
+
+    def _jev_panel(items: list) -> str:
+        """渲染 boss 视图的「🧠 AI 决策引擎（JEV）」面板（AI 原生判断/打分/选择）。"""
+        if not items:
+            return ""
+        _sev_color = {"info": "#86868b", "low": "#34c759", "medium": "#ff9500",
+                      "warn": "#ff9500", "high": "#ff3b30", "critical": "#ff3b30"}
+        rows = []
+        for it in items:
+            sev = it.get("severity", "info")
+            c = _sev_color.get(sev, "#86868b")
+            hr = it.get("human_review_required")
+            review = (' <span style="color:#ff3b30;font-size:12px">· 需人工复核</span>'
+                      if hr else "")
+            rows.append(
+                f"<li style='border-left:3px solid {c};padding-left:8px;margin-bottom:8px'>"
+                f"<b>{html.escape(it['title'])}</b> "
+                f"<span style='color:{c}'>〔{_jev_sev_label(sev)}〕</span>{review}"
+                f"<br><span style='font-size:13px;color:#333'>{it['html']}</span>"
+                f"<br><span style='font-size:12px;color:#86868b'>👉 {html.escape(it['action_hint'])}</span>"
+                f"</li>"
+            )
+        return (
+            "<h3>🧠 AI 决策引擎（JEV）</h3>"
+            "<p style='font-size:12px;color:#86868b'>确定性判断 · 只读账本真源 · "
+            "AI 只产草稿，终态需你确认</p>"
+            "<ul style='list-style:none;padding:0'>" + "".join(rows) + "</ul>"
+        )
+
+
+    def _voucher_jev_card(s, v) -> str:
+        """凭证详情页内联 JEV 决策卡片：凭证级 AI 原生判断/打分/选择（只读，绝不改账）。
+
+        运行 4 个凭证级决策：风险严重度 / 重复凭证 / 费用合规 / 审批路由。
+        任一决策异常均容错跳过，绝不阻断凭证详情页本身。
+        """
+        from kernel.decide import run_decision as _jev_run
+
+        specs = ["risk_severity", "duplicate_voucher", "expense_compliance", "approval_route"]
+        _sev_color = {"info": "#86868b", "low": "#34c759", "medium": "#ff9500",
+                      "warn": "#ff9500", "high": "#ff3b30", "critical": "#ff3b30"}
+        rows = []
+        for name in specs:
+            try:
+                d = _jev_run(name, s, ledger_set_id=v.ledger_set_id, voucher_id=v.id)
+            except Exception:  # noqa: BLE001 —— 单决策异常不阻断其它决策/页面
+                continue
+            sev = d.severity.value
+            c = _sev_color.get(sev, "#86868b")
+            review = (' <span style="color:#ff3b30">· 需人工复核</span>'
+                      if d.human_review_required else "")
+            basis = "".join(
+                f"<li style='font-size:12px;color:#555'>{html.escape(b)}</li>"
+                for b in (d.basis or [])[:3]
+            )
+            rows.append(
+                f"<div style='border:1px solid {c};border-radius:8px;padding:8px 12px;"
+                f"margin-bottom:8px;min-width:260px'>"
+                f"<div><b>{html.escape(d.label)}</b> "
+                f"<span style='color:{c}'>〔{_jev_sev_label(sev)}〕</span>{review}</div>"
+                f"<div style='font-size:13px'>结论：<b>{html.escape(str(d.value))}</b></div>"
+                f"<ul style='margin:4px 0 0 16px;padding:0'>{basis}</ul></div>"
+            )
+        if not rows:
+            return ""
+        return (
+            "<h3>🧠 JEV 决策（AI 原生判断 / 打分 / 选择）</h3>"
+            "<p style='font-size:12px;color:#86868b'>确定性引擎 · 只读账本真源 · "
+            "只产草稿，过账/审批仍由你确认</p>"
+            "<div style='display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start'>"
+            + "".join(rows) + "</div>"
+        )
+
+
     @app.get("/ledger/{ls_id}/boss", response_class=HTMLResponse)
     def boss_view(request: Request, ls_id: str, year: int = 0, month: int = 0):
+        from kernel.operator import OperatorState
+
         with session() as s:
             ls = s.get(LedgerSet, ls_id)
             if ls is None:
@@ -2226,6 +2310,9 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 )
             health_html += "</div>"
             tips_html = "".join(f"<li>{t}</li>" for t in d["tips"])
+            jev_html = _jev_panel(d["jev_items"])
+            if any(it.get("severity") == "alert" for it in d["jev_items"]):
+                _op_event(OperatorState.ALERT)
             fun = (
                 _mini_progress(d["posted"], d["total_v"] or 1, "本月凭证入账进度")
                 + f"<p>💡 账本精灵已为你盯账：本月共 {d['total_v']} 笔业务，"
@@ -2244,6 +2331,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"<a href='/ledger/{ls_id}/close'>月末结账</a>",
                 )
                 + "<h3>账本精灵 · 主动提醒</h3><ul class=check>" + tips_html + "</ul>"
+                + jev_html
                 + health_html
                 + "<div style='display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start'>"
                 + "<div style='flex:1;min-width:300px'>" + fin_svg + "</div>"
@@ -3369,6 +3457,7 @@ body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backg
             elif v.status == "APPROVED":
                 ops = '<div class=ops><p class=warn>Agent 不能执行过账，请由人员操作。</p></div>'
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            jev_card = _voucher_jev_card(s, v)
             body = (
                 f"<h2>凭证 <span class=vno>{v.voucher_no}</span> {st_badge(v.status)}</h2>"
                 f"<p>日期 {v.voucher_date}　摘要 {html.escape(v.summary or '')}</p>"
@@ -3376,6 +3465,7 @@ body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backg
                 + "<table><tr><th>#</th><th>编码</th><th>科目</th><th>借方</th><th>贷方</th></tr>"
                 + lrows
                 + "</table>"
+                + jev_card
                 + ops
                 + "<p><a href=/ledger/"
                 + v.ledger_set_id

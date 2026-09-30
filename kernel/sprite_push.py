@@ -56,7 +56,7 @@ def sprite_push_items(
 
     返回：
         items:  list[dict] 每条 {type, severity, title, text, html, action_hint}
-                type ∈ month_end | anomaly | report_card | health | credit | collections | receipt_matching | fx_revaluation
+                type ∈ month_end | anomaly | report_card | health | credit | collections | receipt_matching | fx_revaluation | subledger_gl | jev_decision
                 severity ∈ info | warn | alert
         summary: 一句话总览（供 IM / CLI 首行）
         period_status: 期间状态（none / OPEN / CLOSED / ...）
@@ -292,14 +292,40 @@ def sprite_push_items(
                                "补录 customer/supplier 维度（HITL 制单修正）。"),
             })
 
+    # 11) JEV 决策引擎（jev_decision）——复用 kernel.decide.run_decision 只读判定，
+    #     把 AI 原生「判断/打分/选择」接入账本精灵主动推送（守「推送 ≠ 执行」铁律）。
+    #     期间级决策：预算差异分级（F11）+ 应付未清项健康度（F1）。凭证级决策
+    #     （风险严重度/重复凭证/费用合规/审批路由）在 Web 凭证详情页内联，不进入
+    #     期间推送流，避免逐笔扫描放大开销。
+    from kernel.decide import run_decision as _jev_run
+
+    _jev_specs = [
+        ("budget_variance", {"fiscal_year": yr, "period_month": mo}),
+        ("ap_open_health", {"as_of_date": None}),
+    ]
+    for _name, _params in _jev_specs:
+        try:
+            _d = _jev_run(_name, s, ledger_set_id=ls_id, **_params)
+        except Exception:  # noqa: BLE001 —— 推送层容错：决策异常不阻断其它提醒
+            continue
+        _hr = _d.human_review_required
+        items.append({
+            "type": "jev_decision",
+            "severity": _jev_sev_to_sprite(_d.severity.value),
+            "title": f"JEV·{_d.label}",
+            "text": (f"{_d.label}：{_jev_value_cn(_d.value)}"
+                     + ("（需人工复核）" if _hr else "")),
+            "html": (f"{_d.label}：<b>{_jev_value_cn(_d.value)}</b>"
+                     + (" <span class='badge-review'>需人工复核</span>" if _hr else "")),
+            "action_hint": ("需 Boss 复核确认后执行"
+                            if _hr else "AI 确定性判断，供参考，终态仍需你确认"),
+            "human_review_required": _hr,
+        })
+
     # 4) 健康（health）——无任何待办时给正向反馈
-    actionable = any(
-        it["type"] in (
-            "month_end", "anomaly", "credit", "collections",
-            "receipt_matching", "fx_revaluation", "subledger_gl",
-        )
-        for it in items
-    )
+    #     actionable 改为按严重度判定（warn/alert 即视为有待处理），与既有逐类型
+    #     判定等价，并自然纳入 jev_decision 的告警/提醒（守 ADR-002 单一口径）。
+    actionable = any(it["severity"] in ("alert", "warn") for it in items)
     if not actionable:
         items.append({
             "type": "health",
@@ -326,6 +352,23 @@ def _summary(items: list[dict], yr: int, mo: int) -> str:
     if warns:
         return f"🔔 {yr}-{mo:02d} 账本精灵提醒：{warns[0]['title']}"
     return f"✅ {yr}-{mo:02d} 账本精灵：账目健康，可随时月结"
+
+
+def _jev_sev_to_sprite(sev: str) -> str:
+    """JEV 严重度(info/low/medium/high/critical) → 账本精灵严重度(info/warn/alert)。"""
+    return {
+        "info": "info", "low": "info",
+        "medium": "warn", "high": "alert", "critical": "alert",
+    }.get(sev, "info")
+
+
+def _jev_value_cn(value: Any) -> str:
+    """把 JEV 决策 value 翻成中文档位（期间级 score 决策 value 多为严重度秩）。"""
+    _m = {
+        "info": "正常", "low": "绿", "medium": "黄",
+        "high": "红", "critical": "红(严重)",
+    }
+    return _m.get(str(value), str(value))
 
 
 def format_wecom_card(payload: dict) -> str:

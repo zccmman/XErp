@@ -89,6 +89,7 @@ def _build(url: str) -> dict:
         ))
         s.commit()
         ids["ls_id"] = ls.id
+        ids["voucher_id"] = v.id
     engine.dispose()
     return ids
 
@@ -136,3 +137,24 @@ def test_jev_run_budget_variance(client, env):
     assert r.status_code == 200
     assert "预算差异分级" in r.text
     assert "high" in r.text  # 偏差率 33.3% → 红
+
+
+def test_jev_boss_panel(client, env):
+    ls_id = env["ids"]["ls_id"]
+    r = client.get(f"/ledger/{ls_id}/boss")
+    assert r.status_code == 200
+    assert "AI 决策引擎" in r.text  # JEV 专属面板标题
+    assert "预算差异分级" in r.text  # F11 期间级决策
+    assert "应付未清项健康度" in r.text  # F1 期间级决策
+
+
+def test_jev_voucher_card(client, env):
+    vid = env["ids"]["voucher_id"]
+    r = client.get(f"/voucher/{vid}")
+    assert r.status_code == 200
+    assert "JEV 决策" in r.text  # 凭证级内联卡片标题
+    assert "费用合规判定" in r.text  # F6：6602 8000>5000 → 不合规
+    assert "审批路由" in r.text  # F7：总额 8000 → finance_manager
+    assert "重复凭证标记" in r.text  # F3：唯一
+    assert "风险严重度" in r.text  # F14
+
