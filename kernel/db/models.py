@@ -445,3 +445,25 @@ class BudgetLine(Base):
     period: Mapped[int] = mapped_column(Integer, default=0)  # 0=年度, 1..12=月
     amount: Mapped[decimal.Decimal] = mapped_column(AMOUNT, default=0)
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class JevCloudSetting(Base):
+    """JEV 云端模式授权配置（每账套一条）。
+
+    默认 backend='local'（纯本地确定性内核，零数据出境）。仅当用户在 Web 显式
+    开启云端模式并确认数据出境授权（cloud_consent=True）、且配置了 TYPESAFE_API_KEY
+    时，决策才会把聚合指标发送至 TypeSafe 云（api.typesafe.ai）获取校准置信度。
+    """
+
+    __tablename__ = "jev_cloud_setting"
+
+    ledger_set_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("ledger_sets.id"), primary_key=True
+    )
+    backend: Mapped[str] = mapped_column(String(16), default="local", nullable=False)
+    cloud_consent: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    consent_actor: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

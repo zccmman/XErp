@@ -46,6 +46,14 @@ from kernel.operator import arrive as _operator_arrive  # noqa: E402
 from kernel.operator import render_fragment as _render_operator  # noqa: E402
 from kernel.operator import sync_from_bridge as _operator_sync  # noqa: E402
 
+# 注册可选云端 JEV 后端到核心 run_decision（默认本地；仅当用户在 Web 显式授权+配置密钥才启用）。
+# 适配器位于 kernel/adapters/（外围层），此处导入不违反 D8 边界契约（核心层不反向依赖适配器）。
+# 放在启动期注册，避免 Web 进程重启后云端模式因未访问设置页而迟迟不生效。
+try:
+    import kernel.adapters.typesafe_jev  # noqa: F401 —— 副作用：set_cloud_backend(_cloud_dispatch)
+except Exception:  # noqa: BLE001 —— 云端适配器不可用绝不影响本地内核
+    pass
+
 
 def _op_event(state) -> None:
     """进程内写算子状态，非法转移静默（ADR-007：状态机绝不阻塞业务）。"""
@@ -2636,6 +2644,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     for i in items
                 )
                 + "</tbody></table>"
+                + "<p><a href='/jev/settings'>⚙️ 云端模式设置（默认关闭 · 数据出境需授权）</a></p>"
             )
             return _page("JEV 决策控制台", body, request.state.subject_name)
 
@@ -2670,6 +2679,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
         try:
             with session() as s:
                 d = run_decision(decision_type, s, ledger_set_id=ledger_set_id, **params)
+                backend = d.evidence.get("backend", "local")
         except DecideError as e:
             return _page(
                 "JEV 决策控制台",
@@ -2702,13 +2712,109 @@ def build_app(db_url: str | None = None) -> FastAPI:
             f"<h2>JEV 决策：{html.escape(d.label)}</h2>"
             f"<p><span class=badge style='background:{sev_color}'>"
             f"severity={html.escape(d.severity.value)}</span> {flag} "
-            f"· confidence={html.escape(str(d.confidence))} · kind={html.escape(d.kind)}</p>"
+            f"· confidence={html.escape(str(d.confidence))} · kind={html.escape(d.kind)}"
+            f" · backend={html.escape(backend)}"
+            + (" · <span style='color:#f97316'>云端回退本地</span>"
+               if d.evidence.get("cloud_fallback") else "")
+            + "</p>"
             f"<p class=big>结论：<b>{html.escape(str(d.value))}</b></p>"
             f"<h3>可解释依据（命中规则/阈值）</h3><ul>{basis_html}</ul>"
             f"<h3>引用的真源数值</h3>{ev_html}"
             f"<p class=muted>决策草稿仅辅助判断，过账/支付/改账仍须人类 HITL 终态。</p>"
         )
         return _page("JEV 决策结果", body, request.state.subject_name, show_operator=True)
+
+    # ---------- JEV 云端模式设置（默认关 + 数据出境授权） ----------
+    @app.get("/jev/settings", response_class=HTMLResponse)
+    def jev_settings(request: Request, ls: str = ""):
+        from kernel.adapters.typesafe_jev import is_configured
+        from kernel.db.models import JevCloudSetting
+
+        key_ok = is_configured()
+        with session() as s:
+            all_ls = s.scalars(select(LedgerSet).order_by(LedgerSet.created_at)).all()
+            target = ls or (all_ls[0].id if all_ls else "")
+            setting = s.get(JevCloudSetting, target) if target else None
+            backend = setting.backend if setting else "local"
+            consent = bool(setting.cloud_consent) if setting else False
+        if not all_ls:
+            body = "<h2>JEV 云端模式设置</h2><p class=err>尚无账套，无法保存设置。</p>"
+            return _page("JEV 云端设置", body, request.state.subject_name)
+        ls_opts = "".join(
+            f"<option value='{html.escape(x.id)}'{' selected' if x.id == target else ''}>"
+            f"{html.escape(x.name)}</option>"
+            for x in all_ls
+        )
+        banner = (
+            "<div style='border:1px solid #ff3b30;border-radius:8px;padding:12px 16px;"
+            "background:#fff5f5;color:#b00020;margin:12px 0'>"
+            "<b>⚠️ 数据出境提示</b>：开启「云端模式」后，JEV 决策所需的<b>聚合指标</b>"
+            "（如预算差异率、规则命中统计、未清项账龄、费用合规标记等，"
+            "<b>不含原始凭证明细或对手方 PII</b>）将被发送至 TypeSafe 云（api.typesafe.ai）。"
+            "请确认你已获授权将数据出境。XErp 默认纯本地确定性内核，不发送任何数据。"
+            "</div>"
+        )
+        checked_cloud = "checked" if backend == "typesafe" else ""
+        checked_local = "checked" if backend != "typesafe" else ""
+        ack_checked = "checked" if consent else ""
+        body = (
+            "<h2>JEV 云端模式设置</h2>"
+            f"<p class=muted>账套：<b>{html.escape(target)}</b> · 当前后端：<b>{backend}</b> · "
+            f"API Key 已配置：<b>{'是' if key_ok else '否'}</b> · 数据出境授权："
+            f"<b>{'已授权' if consent else '未授权'}</b></p>"
+            + ("<p class=err>⚠️ 已选云端模式但 TYPESAFE_API_KEY 未配置（在 .env 配置后重启），"
+               "当前仍走本地内核。</p>" if backend == "typesafe" and not key_ok else "")
+            + "<form method=post action='/jev/settings'>"
+            f"<p>账套：<select name=ls>{ls_opts}</select></p>"
+            "<p><label><input type=radio name=backend value=local " + checked_local + "> "
+            "本地内核（默认 · 零数据出境）</label></p>"
+            "<p><label><input type=radio name=backend value=typesafe " + checked_cloud + "> "
+            "云端模式（TypeSafe 校准）</label></p>"
+            + (banner if backend == "typesafe" or not key_ok else "")
+            + "<p><label style='color:#b00020'><input type=checkbox name=ack_data_egress value=1 "
+            + ack_checked + "> 我已知悉并授权将决策聚合指标发送至 TypeSafe 云端</label></p>"
+            "<button type=submit style='background:#0071e3;color:#fff;border:0;border-radius:8px;"
+            "padding:8px 18px;cursor:pointer'>保存设置</button>"
+            "</form>"
+            "<p class=muted><a href='/jev'>← 返回 JEV 控制台</a></p>"
+        )
+        return _page("JEV 云端设置", body, request.state.subject_name)
+
+    @app.post("/jev/settings")
+    async def jev_settings_save(request: Request):
+        from kernel.adapters.typesafe_jev import is_configured
+        from kernel.db.models import JevCloudSetting, utcnow
+
+        form = await request.form()
+        ls = form.get("ls", "")
+        backend = form.get("backend", "local")
+        ack = form.get("ack_data_egress") == "1"
+        key_ok = is_configured()
+        if backend == "typesafe":
+            if not key_ok:
+                return _page("JEV 云端设置",
+                    "<p class=err>未配置 TYPESAFE_API_KEY，无法启用云端模式"
+                    "（在 .env 配置后重启）。</p>"
+                    "<p><a href='/jev/settings'>← 返回</a></p>", request.state.subject_name)
+            if not ack:
+                return _page("JEV 云端设置",
+                    "<p class=err>启用云端模式必须勾选「已知悉并授权数据出境」。</p>"
+                    "<p><a href='/jev/settings'>← 返回</a></p>", request.state.subject_name)
+        with session() as s:
+            if not ls or s.get(LedgerSet, ls) is None:
+                return _page("JEV 云端设置", "<p class=err>账套无效。</p>",
+                             request.state.subject_name)
+            setting = s.get(JevCloudSetting, ls)
+            if setting is None:
+                setting = JevCloudSetting(ledger_set_id=ls)
+                s.add(setting)
+            setting.backend = backend
+            setting.cloud_consent = bool(backend == "typesafe" and ack)
+            if setting.cloud_consent:
+                setting.consent_actor = getattr(request.state, "subject_id", "local")
+                setting.consent_at = utcnow()
+            s.commit()
+        return RedirectResponse(f"/jev/settings?ls={ls}", status_code=303)
 
     # ---------- v1.3 月度财报卡片（可分享 · O16 趣味） ----------
     @app.get("/ledger/{ls_id}/card", response_class=HTMLResponse)

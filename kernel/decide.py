@@ -618,12 +618,8 @@ def list_decisions() -> list[dict]:
     ]
 
 
-def run_decision(name: str, session, **params) -> Decision:
-    """按决策类型名分发执行（只读、确定性）。
-
-    未知类型 → DecideError(UNKNOWN_DECISION)。handler 参数均为 keyword-only。
-    多余参数（不同决策类型字段不同）按 handler 签名自动过滤，避免误传 TypeError。
-    """
+def _dispatch_local(name: str, session, **params) -> Decision:
+    """本地确定性分发（不含任何云端路由），供 run_decision 与云端适配器复用。"""
     spec = DECISION_REGISTRY.get(name)
     if spec is None:
         raise DecideError(
@@ -634,3 +630,37 @@ def run_decision(name: str, session, **params) -> Decision:
     valid = {p for p in sig.parameters if p != "session"}
     clean = {k: v for k, v in params.items() if k in valid}
     return spec.handler(session, **clean)
+
+
+# 云端后端运行时注入点：核心层不静态依赖 kernel.adapters，由适配器在导入时注册。
+# CLOUD_BACKEND 签名为 (name, session, *, ledger_set_id, **params) -> Decision。
+CLOUD_BACKEND = None
+
+
+def set_cloud_backend(fn) -> None:
+    """由 kernel/adapters 在导入时注册云端决策后端（如 TypeSafe Jev）。"""
+    global CLOUD_BACKEND
+    CLOUD_BACKEND = fn
+
+
+def run_decision(name: str, session, **params) -> Decision:
+    """按决策类型名分发执行（只读、确定性）。
+
+    默认返回本地确定性决策（evidence.backend='local'）；若已注册云端后端且该账套
+    已显式授权数据出境，则由云端后端返回其决策（evidence.backend='typesafe'）；
+    云端异常一律安全回退本地（evidence.cloud_fallback=True）。核心层零适配器依赖。
+
+    未知类型 → DecideError(UNKNOWN_DECISION)。handler 参数均为 keyword-only。
+    多余参数（不同决策类型字段不同）按 handler 签名自动过滤，避免误传 TypeError。
+    """
+    local = _dispatch_local(name, session, **params)
+    ls = params.get("ledger_set_id")
+    if CLOUD_BACKEND is not None and ls:
+        try:
+            return CLOUD_BACKEND(name, session, ledger_set_id=ls, **params)
+        except Exception:  # noqa: BLE001 —— 云端失败/未授权一律回退本地，不改本地判定
+            local.evidence.setdefault("backend", "local")
+            local.evidence["cloud_fallback"] = True
+            return local
+    local.evidence.setdefault("backend", "local")
+    return local

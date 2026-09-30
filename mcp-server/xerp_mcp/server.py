@@ -3160,9 +3160,11 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         - expense_compliance：费用合规判定(F6)。params: voucher_id(str), policy?(obj)
         - approval_route：费用审批路由(F7)。params: voucher_id(str)
 
-        返回 Decision{kind,label,value,confidence,severity,human_review_required,basis,evidence}；
+        返回 Decision{kind,label,value,confidence,severity,human_review_required,basis,evidence,backend}；
         human_review_required=true 表示歧义/硬约束未满足，须人工或 LLM 复核——本工具
         绝不触发过账/支付/改账（与 HITL 铁律一致）。decision_type 留空/未知会返回可用列表。
+        backend 字段指示实际使用后端（local=纯本地确定性内核 / typesafe=已授权云端校准）；
+        云端模式需账套在 Web 显式授权数据出境且配置 TYPESAFE_API_KEY 才生效，否则安全回退本地。
         """
         try:
             import json
@@ -3181,7 +3183,9 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
             params["ledger_set_id"] = ledger_set_id
             with repo.session() as s:
                 d = run_decision(decision_type, s, **params)
-                return _ok(decision=d.to_dict(), decision_type=decision_type)
+                result = d.to_dict()
+                result["backend"] = d.evidence.get("backend", "local")
+                return _ok(decision=result, decision_type=decision_type)
         except DecideError as e:
             return _err(e.code, e.message_zh, e.details)
         except (ValueError, TypeError, json.JSONDecodeError) as e:

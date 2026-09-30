@@ -71,12 +71,13 @@ def test_fresh_upgrade_head_has_all_model_columns():
         # ERP 模块纵深：预算主数据表必须由迁移提供（漏写迁移会让老库查询 500）
         assert _columns(db, "budgets"), "0013 预算主表必须由迁移提供"
         assert _columns(db, "budget_lines"), "0013 预算明细表必须由迁移提供"
+        assert _columns(db, "jev_cloud_setting"), "0014 云端授权表必须由迁移提供"
         con = sqlite3.connect(db)
         try:
             ver = con.execute("select version_num from alembic_version").fetchone()[0]
         finally:
             con.close()
-        assert ver == "0013_budget"
+        assert ver == "0014_jev_cloud"
 
 
 def test_legacy_db_upgrade_is_idempotent():
@@ -132,5 +133,6 @@ def test_legacy_db_upgrade_is_idempotent():
                 "quantity", "unit"} <= _vl, "② 外币/数量列必须由迁移提供"
         assert _columns(db, "budgets"), "0013 预算主表必须由迁移提供"
         assert _columns(db, "budget_lines"), "0013 预算明细表必须由迁移提供"
+        assert _columns(db, "jev_cloud_setting"), "0014 云端授权表必须由迁移提供"
         # 再跑一遍 head：幂等，不抛异常
         _alembic_upgrade(f"sqlite:///{db}")
