@@ -4361,10 +4361,16 @@ body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backg
 def main() -> None:
     import uvicorn
 
-    # 监听地址默认回环（本地安全）；平台/反向代理发布时由 XERP_WEB_HOST=0.0.0.0 覆盖。
+    # 监听地址：发布到平台/反向代理时必须绑定 0.0.0.0（对外可达）；
+    # 本地调试可用 XERP_WEB_HOST=127.0.0.1 或 HOST=127.0.0.1 压回回环。
+    _host = (
+        os.environ.get("XERP_WEB_HOST")
+        or os.environ.get("HOST")
+        or "0.0.0.0"
+    )
     uvicorn.run(
         build_app(os.environ.get("XERP_DB")),
-        host=os.environ.get("XERP_WEB_HOST", "127.0.0.1"),
+        host=_host,
         port=int(os.environ.get("PORT", "8001")),
     )
 
