@@ -278,6 +278,8 @@ _IC = {
     "check": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>',
     "layers": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>',
     "help": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.1.9-1.1 1.8"/><circle cx="11.9" cy="17" r=".7" fill="currentColor" stroke="none"/></svg>',
+    # 「AI 驾驶舱」入口图标：四角星 spark（AI / 灵感）
+    "spark": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>',
 }
 
 _SIDEBAR = (
@@ -291,6 +293,7 @@ _SIDEBAR = (
     f'<a class="nav-item" data-ls-suffix="/reports" href="#"><span class="nav-ic">{_IC["chart"]}</span>报表中心</a>'
     f'<a class="nav-item" data-ls-suffix="/boss" href="#"><span class="nav-ic">{_IC["gauge"]}</span>经营总览</a>'
     f'<a class="nav-item" data-ls-suffix="/close" href="#"><span class="nav-ic">{_IC["cal"]}</span>月末结账</a>'
+    f'<a class="nav-item" data-ls-suffix="/cockpit" href="#"><span class="nav-ic">{_IC["spark"]}</span>AI 驾驶舱</a>'
     '</div>'
     f'<a class="nav-item" data-path="/todo" href="/todo"><span class="nav-ic">{_IC["check"]}</span>审批待办</a>'
     f'<a class="nav-item" data-path="/group" href="/group"><span class="nav-ic">{_IC["layers"]}</span>集团合并</a>'
@@ -1162,6 +1165,72 @@ def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
         'rec': rec, 'unposted': unposted, 'posted': posted, 'total_v': total_v,
         'closed': closed, 'guide': guide, 'tips': tips, 'jev_items': jev_items,
     }
+
+
+def _cockpit_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
+    """聚合 AI 原生财务驾驶舱所需全部数据——零日结账（持续对账）视图 + 持续预测（what-if）。
+
+    全部只读，复用内核单一真源（绝不复制配平逻辑、绝不写账）：
+    - balance_sheet / income_statement / cash_flow：三大报表投影；
+    - subledger_gl_reconcile：应收(客户)/应付(供应商) 子账↔总账对账健康度；
+    - sprite_push_items 的 jev_decision：JEV 异常/提醒只读草稿；
+    - simulation.what_if：6 个预设杠杆情景推演（持续预测）。
+    """
+    from decimal import Decimal as _D
+
+    from kernel.reporting.arap import subledger_gl_reconcile
+    from kernel.reporting.statements import balance_sheet, cash_flow, income_statement
+    from kernel.simulation import preset_lever_names, what_if
+    from kernel.sprite_push import sprite_push_items
+
+    bs = balance_sheet(s, ls_id, yr, mo, standard)
+    inc = income_statement(s, ls_id, yr, mo, standard)
+    cf = cash_flow(s, ls_id, yr, mo, standard)
+
+    # 零日结账核心：子账↔总账对账健康度（应收 / 应付）
+    recv = subledger_gl_reconcile(s, ledger_set_id=ls_id, dim_key="customer", as_of_date=None)
+    pay = subledger_gl_reconcile(s, ledger_set_id=ls_id, dim_key="supplier", as_of_date=None)
+
+    # JEV 异常/提醒（只读草稿，绝不触发过账/支付/改账）
+    sp = sprite_push_items(s, ls_id, yr, mo, standard)
+    jev_items = [it for it in sp["items"] if it["type"] == "jev_decision"]
+
+    # 持续预测：6 个预设杠杆全跑（horizon 默认 6 期）。缺种子时安全降级——
+    # 零日结账区不受影响仍能渲染。
+    fc = None
+    try:
+        fc = what_if(
+            s, ledger_set_id=ls_id, base_year=yr, base_month=mo,
+            horizon=6, levers=list(preset_lever_names()), standard=standard,
+        )
+    except Exception:  # noqa: BLE001 预测缺种子/失败 → 降级为不可用提示
+        fc = None
+
+    return {
+        "bs": bs, "inc": inc, "cf": cf,
+        "recv": recv, "pay": pay,
+        "jev_items": jev_items,
+        "forecast": fc,
+    }
+
+
+def _cockpit_kpi(label: str, value, color: str) -> str:
+    """驾驶舱 KPI 小卡（数字优先，颜色仅辅助）。"""
+    from decimal import Decimal as _D
+
+    v = value
+    if not isinstance(v, (_D, int, float)):
+        try:
+            v = _D(str(v))
+        except Exception:  # noqa: BLE001
+            v = _D("0")
+    return (
+        f"<div style='flex:1;min-width:140px;border:1px solid #e5e5ea;border-radius:12px;"
+        f"padding:14px 16px'>"
+        f"<div style='font-size:12px;color:#86868b'>{html.escape(label)}</div>"
+        f"<div style='font-size:22px;font-weight:700;color:{color};margin-top:4px'>"
+        f"{_fmt(v)}</div></div>"
+    )
 
 
 def build_app(db_url: str | None = None) -> FastAPI:
@@ -2350,6 +2419,266 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 + guide_html
             )
             return _page(f"{ls.name} 经营看板", body, request.state.subject_name, show_operator=True)
+
+    # ---------- AI 原生财务驾驶舱（零日结账 + 持续预测 · 本地优先） ----------
+    @app.get("/ledger/{ls_id}/cockpit", response_class=HTMLResponse)
+    def cockpit_view(request: Request, ls_id: str, year: int = 0, month: int = 0):
+        """AI 原生财务驾驶舱——把 OpenAI「AI-Native Finance」两核心点重诠为 XErp 本地优先区隔。
+
+        核心点① Zero-day close（零日结账）→ 持续对账视图：管理者随时看到已对账、
+        可追溯的财务状况（实时三大报表 KPI + 应收/应付 子账↔总账对账健康度 + JEV 异常）。
+        核心点② Continuously updated forecasting（持续预测）→ 哪个决策改结果：what-if
+        预设杠杆推演，显示哪个杠杆对期末现金/净利等影响最大（持续滚动，实际数一变即重算）。
+
+        全程只读、复用内核单一真源、守本地优先红线：AI 只产草稿，人不点头不写账/支付/改账。
+        """
+        from decimal import Decimal as _D
+
+        from kernel.operator import OperatorState
+
+        _LEVER_ZH = {
+            "ar_acceleration": "加速回款", "ap_extension": "延长付款",
+            "margin_compression": "毛利压缩", "growth_halt": "增长停滞",
+            "cost_inflation": "成本上升", "capex_surge": "资本开支激增",
+        }
+        _METRIC_ORDER = [
+            "closing_cash", "net_profit", "operating_cash_flow", "ar", "ap", "total_assets",
+        ]
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class=err>账套不存在</p>", request.state.subject_name)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc()
+                )
+            ).all()
+            period = next((p for p in periods if not year and p.status == "OPEN"), None) or (
+                periods[0] if periods else None
+            )
+            if period is None:
+                return _page(f"{ls.name}", "<p class=err>尚无期间</p>", request.state.subject_name)
+            yr, mo = period.year, period.month
+            d = _cockpit_data(s, ls_id, yr, mo, ls.accounting_standard)
+
+            ptabs = "&nbsp;".join(
+                f'<a href="/ledger/{ls_id}/cockpit?year={p.year}&month={p.month}">'
+                f"{p.year}-{p.month:02d}({period_zh(p.status)})</a>&nbsp;"
+                for p in periods
+            )
+
+            bs, inc, cf = d["bs"], d["inc"], d["cf"]
+            recv, pay = d["recv"], d["pay"]
+
+            # ══ 本地优先宣言（XErp 与云端 AI 财务工具的根本区隔） ══
+            banner = (
+                "<div style='border:1px solid #0071e3;background:#f0f7ff;border-radius:12px;"
+                "padding:14px 18px;margin-bottom:18px'>"
+                "<div style='font-size:15px;font-weight:700;color:#0071e3'>"
+                "🛡️ 本地优先 · AI 原生财务驾驶舱</div>"
+                "<p style='font-size:13px;color:#333;margin:6px 0 0'>"
+                "数据不出本机——所有数字来自你电脑里的内核单一真源；AI 只产<b>决策草稿</b>，"
+                "绝不写账 / 支付 / 改账；终态须你（或你的审批人）点头。这是 XErp 与云端 "
+                "AI 财务工具最根本的区隔。</p></div>"
+            )
+
+            # ══ 核心点①：零日结账 → 持续对账视图 ══
+            zd_kpi = (
+                _cockpit_kpi("资产合计", bs["assets"]["total"], "#0071e3")
+                + _cockpit_kpi("负债合计", bs["liabilities"]["total"], "#ff9500")
+                + _cockpit_kpi("权益合计", bs["equity"]["total"], "#34c759")
+                + _cockpit_kpi("本月营收", inc["revenue"], "#5856d6")
+                + _cockpit_kpi("本月净利", inc["net_profit"], "#ff2d55")
+                + _cockpit_kpi("经营现金流净额", cf["operating"], "#00a86b")
+            )
+
+            def _recon_card(title, r):
+                ok = bool(r.get("ok"))
+                color = "#34c759" if ok else "#ff3b30"
+                try:
+                    diff = _D(str(r.get("difference", "0")))
+                except Exception:  # noqa: BLE001
+                    diff = _D("0")
+
+                def _n(v):
+                    try:
+                        return _D(str(v))
+                    except Exception:  # noqa: BLE001
+                        return _D("0")
+
+                return (
+                    f"<div style='flex:1;min-width:260px;border:1px solid #e5e5ea;"
+                    f"border-radius:12px;padding:14px;margin-bottom:0'>"
+                    f"<div style='font-size:13px;color:#86868b'>{html.escape(title)}</div>"
+                    f"<div style='font-size:12px;color:#86868b;margin-top:6px'>"
+                    f"子账合计 {_fmt(_n(r.get('subledger_total')))} · "
+                    f"总账控制 {_fmt(_n(r.get('control_total')))}</div>"
+                    f"<div style='margin:8px 0'>"
+                    f"<span style='color:{color};font-weight:bold'>"
+                    f"{'✅ 已对账' if ok else '⚠️ 有差异'}</span> "
+                    f"<span style='font-size:13px'>"
+                    f"{'一致' if ok else '差额 ' + _fmt(diff)}</span></div>"
+                    f"<div style='font-size:12px;color:#86868b'>往来单位 "
+                    f"{r.get('partner_count', 0)} 家 · 未分配 "
+                    f"{r.get('unassigned_count', 0)} 笔</div></div>"
+                )
+
+            recon_cards = (
+                _recon_card("应收（客户）子账 ↔ 总账", recv)
+                + _recon_card("应付（供应商）子账 ↔ 总账", pay)
+            )
+
+            jev_html = _jev_panel(d["jev_items"])
+            if any(it.get("severity") in ("alert", "high", "critical")
+                   for it in d["jev_items"]):
+                try:
+                    _op_event(OperatorState.ALERT)
+                except Exception:  # noqa: BLE001
+                    pass
+            jev_block = (
+                jev_html if jev_html else
+                "<p class=muted>🧠 JEV 当前无异常标记——所有高频小决策均通过确定性规则校验。</p>"
+            )
+
+            zero_day = (
+                "<h3>① 零日结账 · 持续对账视图</h3>"
+                "<p class=muted>不是等到月末才结账——每一笔入账即对账，管理者随时看到"
+                "已对账、可追溯的财务状况。下方数字全部来自本机内核单一真源。</p>"
+                + "<div style='display:flex;flex-wrap:wrap;gap:12px'>" + zd_kpi + "</div>"
+                + "<div style='display:flex;flex-wrap:wrap;gap:12px;margin-top:12px'>"
+                + recon_cards + "</div>"
+                + jev_block
+            )
+
+            # ══ 核心点②：持续预测 → 哪个决策改结果 ══
+            fc = d["forecast"]
+            if fc:
+                summary = fc.get("impact_summary", {}) or {}
+                variants = fc.get("variants", {}) or {}
+
+                # 基准期末 KPI
+                base_kpi = "".join(
+                    _cockpit_kpi(
+                        summary[k]["label"],
+                        _D(str(summary[k]["baseline"])),
+                        "#0071e3",
+                    )
+                    for k in _METRIC_ORDER if k in summary
+                )
+
+                # 6 个杠杆卡（以「期末现金」变动为直观指标）
+                def _lever_card(name, v):
+                    imp = v.get("impact", {}).get("closing_cash", {})
+                    try:
+                        delta = _D(str(imp.get("delta", "0")))
+                        if delta == 0:
+                            delta = _D("0")
+                        pct_raw = imp.get("pct")
+                        pct = _D(str(pct_raw)) if pct_raw is not None else None
+                        if pct is not None and pct == 0:
+                            pct = _D("0")
+                    except Exception:  # noqa: BLE001
+                        delta, pct = _D("0"), None
+                    col = "#34c759" if delta >= 0 else "#ff3b30"
+                    dsign = "" if delta == 0 else ("+" if delta > 0 else "")
+                    if pct is not None:
+                        psign = "" if pct == 0 else ("+" if pct > 0 else "")
+                        pct_html = (
+                            f" <span style='font-size:12px'>({psign}{_fmt(pct)}%)</span>"
+                        )
+                    else:
+                        pct_html = ""
+                    zh = _LEVER_ZH.get(name, name)
+                    return (
+                        f"<div style='flex:1;min-width:220px;border:1px solid #e5e5ea;"
+                        f"border-radius:12px;padding:14px'>"
+                        f"<div style='font-size:13px;font-weight:600'>{html.escape(zh)}"
+                        f" <span style='font-size:11px;color:#86868b'>{html.escape(name)}</span></div>"
+                        f"<div style='font-size:12px;color:#86868b;margin:4px 0;min-height:30px'>"
+                        f"{html.escape(v.get('description_zh', ''))}</div>"
+                        f"<div style='font-size:18px;font-weight:700;color:{col}'>"
+                        f"{dsign}{_fmt(delta)}{pct_html}</div>"
+                        f"<div style='font-size:11px;color:#86868b'>期末现金变动（vs 基准）</div>"
+                        f"</div>"
+                    )
+
+                lever_cards = "".join(
+                    _lever_card(n, v) for n, v in variants.items()
+                )
+
+                # 影响汇总表：每指标 基准 / 最优杠杆 / 最差杠杆
+                def _cell(delta_str, lever, good_is_up=True):
+                    try:
+                        dv = _D(str(delta_str))
+                    except Exception:  # noqa: BLE001
+                        dv = _D("0")
+                    if dv == 0:
+                        return "<td style=text-align:right>—</td>"
+                    up = dv > 0
+                    col = "#34c759" if (up == good_is_up) else "#ff3b30"
+                    sign = "+" if up else ""
+                    lzh = _LEVER_ZH.get(lever, lever)
+                    return (
+                        f"<td style='text-align:right;color:{col}'>"
+                        f"{sign}{_fmt(dv)} <span style='font-size:11px;color:#86868b'>"
+                        f"· {html.escape(lzh)}</span></td>"
+                    )
+
+                rows = ""
+                for k in _METRIC_ORDER:
+                    if k not in summary:
+                        continue
+                    sm = summary[k]
+                    rows += (
+                        f"<tr><td>{html.escape(sm['label'])}</td>"
+                        f"<td style=text-align:right>{_fmt(_D(str(sm['baseline'])))}</td>"
+                        + _cell(sm["best_case_delta"], sm["best_case_lever"])
+                        + _cell(sm["worst_case_delta"], sm["worst_case_lever"])
+                        + "</tr>"
+                    )
+                impact_table = (
+                    "<table class=rep><thead><tr><th>指标</th><th class=num>基准期末</th>"
+                    "<th class=num>最优情形（杠杆）</th><th class=num>最差情形（杠杆）</th>"
+                    "</tr></thead><tbody>" + rows + "</tbody></table>"
+                )
+                forecast_html = (
+                    "<h3>② 持续预测 · 哪个决策改结果</h3>"
+                    "<p class=muted>基于当前实际上期末三表种子，叠加 6 个经营杠杆各跑一版情景，"
+                    "对比期末关键指标。<b>持续更新</b>——实际数一变，种子即重算，不是一份"
+                    "一次性报告。</p>"
+                    + "<div style='display:flex;flex-wrap:wrap;gap:12px'>" + base_kpi + "</div>"
+                    + "<h4 style='margin:16px 0 8px'>经营杠杆推演（期末现金变动）</h4>"
+                    + "<div style='display:flex;flex-wrap:wrap;gap:12px'>" + lever_cards + "</div>"
+                    + "<h4 style='margin:16px 0 8px'>哪个决策改结果（期末指标对比）</h4>"
+                    + impact_table
+                    + "<p class=hint>所有数字由 forecast_statements 纯函数确定性推导，"
+                    "可回放、可审计、无 LLM、无随机；AI 只产草稿，落账仍须你确认。</p>"
+                )
+            else:
+                forecast_html = (
+                    "<h3>② 持续预测 · 哪个决策改结果</h3>"
+                    "<p class=err>当前期间缺少足够实际三表种子，无法生成情景推演。"
+                    "请先录入若干期实际凭证后再来查看。（零日结账区不受影响）</p>"
+                )
+
+            body = (
+                banner
+                + "<h2>" + html.escape(ls.name) + " · AI 原生财务驾驶舱</h2>"
+                + _toolbar(
+                    f"<a href='/ledger/{ls_id}'>账套</a>",
+                    f"<a href='/ledger/{ls_id}/boss'>经营总览</a>",
+                    f"<a href='/ledger/{ls_id}/reports'>报表中心</a>",
+                    f"<a href='/ledger/{ls_id}/forecast'>三表预测</a>",
+                )
+                + f"<p class=muted>期间切换：{ptabs}</p>"
+                + zero_day + "<hr style='margin:22px 0;border:0;border-top:1px solid #eee'>"
+                + forecast_html
+            )
+            return _page(
+                f"{ls.name} AI 驾驶舱", body, request.state.subject_name, show_operator=True,
+                period_label=f"{yr}-{mo:02d} · {period_zh(period.status)}",
+            )
 
     # ---------- v2.0 多主体合并报表（只读视图 · 集团合并） ----------
     @app.get("/group", response_class=HTMLResponse)
