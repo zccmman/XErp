@@ -139,6 +139,24 @@ def _fmt(d: Decimal | None) -> str:
     return f"{(d or Decimal('0')):.2f}"
 
 
+def _jsonable(obj):
+    """递归把内核返回（含 Decimal / date / datetime）转为 JSON 友好类型（Decimal→str）。
+
+    内核报表/预测返回里混有 Decimal 与日期，FastMCP 默认 serializer 不认 Decimal，
+    统一在此转成字符串（与 XErp MCP「金额一律 decimal-string」约定一致），AI 客户端
+    拿到的是稳定可解析的文本金额，而非报错或丢精度。
+    """
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, Decimal):
+        return str(obj)
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    return obj
+
+
 class _Repo:
     """按 URL 的 Session 工厂 + 惰性建表（首次连接自动 create_all）。"""
 
@@ -2069,6 +2087,42 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                 )
         except Exception as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
             return _err("SIMULATION_ERROR", str(e), {})
+
+    @mcp.tool()
+    def cockpit_snapshot(
+        ledger_set_id: str,
+        year: int,
+        month: int,
+        standard: str = "",
+    ) -> dict:
+        """AI 原生财务驾驶舱快照（只读聚合）：把 OpenAI「AI-Native Finance」两核心点重诠为 XErp 本地优先区隔（驾驶舱 Web 端同源）。
+
+        围绕「管理者此刻该看什么、该做什么决策」这一个决策，重做整条流——
+        一次调用拿齐零日结账视图 + 持续预测，AI 客户端不必自己拼 5 个工具：
+
+        ① 零日结账 · 持续对账视图：实时三大报表 KPI（资产/负债/权益/营收/净利/经营现金流）
+           + 应收(客户)/应付(供应商) 子账↔总账对账健康度（ok / difference）+ JEV 确定性决策异常；
+        ② 持续预测 · 哪个决策改结果：what-if 6 预设杠杆（加速回款/延长付款/毛利压缩/增长停滞/
+           成本上升/资本开支激增）对期末现金/净利等指标的 delta + 最优/最差情形对比。
+
+        全部只读、复用 kernel.reporting.cockpit.cockpit_snapshot（与 Web `/ledger/{ls_id}/cockpit`
+        同源、单一真源，ADR-002），绝不写账/支付/改账。金额一律字符串十进制（与内核 Decimal 一致）。
+        - year / month：基准期（驾驶舱所看期间，通常用 OPEN 期）；
+        - standard：会计口径，留空则以账套设置为准（单一真源，传错会 STANDARD_MISMATCH）。
+        """
+        try:
+            from kernel.reporting.cockpit import cockpit_snapshot as _snap
+
+            with repo.session() as s:
+                std, err = _resolve_standard(s, ledger_set_id, standard or None)
+                if err:
+                    return err
+                raw = _snap(
+                    s, ledger_set_id=ledger_set_id, year=year, month=month, standard=std
+                )
+            return _ok(snapshot=_jsonable(raw))
+        except Exception as e:  # noqa: BLE001 —— 兜底，避免暴露内部栈
+            return _err("COCKPIT_ERROR", str(e), {})
 
     @mcp.tool()
     def anomaly_healing_suggestions(

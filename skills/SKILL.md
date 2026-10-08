@@ -138,3 +138,4 @@ P0-1 把**存货、固定资产、生产成本**纳入既有记账内核：**收
 | asset_dispose_draft | 固定资产处置凭证草稿（只读） |
 | cost_allocation_draft | 制造费用分摊到成本对象 + 草稿（只读） |
 | cost_settlement_draft | 完工产品成本结转草稿（只读） |
+| cockpit_snapshot | AI 原生财务驾驶舱快照（只读聚合）：三表 KPI + 应收/应付子账↔总账对账健康度 + JEV 异常 + what-if 6 杠杆推演，与 Web `/ledger/{ls_id}/cockpit` 同源 |

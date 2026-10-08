@@ -1168,50 +1168,14 @@ def _boss_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
 
 
 def _cockpit_data(s, ls_id: str, yr: int, mo: int, standard: str) -> dict:
-    """聚合 AI 原生财务驾驶舱所需全部数据——零日结账（持续对账）视图 + 持续预测（what-if）。
+    """聚合 AI 原生财务驾驶舱数据——委托内核单一真源 cockpit_snapshot（零日结账 + 持续预测）。
 
-    全部只读，复用内核单一真源（绝不复制配平逻辑、绝不写账）：
-    - balance_sheet / income_statement / cash_flow：三大报表投影；
-    - subledger_gl_reconcile：应收(客户)/应付(供应商) 子账↔总账对账健康度；
-    - sprite_push_items 的 jev_decision：JEV 异常/提醒只读草稿；
-    - simulation.what_if：6 个预设杠杆情景推演（持续预测）。
+    Web 渲染层只负责把返回结构拼成 Apple 极简 HTML；所有取数口径都在
+    kernel.reporting.cockpit 内（与 MCP 工具 cockpit_snapshot 共用同一函数，ADR-002 单一真源）。
     """
-    from decimal import Decimal as _D
+    from kernel.reporting.cockpit import cockpit_snapshot
 
-    from kernel.reporting.arap import subledger_gl_reconcile
-    from kernel.reporting.statements import balance_sheet, cash_flow, income_statement
-    from kernel.simulation import preset_lever_names, what_if
-    from kernel.sprite_push import sprite_push_items
-
-    bs = balance_sheet(s, ls_id, yr, mo, standard)
-    inc = income_statement(s, ls_id, yr, mo, standard)
-    cf = cash_flow(s, ls_id, yr, mo, standard)
-
-    # 零日结账核心：子账↔总账对账健康度（应收 / 应付）
-    recv = subledger_gl_reconcile(s, ledger_set_id=ls_id, dim_key="customer", as_of_date=None)
-    pay = subledger_gl_reconcile(s, ledger_set_id=ls_id, dim_key="supplier", as_of_date=None)
-
-    # JEV 异常/提醒（只读草稿，绝不触发过账/支付/改账）
-    sp = sprite_push_items(s, ls_id, yr, mo, standard)
-    jev_items = [it for it in sp["items"] if it["type"] == "jev_decision"]
-
-    # 持续预测：6 个预设杠杆全跑（horizon 默认 6 期）。缺种子时安全降级——
-    # 零日结账区不受影响仍能渲染。
-    fc = None
-    try:
-        fc = what_if(
-            s, ledger_set_id=ls_id, base_year=yr, base_month=mo,
-            horizon=6, levers=list(preset_lever_names()), standard=standard,
-        )
-    except Exception:  # noqa: BLE001 预测缺种子/失败 → 降级为不可用提示
-        fc = None
-
-    return {
-        "bs": bs, "inc": inc, "cf": cf,
-        "recv": recv, "pay": pay,
-        "jev_items": jev_items,
-        "forecast": fc,
-    }
+    return cockpit_snapshot(s, ledger_set_id=ls_id, year=yr, month=mo, standard=standard)
 
 
 def _cockpit_kpi(label: str, value, color: str) -> str:
