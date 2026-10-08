@@ -1,5 +1,5 @@
 ---
-name: ledgeros-accounting
+name: xerp-accounting
 description: >
   XErp 智能体 ERP 记账操作指南。当用户要求记账/报销/查余额/看凭证/撤销记账等
   财务动作时使用。通过 MCP 工具与确定性记账内核交互；金额一律字符串十进制；
@@ -14,11 +14,11 @@ description: >
 
 ## 第零步：工具可用性守卫（最高优先）
 
-本技能依赖名为 **ledgeros** 的 MCP 连接器（工具形如 get_workspace / create_voucher）。
-调用前先确认这些工具是否可用：**如果当前会话里没有 ledgeros 的任何工具，
+本技能依赖名为 **xerp** 的 MCP 连接器（工具形如 get_workspace / create_voucher）。
+调用前先确认这些工具是否可用：**如果当前会话里没有 xerp 的任何工具，
 立即停止，不要用文档生成/表格等替代方案**——生成「报销单文档」不是记账。
-正确做法是告知用户：「ledgeros 连接器未连接，请到 连接器管理 → 自定义连接器 →
-信任 ledgeros，然后重开会话再来记账。」
+正确做法是告知用户：「xerp 连接器未连接，请到 连接器管理 → 自定义连接器 →
+信任 xerp，然后重开会话再来记账。」
 
 ## 第一步：会话自举
 
