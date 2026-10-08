@@ -18,3 +18,5 @@ jobs:
         run: ruff check .
       - name: Test
         run: pytest
+      - name: Validate tool catalog vs profiles
+        run: python scripts/gen_tool_catalog.py check
