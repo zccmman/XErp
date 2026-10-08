@@ -1302,12 +1302,15 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 "建账完成后直接进入系统，无需再登录一次。</div>"
                 '<p><a href="/init">→ 建账向导（创建账套与第一个身份）</a></p>',
             )
+        open_mode = webauth.is_open_mode()
         mode_note = (
             '<div class="warn"><b>单机开放模式</b>：未设置 <code>XERP_WEB_PASSWORD</code>，'
             "口令栏留空即可登录。生产部署请在环境变量中设置口令。</div>"
-            if webauth.is_open_mode()
+            if open_mode
             else ""
         )
+        # 占位文案随模式切换：已设口令时不能再误导用户「留空」（实测发布演示时发现）
+        pwd_hint = "开放模式下留空" if open_mode else "请输入口令"
         body = (
             "<h2>登录 · 选择操作身份</h2>"
             f"{err}{mode_note}"
@@ -1316,7 +1319,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
             "<label>身份（决定凭证记在谁名下，影响审批与审计链）</label>"
             f'<select name=subject_id>{opts}</select>'
             "<label>口令</label>"
-            '<input type=password name=password placeholder="开放模式下留空">'
+            f'<input type=password name=password placeholder="{pwd_hint}">'
             '<br><button type=submit>登录</button></form>'
         )
         return _page("登录", body)
