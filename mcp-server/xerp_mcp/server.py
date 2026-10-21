@@ -1008,7 +1008,7 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         period_month: int = 0,
         accounting_standard: str = "",
     ) -> dict:
-        """AI 风险预警（v2.1 / B1）：只读扫描小微企业常见财务风险，只告警不执行。
+        """AI 风险预警（v2.1 / B1，P-10 深化）：只读扫描小微企业财务风险，只告警不执行。
 
         基于内核既有只读取数（amounts_by_code / balance_sheet / 受控 SQL）分析：
         - BS_UNBALANCED    资产负债表不平衡（alert）
@@ -1016,8 +1016,15 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
         - AR/AP 方向异常    应收出现贷方余额 / 应付出现借方余额（warn，重分类疑似）
         - LARGE_AMOUNT      异常大额凭证行（warn）
         - UNCLOSED_HISTORY  历史期间仍未结账（warn）
+        - VAT_BURDEN_RATE   税负率偏低：季销售额超免征额却少提增值税（warn）
+        - INVOICE_VAT_MISSING 发票异常：应税收入却零增值税计提（warn）
+        - INPUT_OUTPUT_DIVERGENCE 进销项背离：应交税费借方余额·进项/多缴挂账（warn）
 
-        铁律：本工具**只读、零副作用**，绝不制单/过账/结账。每条发现带 code /
+        P-10 深化（v2.1）：新增 R7–R9 增值税风险，以**账簿勾稽**代理发票/进销项
+        （本系统无独立发票子表），每条 finding 的 detail 内含可证伪数字（销售额/
+        账面增值税/税负率/阈值）即证据链，suggestion 给出下一步核查动作。
+
+        铁律：本工具**只读、零副作用**，绝不制单/过账/结账/审批。每条发现带 code /
         severity / title / detail / suggestion，severity ∈ alert|warn|info。
         期间参数对齐全系统约定用 period_year/period_month（0 表示取最新 OPEN 期间）。
 
@@ -1079,6 +1086,101 @@ def build_server(db_url: str | None = None, profile: str | None = None) -> FastM
                     vat=r["vat"],
                     surcharge=r["surcharge"],
                     precheck=r["precheck"],
+                    summary=r["summary"],
+                )
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+
+    @mcp.tool()
+    def tax_health_score(
+        ledger_set_id: str,
+        period_year: int = 0,
+        period_month: int = 0,
+        accounting_standard: str = "",
+    ) -> dict:
+        """税务健康分（v2.1 / P-09）：只读评估账套税务就绪度（0–100 分 + 优/良/中/差 评级）。
+
+        基于内核既有只读取数（prep_vat_small 已内含 scan_risks / amounts_by_code /
+        ending_balance / balance_sheet）生成：
+        - score       0–100 综合税务健康分
+        - grade       优 / 良 / 中 / 差 评级
+        - factors     扣分明细 [{reason, delta}]（可解释，缺数据不臆测）
+        - prep        申报准备结果透传（含 vat / surcharge / precheck）
+        - severity_counts  alert/warn/info 风险计数
+        - filing_ready     是否通过申报前置检查
+        - overdue_unclear  申报窗口已过但季度仍未结转
+        - summary    一句话总览
+
+        铁律：本工具**只读、零副作用**，绝不制单/过账/结账/替 Boss 报税；
+        绝不调用电子税务局 API、绝不写申报状态（守 D6「只读准备 + 人申报」）。
+        期间参数对齐全系统约定用 period_year/period_month（0 表示取最新 OPEN 期间）。
+
+        返回 {ok, score, grade, factors, prep, severity_counts, filing_ready,
+        overdue_unclear, summary}。
+        """
+        try:
+            with repo.session() as s:
+                from kernel.reporting.tax_health import tax_health_score as _ths
+
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
+                r = _ths(s, ledger_set_id, period_year, period_month, standard)
+                return _ok(
+                    score=r["score"],
+                    grade=r["grade"],
+                    factors=r["factors"],
+                    prep=r["prep"],
+                    severity_counts=r["severity_counts"],
+                    filing_ready=r["filing_ready"],
+                    overdue_unclear=r["overdue_unclear"],
+                    summary=r["summary"],
+                )
+        except ReportError as e:
+            return _err("REPORT_ERROR", str(e))
+
+    @mcp.tool()
+    def tax_filing_calendar(
+        ledger_set_id: str,
+        period_year: int = 0,
+        period_month: int = 0,
+        accounting_standard: str = "",
+    ) -> dict:
+        """申报日历（v2.1 / P-09）：只读生成当年小规模纳税人季报申报窗口与状态。
+
+        按「季报」口径（季度终了次月 15 日截止）推算当年 4 个季度申报窗口，
+        并交叉账套实际期间标注状态（no_data/upcoming/due_soon/overdue/closed）：
+        - no_data   该季度账套无对应期间（未记账）
+        - upcoming  窗口未到
+        - due_soon  距截止 ≤ 7 天
+        - overdue   已过截止且季度未结转
+        - closed    季度已结转（视为已完成）
+
+        同时透传每季度的申报准备结果（data_ready / total_sales / exempt / vat_due）。
+
+        铁律：本工具**只读、零副作用**，绝不制单/过账/结账/替 Boss 报税；
+        绝不调用电子税务局 API（守 D6「只读准备 + 人申报」）。period_year 传 0
+        表示取当前年份。
+
+        返回 {ok, year, standard, today, quarters, due_count, summary}。
+        """
+        try:
+            from datetime import date
+
+            with repo.session() as s:
+                from kernel.reporting.tax_health import filing_calendar as _fc
+
+                standard, err = _resolve_standard(s, ledger_set_id, accounting_standard)
+                if err:
+                    return err
+                yr = period_year or date.today().year
+                r = _fc(s, ledger_set_id, yr, standard)
+                return _ok(
+                    year=r["year"],
+                    standard=r["standard"],
+                    today=r["today"],
+                    quarters=r["quarters"],
+                    due_count=r["due_count"],
                     summary=r["summary"],
                 )
         except ReportError as e:

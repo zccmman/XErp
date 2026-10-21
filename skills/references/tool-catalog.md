@@ -78,9 +78,9 @@
 | `report_aux` | 辅助核算报表：按维度（客户/供应商/部门/项目/其他）透视余额 | 专项核算 |
 | `foreign_trial_balance` | 外币试算平衡：按（科目 × 币种）汇总本月 POSTED 凭证的本币与原币借/贷 | 外币账套 |
 | `sprite_push` | 账本精灵 7×24 主动推送（O18）：把该账套该期间的主动提醒（月结/异常/财报卡片/健康）推给 Boss；**只读生成、绝不执行**，只发建议不落账。channel: wecom / console / web | 主动触达老板；推送≠执行 |
-| `risk_scan` | **AI 风险预警（v2.1/B1）**：只读扫描 SMB 财务风险——表不平 / 负现金 / 应收贷方余额·应付借方余额 / 异常大额 / 历史未结账；只告警不执行。返回 findings（code/severity/title/detail/suggestion，severity ∈ alert\|warn\|info） | 出表/月结前的财务健康体检 |
+| `risk_scan` | **AI 风险预警（v2.1/B1 · P-10 深化）**：只读扫描 SMB 财务风险——表不平 / 负现金 / 应收贷方余额·应付借方余额 / 异常大额 / 历史未结账；**P-10 新增增值税风险**：`VAT_BURDEN_RATE` 税负率偏低（季销售额超免征额却少提增值税）/ `INVOICE_VAT_MISSING` 发票异常（应税收入零增值税计提）/ `INPUT_OUTPUT_DIVERGENCE` 进销项背离（应交税费借方余额·进项/多缴挂账）。三规则以账簿勾稽代理发票/进销项（无独立发票子表）、缺数据跳过、绝不误报；每条 finding 含 code/severity/title/detail(证据链)/suggestion，severity ∈ alert\|warn\|info；只告警不执行 | 出表/月结前的财务健康体检 + 增值税合规预警 |
 | `tax_vat_prep` | **小规模纳税人增值税及附加税费季报准备（v2.1/B3）**：只读生成申报草稿——季应税销售额（6001+6051 净额跨 3 月聚合）/ 应纳增值税（征收率 1%，季≤30万免征）/ 附加税费（城建7%·教育费附加3%·地方教育附加2%）。前置检查复用 risk_scan，alert 级阻断申报。绝不替 Boss 报税 | 季报期生成申报草稿，最终申报由 Boss 在税局端确认 |
-| `audit_trail` | **审计追踪（v2.1/B2）**：复用 `chain.verify_chain` 做完整性密码学证明 + 中文事件名，生成 tamper_proof / by_type / timeline / summary（✅完整 / ⚠️被篡改 / ℹ️暂无事件）。**只读、绝不改事件链**——审计追踪本身也必须可审计 | 对账本完整性与事件历史做可证明审计 |
+| `audit_trail` | **审计追踪（v2.1/B2）**：复用 `chain.verify_chain` 做完整性密码学证明 + 中文事件名，生成 tamper_proof / by_type / timeline / summary（✅完整 / ⚠️被篡改 / ℹ️暂无事件）。**只读、绝不改事件链**——审计追踪本身也必须可审计。**Web 驾驶舱「审计轨迹」页 `/ledger/{ls_id}/audit`（P-11）**复用同一内核：完整性三态横幅 + 彩色事件时间线 + by_type 分布 + 期间切换，与 MCP 工具同源 | 对账本完整性与事件历史做可证明审计（AI 对话或 Web 页均可） |
 | `audit_search` | **审计索引检索（E·审计索引 Cloud DB）**：在 `audit_trail` 之上提供全文/结构化检索——关键词（命中 payload/摘要/事件名）、按执行人、按事件类型、按发生年月，可组合。本地 SQLite FTS5 索引 + 可镜像到 WB 云端 DB 做持久化跨运行时索引（`XERP_AUDIT_CLOUD_URL` 配置启用，失败自动降级本地）。**只读、零副作用** | 从"可证明审计"升级为"可检索审计"，快速定位某凭证/某人/某类事件的完整轨迹 |
 | `ocr_preview` | **发票入账只读预览（O9 统一预览-确认-执行）**：与 `ocr_ingest_invoice` 共用同一决策矩阵与 `build_lines` 取数，预览分录=真入账分录、处置（ingested/flagged/duplicate）与真实一致。人审前置门禁——「先看清楚再点入账」 | 发票入账前先预览后再 ocr_ingest_invoice |
 | `arap_statement` | **往来对账单**：某客户/供应商的期初·逐笔流水·运行余额·期末（应收正数=客户欠我，应付正数=我欠供应商）。与 `partner_balances` 同一取数口径（单一真源），期末可逐客户复核 | 给客户/供应商发对账单；dim_key=customer/supplier |
@@ -113,6 +113,8 @@
 | `what_if_simulation` | **情景推演（Phase E/E3）**：复用 `forecast` 纯函数做基准 vs 杠杆对比——6 预设杠杆 + 自定义覆盖，逐指标 delta（期末现金/净利润/应收/应付/经营现金流/总资产），**全只读不改账** | 回答"如果延长付款/不扩张，期末现金变多少" |
 | `anomaly_healing_suggestions` | **异常自愈建议（Phase E/E4）**：基于 `anomaly.rule_scan` 确定性规则扫描出 HITL 整改清单（`human_approval_required=true`/`auto_executable=False`，绝不自动修复）+ 汇总 Agent 断路器复核建议（`anomaly_release` 仅 admin 解除）；只读不跳闸 | 把"哪里可能错"变成可执行的整改清单，等 Boss 拍板 |
 | `cockpit_snapshot` | **AI 原生财务驾驶舱快照（本地优先区隔）**：围绕"管理者此刻该看什么、该做什么决策"重做整条流——一次调用拿齐零日结账视图（三表 KPI + 应收/应付子账↔总账对账健康度 + JEV 异常）与持续预测（what-if 6 杠杆推演）；**只读、复用 `kernel.reporting.cockpit` 单一真源，与 Web `/ledger/{ls_id}/cockpit` 同源**；AI 客户端不必自己拼 5 个工具 | Web 驾驶舱的等价的 MCP 入口，AI 对话里也能出驾驶舱 |
+| `tax_health_score` | **税务健康分（v2.1/P-09）**：只读评估账套税务就绪度——0–100 综合分 + 优/良/中/差 评级。基于 `prep_vat_small` 已内含的 `scan_risks` / `amounts_by_code` / `ending_balance` / `balance_sheet` 单一真源扣分（alert/warn/阻断申报/窗口逾期未结转），返回可解释 factors、severity_counts、filing_ready、overdue_unclear。缺数据不臆测（返回 info）。**只读、零副作用、绝不代申报（守 D6）** | 季报前一眼看清"能不能报、还差什么" |
+| `tax_filing_calendar` | **申报日历（v2.1/P-09）**：只读生成当年小规模纳税人季报申报窗口与状态——4 个季度按"季度终了次月 15 日"截止推算，交叉账套实际期间标注 no_data/upcoming/due_soon/overdue/closed，并透传每季度 data_ready / total_sales / exempt / vat_due。**只读、零副作用、绝不调用电子税务局 API（守 D6）** | 提前看到哪些季度临近/逾期，主动提醒 Boss 申报 |
 
 ---
 
@@ -143,7 +145,7 @@
 | `anomaly_release` | 人工解除 Agent 断路器（恢复自治）。**Agent 不能自解，需人类 admin** | 解除熔断 |
 | `log_agent_decision` | AI 决策留痕：把 prompt 哈希（可选全文）、工具调用、输出摘要写入事件账本 | 决策审计 |
 | `ocr_accuracy_report` | 字段级准确率抽检报告（DoD：抽检 ≥95%） | OCR 质量 |
-| `consolidate_reports` | **多主体合并报表（v2.0）**：多账套 code 级聚合为集团合并资产负债表 + 利润表（全额合并 + 少数股权），**完全只读**；内部往来/交易抵消 `eliminations` 必须由 Boss 显式提供（HITL），AI 不臆测任何抵消金额。可选 ownership/fx_rates，channel=wecom 推卡片 | 集团层合并；只读聚合不写账 |
+| `consolidate_reports` | **多主体合并报表（v2.0）**：多账套 code 级聚合为集团合并资产负债表 + 利润表（全额合并 + 少数股权），**完全只读**；内部往来/交易抵消 `eliminations` 必须由 Boss 显式提供（HITL），AI 不臆测任何抵消金额。可选 ownership/fx_rates，channel=wecom 推卡片。**Web 端合并视图族（P-12，均只读、复用本内核）**：`/group`（BS+IS）/ `/group/workbook`（工作底稿）/ `/group/cashflow`（合并现金流量表）/ `/group/proposals`（ICP/COI/现金流抵消草稿）/ `/group/lineage`（血缘下钻到凭证流） | 集团层合并；只读聚合不写账 |
 | `consolidation_workbook` | **合并工作底稿（可视化层，只读）**：在 `consolidate_reports` 之上把「逐主体贡献」与「内部抵消」并排成一张可审计底稿——每个资产负债表大类 / 利润表项目都给四列：各主体分项 + 主体小计 + 抵消调整 + 合并数（**抵消调整 = 主体小计 − 合并数**，由 consolidate 已应用结果反推，不另起抵消逻辑，单一真源）。抵消明细另含 code 级 PL00/PL20/合并数（consolidated_posting_levels）与已应用消除对（dr_code/cr_code/amount），供 Boss 审阅「这一行里有多少是抵消出来的」。Web 端 `/group/workbook` 复用同一内核。**完全只读、绝不写账** | 合并审计/汇报前置透明化 |
 | `consolidate_lineage` | **合并血缘下钻（阶段0 / P0-1）**：给定合并资产负债表的一个科目 `code` 或大类 `group`，返回三层血缘「集团合并数 → 各主体分项 → 各主体源凭证」，每个数字都由 POSTED 凭证明细重建（Palantir 式端到端血缘）；完全只读 | 合并数对不上时追到哪张凭证 |
 | `consolidate_posting_levels` | **合并分录层级标注（阶段0 / P0-2）**：把合并表每个科目拆成来源层 PL00 主体上报 / PL20 Boss 抵消，让「这一行有多少是抵消出来的」一目了然（SAP posting level 透明化）；完全只读 | 合并审计前置透明化 |

@@ -17,8 +17,20 @@
     R4  AP_DEBIT_BALANCE   应付类科目出现借方余额（warn，重分类/挂账方向异常）
     R5  LARGE_AMOUNT       异常大额凭证行（warn）
     R6  UNCLOSED_HISTORY   历史期间仍未结账（warn）
+    R7  VAT_BURDEN_RATE     税负率偏低（warn，季销售额超免征额却少提增值税）
+    R8  INVOICE_VAT_MISSING 发票异常·应税收入零增值税计提（warn）
+    R9  INPUT_OUTPUT_DIVERGENCE 进销项背离·进项税/多缴挂账（warn，应交税费借方余额）
+
+R7–R9 为 v2.1 P-10 深化，属「增值税风险」一类。本系统无独立发票子表
+（发票以凭证形式存在），故三规则以**账簿勾稽**方式代理（ledger-proxied）：
+    - 进销项比对 → 销项（6001/6051 应计增值税）与进项（2221 借方=待抵扣）勾稽；
+    - 税负率   → 实账面增值税 / 季度应税销售额 vs 法定征收率 1%；
+    - 发票异常 → 应税收入却零增值税计提（疑似不开票/私户收款）。
+严格守「宁可漏报不误报」：季销售额 ≤ 30 万免征额（合规小规模）一律不报；
+无 2221/销项数据则跳过。
 
 每条 finding：{code, severity, title, detail, suggestion}，severity ∈ alert|warn|info。
+detail 内含可证伪的具体数字（销售额/账面增值税/税负率/阈值），即证据链。
 """
 from __future__ import annotations
 
@@ -29,12 +41,14 @@ from sqlalchemy import select
 
 from kernel.db.models import Account, Period, Voucher, VoucherLine
 from kernel.reporting.statements import (
+    ReportError,
     amounts_by_code,
     balance_sheet,
     ending_balance,
 )
 
 ZERO = Decimal("0")
+CENT = Decimal("0.01")
 
 # 现金类科目（货币资金）：期末余额不允许为负
 CASH_CODES = ("1001", "1002")
@@ -44,6 +58,15 @@ AP_PREFIXES = ("2202", "2203", "2241")  # 应付账款 / 预收账款 / 其他�
 # 异常大额阈值：期间 POSTED 凭证行金额中位数 × 倍数，且绝对值不低于 floor
 LARGE_MULTIPLE = Decimal("10")
 LARGE_FLOOR = Decimal("100000")
+
+# ── 增值税风险口径（P-10 / R7–R9；与 tax_vat_small 同政策，但本模块不反向依赖
+#    以避免循环导入；所有数字来自内核既有只读取数，守 ADR-002）──
+VAT_CODE = "2221"                       # 应交税费（小规模：6001/6051 不含税入账，税额单列 2221）
+SALES_CODES = ("6001", "6051")          # 主营业务收入 / 其他业务收入（净额口径）
+EXEMPT_QUARTER_THRESHOLD = Decimal("300000")   # 小规模季销售额 ≤ 30 万免征
+VAT_LEVY_RATE = Decimal("0.01")         # 征收率 1%（3% 减按 1%）
+VAT_BURDEN_TOLERANCE = Decimal("0.5")   # 账面增值税 < 应计 50% → 税负率偏低
+INPUT_VAT_FLOOR = Decimal("100")        # 进项/多缴挂账需达此额才告警（去噪）
 
 
 def _resolve_period(s, ls_id: str, yr: int, mo: int) -> tuple[int, int] | None:
@@ -75,6 +98,98 @@ def _is_closed(s, ls_id: str, yr: int, mo: int) -> bool:
         ).first()
         is not None
     )
+
+
+def _quarter_window(yr: int, mo: int) -> tuple[list[tuple[int, int]], int]:
+    """由任意月份推出所属季度 [起月, 止月] 与季度号。"""
+    q = (mo - 1) // 3 + 1
+    q_end = q * 3
+    q_start = q_end - 2
+    months = [(yr, m) for m in range(q_start, q_end + 1)]
+    return months, q
+
+
+def _quarter_sales(s, ls_id: str, yr: int, mo: int) -> Decimal:
+    """季度应税销售额 = 各月 6001/6051 本期净额（cr-dr）之和；缺月份按 0。
+
+    复用 amounts_by_code 单一口径（与 tax_vat_small 同），不复制取数逻辑。
+    """
+    total = ZERO
+    months, _ = _quarter_window(yr, mo)
+    for y, m in months:
+        try:
+            amts = amounts_by_code(s, ls_id, y, m)
+        except ReportError:
+            continue  # 该月无期间/无数据 → 视为 0，不臆测
+        for code in SALES_CODES:
+            dr, cr = amts.get(code, (ZERO, ZERO))
+            total += ending_balance(code, dr, cr)  # 收入净额 cr - dr
+    return total
+
+
+def _vat_rules(s, ls_id: str, yr: int, mo: int, amounts: dict) -> list[dict]:
+    """增值税风险（P-10 / R7–R9）：税负率 / 发票异常 / 进销项背离。
+
+    纯只读、ledger-proxied、缺数据跳过。返回 list[dict] findings。
+    `amounts` 为当前期间 amounts_by_code 结果（含 2221 的 dr/cr）。
+    """
+    findings: list[dict[str, Any]] = []
+    q_sales = _quarter_sales(s, ls_id, yr, mo)
+    dr2221, cr2221 = amounts.get(VAT_CODE, (ZERO, ZERO))
+    # 应交税费期末余额：贷方正=应缴/销项计提；借方负=进项税/多缴挂账
+    vat_end = ending_balance(VAT_CODE, dr2221, cr2221)
+
+    # R9 进销项背离：应交税费出现借方余额（进项税/多缴长期挂账）
+    if vat_end < 0 and abs(vat_end) >= INPUT_VAT_FLOOR:
+        findings.append({
+            "code": "INPUT_OUTPUT_DIVERGENCE",
+            "severity": "warn",
+            "title": f"应交税费(2221)出现借方余额 {abs(vat_end):,.2f}（进项税/多缴挂账）",
+            "detail": (
+                f"应交税费出现借方余额 {abs(vat_end):,.2f}，疑似待抵扣进项税额长期挂账、"
+                f"或预缴税款未及时冲抵，造成进销项勾稽失衡（进>销）。"
+            ),
+            "suggestion": (
+                "核对该科目明细账与进销项台账，确认进项税是否已认证抵扣、"
+                "是否存在不得抵扣需转出情形。"
+            ),
+        })
+
+    # 税负率 / 发票异常：仅当季度销售额超免征额，避免误报合规免征的小规模
+    if q_sales > EXEMPT_QUARTER_THRESHOLD:
+        expected = (q_sales * VAT_LEVY_RATE).quantize(CENT)
+        if vat_end <= 0:
+            # R8 发票异常：应税收入却零增值税计提
+            findings.append({
+                "code": "INVOICE_VAT_MISSING",
+                "severity": "warn",
+                "title": f"发票异常：季度应税销售额 {q_sales:,.2f} 却零增值税计提",
+                "detail": (
+                    f"季度应税销售额 {q_sales:,.2f} 已超 30 万免征额，但账面增值税(2221)为 "
+                    f"{vat_end:,.2f}，收入未见对应增值税计提，疑似不开票收入、私户收款未入账或漏提增值税。"
+                ),
+                "suggestion": (
+                    "核对收入合同、开票系统与银行流水，确认应税收入是否均已如实计提增值税。"
+                ),
+            })
+        elif vat_end < expected * VAT_BURDEN_TOLERANCE:
+            # R7 税负率偏低：已计提但显著低于法定征收率
+            burden = (vat_end / q_sales).quantize(Decimal("0.0001"))
+            findings.append({
+                "code": "VAT_BURDEN_RATE",
+                "severity": "warn",
+                "title": f"税负率偏低：增值税计提 {vat_end:,.2f}（≈{burden * 100:.2f}%）",
+                "detail": (
+                    f"季度应税销售额 {q_sales:,.2f}，按征收率 1% 应计提约 {expected:,.2f}，"
+                    f"账面仅 {vat_end:,.2f}（税负率 ≈{burden * 100:.2f}%），显著低于法定征收率，"
+                    f"疑似漏提增值税或进销不匹配。"
+                ),
+                "suggestion": (
+                    "复核销项税额计提是否完整，比对开票金额与账面收入，"
+                    "确认是否存在应计未计增值税。"
+                ),
+            })
+    return findings
 
 
 def scan_risks(
@@ -151,6 +266,8 @@ def scan_risks(
     findings.extend(_large_amount_findings(s, ls_id, period.id))
     # R6 历史期间未结账
     findings.extend(_unclosed_history_findings(s, ls_id, yr, mo))
+    # R7/R8/R9 增值税风险（进销项·税负率·发票异常，ledger-proxied）
+    findings.extend(_vat_rules(s, ls_id, yr, mo, amounts))
 
     severity_counts = {
         "alert": sum(1 for f in findings if f["severity"] == "alert"),

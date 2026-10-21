@@ -87,7 +87,7 @@ function ReportSurface({ lsId }) {
     <div className="reports">
       <T title="利润表" rows={[...r.income_statement.items.map((i) => [i.item, i.amount]),
         ["净利润", r.income_statement.net_profit]]} />
-      <T title={`资产负债表 ${r.balance_sheet.balanced ? "✅ 平衡" : "❌ 不平衡"}`}
+      <T title={<><span className={"status-dot " + (r.balance_sheet.balanced ? "ok" : "err")}></span>资产负债表</>}
          rows={[
            ...r.balance_sheet.assets.items.map((i) => ["资产 · " + i.group, i.amount]),
            ["资产合计", r.balance_sheet.assets.total],
@@ -103,7 +103,9 @@ function ReportSurface({ lsId }) {
            ["筹资活动净额", r.cash_flow.financing],
            ["现金净增加额", r.cash_flow.net_increase]]} />
       <p className={r.reconcile.ok ? "ok" : "err"}>
-        {r.reconcile.ok ? "✅ 账账核对一致" : "❌ 对账异常：" + r.reconcile.issues.map((i) => i.kind).join("、")}
+        {r.reconcile.ok
+          ? <><span className="status-dot ok"></span>账账核对一致</>
+          : <><span className="status-dot err"></span>对账异常：{r.reconcile.issues.map((i) => i.kind).join("、")}</>}
       </p>
     </div>
   );
@@ -132,7 +134,7 @@ function A2UISurface({ lsId }) {
   if (!processor) return <p>加载中…</p>;
   return (
     <div>
-      <p className="ok">✅ 本区块由 Agent 输出的 A2UI v0.9 声明式 JSON 经官方渲染器（@a2ui/react）实时生成</p>
+      <p className="banner info"><span className="status-dot info"></span>本区块由 Agent 输出的 A2UI v0.9 声明式 JSON 经官方渲染器（@a2ui/react）实时生成</p>
       {surfaces.length === 0 && <p>等待 Agent 消息…</p>}
       {surfaces.map((sf) => <A2uiSurface key={sf.id} surface={sf} />)}
     </div>

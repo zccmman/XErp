@@ -54,6 +54,7 @@ REQUIRED_ACCOUNTS = [
     ("2202", "应付账款", "credit", "liability"),
     ("2203", "预收账款", "credit", "liability"),
     ("2241", "其他应付", "credit", "liability"),
+    ("2221", "应交税费", "credit", "liability"),
     ("3001", "实收资本", "credit", "equity"),
     ("6001", "主营业务收入", "credit", "pnl"),
     ("6602", "管理费用", "debit", "pnl"),
@@ -393,3 +394,130 @@ def test_risk_scan_wired_to_standard_tier():
     assert "risk_scan" in profiles.STANDARD_EXTRA, "risk_scan 应归入 STANDARD_EXTRA"
     assert "risk_scan" in profiles.enabled_for("standard")
     assert "risk_scan" not in profiles.enabled_for("minimal"), "风险扫描非极简档能力"
+
+
+# ---------------------------------------------------------------- P-10 · R7–R9 增值税风险场景
+# 季销售额（6001/6051 净额）超 30 万免征额才触发 R7/R8；为避免 BS 不平，收入用 6602
+# 费用对冲使本期净利润为 0（未结转时不向权益挂临时项）。
+
+
+def _seed_vat_burden_low(engine: "create_engine") -> dict:
+    """R7：季销售额超免征额但账面增值税显著低于应计（已提但不足 50%）。"""
+    ids = _seed_base(engine)
+    with Session(engine) as s:
+        ls, per, acc = ids["ledger_set_id"], ids["period_id"], ids["accounts"]
+        _set_balance(s, ls, per, acc["1002"], "500000", "0")
+        _set_balance(s, ls, per, acc["6001"], "0", "400000")   # 收入 40 万
+        _set_balance(s, ls, per, acc["6602"], "400000", "0")   # 费用对冲 → 净利润 0
+        _set_balance(s, ls, per, acc["2221"], "0", "1000")     # 账面仅提 1000（应计≈4000）
+        _set_balance(s, ls, per, acc["3001"], "0", "499000")   # 权益平衡
+        s.commit()
+    return ids
+
+
+def _seed_invoice_vat_missing(engine: "create_engine") -> dict:
+    """R8：季销售额超免征额但账面增值税为 0（疑似不开票/漏提）。"""
+    ids = _seed_base(engine)
+    with Session(engine) as s:
+        ls, per, acc = ids["ledger_set_id"], ids["period_id"], ids["accounts"]
+        _set_balance(s, ls, per, acc["1002"], "500000", "0")
+        _set_balance(s, ls, per, acc["6001"], "0", "400000")
+        _set_balance(s, ls, per, acc["6602"], "400000", "0")
+        _set_balance(s, ls, per, acc["3001"], "0", "500000")   # 无 2221 → 增值税 0
+        s.commit()
+    return ids
+
+
+def _seed_input_output_divergence(engine: "create_engine") -> dict:
+    """R9：应交税费(2221)出现借方余额（进项税/多缴挂账）。"""
+    ids = _seed_base(engine)
+    with Session(engine) as s:
+        ls, per, acc = ids["ledger_set_id"], ids["period_id"], ids["accounts"]
+        _set_balance(s, ls, per, acc["1002"], "500000", "0")
+        _set_balance(s, ls, per, acc["2221"], "1000", "0")     # 借方余额 1000
+        _set_balance(s, ls, per, acc["3001"], "0", "501000")   # 500000 = -1000 + 501000
+        s.commit()
+    return ids
+
+
+def _seed_exempt_no_false_positive(engine: "create_engine") -> dict:
+    """合规免征小规模：季销售额 ≤ 30 万且零增值税 → R7/R8/R9 一律不报（不误报）。"""
+    ids = _seed_base(engine)
+    with Session(engine) as s:
+        ls, per, acc = ids["ledger_set_id"], ids["period_id"], ids["accounts"]
+        _set_balance(s, ls, per, acc["1002"], "500000", "0")
+        _set_balance(s, ls, per, acc["6001"], "0", "200000")   # 季销售额 20 万 ≤ 30 万
+        _set_balance(s, ls, per, acc["6602"], "200000", "0")
+        _set_balance(s, ls, per, acc["3001"], "0", "500000")   # 无 2221
+        s.commit()
+    return ids
+
+
+def test_detects_vat_burden_low():
+    engine = _new_session()
+    ids = _seed_vat_burden_low(engine)
+    with Session(engine) as s:
+        r = scan_risks(s, ids["ledger_set_id"], 2026, 8, STANDARD)
+    codes = _codes(r["findings"])
+    assert "VAT_BURDEN_RATE" in codes, r["findings"]
+    f = next(x for x in r["findings"] if x["code"] == "VAT_BURDEN_RATE")
+    assert f["severity"] == "warn"
+    assert "400,000" in f["detail"] and "1%" in f["detail"], "证据链应含销售额与征收率"
+
+
+def test_detects_invoice_vat_missing():
+    engine = _new_session()
+    ids = _seed_invoice_vat_missing(engine)
+    with Session(engine) as s:
+        r = scan_risks(s, ids["ledger_set_id"], 2026, 8, STANDARD)
+    codes = _codes(r["findings"])
+    assert "INVOICE_VAT_MISSING" in codes, r["findings"]
+    f = next(x for x in r["findings"] if x["code"] == "INVOICE_VAT_MISSING")
+    assert f["severity"] == "warn"
+    assert "400,000" in f["detail"], "证据链应含应税销售额"
+
+
+def test_detects_input_output_divergence():
+    engine = _new_session()
+    ids = _seed_input_output_divergence(engine)
+    with Session(engine) as s:
+        r = scan_risks(s, ids["ledger_set_id"], 2026, 8, STANDARD)
+    codes = _codes(r["findings"])
+    assert "INPUT_OUTPUT_DIVERGENCE" in codes, r["findings"]
+    f = next(x for x in r["findings"] if x["code"] == "INPUT_OUTPUT_DIVERGENCE")
+    assert f["severity"] == "warn"
+    assert "1,000.00" in f["detail"], "证据链应含借方余额金额"
+
+
+def test_exempt_quarter_no_vat_false_positive():
+    """季销售额 ≤ 30 万免征额（合规小规模）必须零增值税风险告警，不误报。"""
+    engine = _new_session()
+    ids = _seed_exempt_no_false_positive(engine)
+    with Session(engine) as s:
+        r = scan_risks(s, ids["ledger_set_id"], 2026, 8, STANDARD)
+    codes = _codes(r["findings"])
+    for bad in ("VAT_BURDEN_RATE", "INVOICE_VAT_MISSING", "INPUT_OUTPUT_DIVERGENCE"):
+        assert bad not in codes, f"免征季度不应报 {bad}：{r['findings']}"
+
+
+def test_vat_rules_readonly_no_writes():
+    """P-10 增值税风险规则同样只读：调用前后 Voucher/Balance 行数不变。"""
+    engine = _new_session()
+    ids = _seed_vat_burden_low(engine)
+    with Session(engine) as s:
+        before_v = s.scalars(
+            select(func.count(Voucher.id)).where(Voucher.ledger_set_id == ids["ledger_set_id"])
+        ).first()
+        before_b = s.scalars(
+            select(func.count(Balance.id)).where(Balance.ledger_set_id == ids["ledger_set_id"])
+        ).first()
+        for _ in range(3):
+            scan_risks(s, ids["ledger_set_id"], 2026, 8, STANDARD)
+        after_v = s.scalars(
+            select(func.count(Voucher.id)).where(Voucher.ledger_set_id == ids["ledger_set_id"])
+        ).first()
+        after_b = s.scalars(
+            select(func.count(Balance.id)).where(Balance.ledger_set_id == ids["ledger_set_id"])
+        ).first()
+        assert before_v == after_v and before_b == after_b
+        assert len(s.new) == 0 and len(s.dirty) == 0

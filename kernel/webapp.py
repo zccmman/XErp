@@ -242,6 +242,37 @@ table.trend td{padding:4px 8px;border:none}
 .userbar{font-size:12px;color:var(--text-2)}
 .userbar b{color:var(--text);font-weight:500}.userbar a{color:var(--accent)}
 .nav{font-size:13px}
+/* ── 状态点（语义化替代 emoji · 色盲友好） ── */
+.status-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle;
+            background:var(--text-3);box-shadow:0 0 0 3px rgba(0,0,0,.04)}
+.status-dot.ok{background:var(--green);box-shadow:0 0 0 3px rgba(52,199,89,.16)}
+.status-dot.warn{background:var(--orange);box-shadow:0 0 0 3px rgba(255,149,0,.16)}
+.status-dot.err{background:var(--red);box-shadow:0 0 0 3px rgba(255,59,48,.16)}
+.status-dot.info{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+/* ── 横幅（完整性 / 只读 / AI 草稿宣言） ── */
+.banner{display:flex;align-items:center;gap:8px;padding:12px 16px;margin:12px 0;
+        border-radius:var(--radius-sm);border-left:3px solid var(--border-strong);
+        background:var(--surface);font-size:13.5px;line-height:1.7}
+.banner.ok{background:#e6f8ec;border-left-color:var(--green);border-color:#b8e6c4}
+.banner.err{background:#ffe9e9;border-left-color:var(--red);border-color:#f3c2c2}
+.banner.info{background:var(--accent-soft);border-left-color:var(--accent);border-color:#cfe4fb}
+.banner.warn{background:#fff7e6;border-left-color:var(--orange);border-color:#ffe0a3}
+/* ── 轻提示块（flash · 只读 / 安全声明） ── */
+.flash{padding:11px 15px;margin:12px 0;border-radius:var(--radius-sm);font-size:13px;line-height:1.7;
+       background:rgba(0,0,0,.025);border:0.5px solid var(--border);color:var(--text-2)}
+.flash.info{background:var(--accent-soft);border-color:#cfe4fb;color:var(--accent)}
+.flash.ok{background:#e6f8ec;border-color:#b8e6c4;color:var(--green-d)}
+/* ── KPI 指标卡（税务健康 / 风险计数） ── */
+.kpi-row{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0}
+.kpi{flex:1 1 200px;background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius);
+     padding:16px 18px;min-width:180px}
+.kpi-label{font-size:12.5px;color:var(--text-3);margin-bottom:6px}
+.kpi-val{font-size:26px;font-weight:600;letter-spacing:.2px;font-variant-numeric:tabular-nums}
+.kpi-val.ok{color:var(--green-d)}.kpi-val.warn{color:#b06a00}.kpi-val.err{color:var(--red-d)}.kpi-val.info{color:var(--accent)}
+/* ── 代码 / JSON 草稿块 ── */
+.code{background:#0b1020;color:#e6edf3;padding:12px 14px;border-radius:var(--radius-sm);overflow:auto;
+      font-family:"SF Mono",ui-monospace,"Courier New",monospace;font-size:12.5px;line-height:1.6;
+      white-space:pre-wrap;word-break:break-all}
 /* ── 移动端响应式（P0-3）：窄屏把固定侧边栏折叠为抽屉 ── */
 .menu-toggle{display:none}
 .scrim{display:none}
@@ -280,6 +311,12 @@ _IC = {
     "help": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.1.9-1.1 1.8"/><circle cx="11.9" cy="17" r=".7" fill="currentColor" stroke="none"/></svg>',
     # 「AI 驾驶舱」入口图标：四角星 spark（AI / 灵感）
     "spark": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>',
+    # 审计轨迹：盾牌 + 勾（完整性 / 抗篡改）
+    "shield": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>',
+    # 税务健康：票据 / 税率
+    "receipt": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z"/><path d="M9 8h6M9 12h6"/></svg>',
+    # 风险扫描：三角警示
+    "alert": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>',
 }
 
 _SIDEBAR = (
@@ -294,9 +331,18 @@ _SIDEBAR = (
     f'<a class="nav-item" data-ls-suffix="/boss" href="#"><span class="nav-ic">{_IC["gauge"]}</span>经营总览</a>'
     f'<a class="nav-item" data-ls-suffix="/close" href="#"><span class="nav-ic">{_IC["cal"]}</span>月末结账</a>'
     f'<a class="nav-item" data-ls-suffix="/cockpit" href="#"><span class="nav-ic">{_IC["spark"]}</span>AI 驾驶舱</a>'
+    f'<a class="nav-item" data-ls-suffix="/audit" href="#"><span class="nav-ic">{_IC["shield"]}</span>审计轨迹</a>'
+    f'<a class="nav-item" data-ls-suffix="/tax" href="#"><span class="nav-ic">{_IC["receipt"]}</span>税务健康</a>'
+    f'<a class="nav-item" data-ls-suffix="/risk" href="#"><span class="nav-ic">{_IC["alert"]}</span>风险扫描</a>'
     '</div>'
     f'<a class="nav-item" data-path="/todo" href="/todo"><span class="nav-ic">{_IC["check"]}</span>审批待办</a>'
     f'<a class="nav-item" data-path="/group" href="/group"><span class="nav-ic">{_IC["layers"]}</span>集团合并</a>'
+    '<div class="menu-group">'
+    '<div class="group-label">集团深化</div>'
+    f'<a class="nav-item" data-path="/group/cashflow" href="/group/cashflow"><span class="nav-ic">{_IC["layers"]}</span>合并现金流量</a>'
+    f'<a class="nav-item" data-path="/group/proposals" href="/group/proposals"><span class="nav-ic">{_IC["alert"]}</span>内部抵消建议</a>'
+    f'<a class="nav-item" data-path="/group/lineage" href="/group/lineage"><span class="nav-ic">{_IC["layers"]}</span>合并血缘下钻</a>'
+    '</div>'
     f'<a class="nav-item" data-path="/help" href="/help"><span class="nav-ic">{_IC["help"]}</span>帮助</a>'
     '</nav>'
     '<div class="sidebar-foot">本地账套 · 数据本机</div></aside>'
@@ -952,11 +998,11 @@ def _wizard_preview(proposal: dict, sc: dict, ls_id: str, values: dict) -> str:
             f"<td class=why>{html.escape(l['why'])}</td></tr>"
         )
     bal_cls = "ok" if proposal["balanced"] else "err"
-    bal_txt = "借贷平衡 ✓" if proposal["balanced"] else "借贷不平衡 ✗"
+    bal_txt = "<span class='status-dot ok'></span>借贷平衡" if proposal["balanced"] else "<span class='status-dot err'></span>借贷不平衡"
     warn = ""
     if proposal["missing_accounts"]:
         warn = (
-            f'<p class="err">⚠️ 本账套缺少科目：{", ".join(proposal["missing_accounts"])}，'
+            f'<p class="err">本账套缺少科目：{", ".join(proposal["missing_accounts"])}，'
             "请先在「导入期初 / 科目设置」中补充对应科目后再生成。</p>"
         )
     note = f'<p class=note>{html.escape(proposal["note"])}</p>' if proposal["note"] else ""
@@ -965,7 +1011,7 @@ def _wizard_preview(proposal: dict, sc: dict, ls_id: str, values: dict) -> str:
         for k in values
     )
     confirm = (
-        '<button type=submit>确认生成草稿 ✓</button>'
+        '<button type=submit>确认生成草稿</button>'
         if not proposal["missing_accounts"]
         else '<button type=submit disabled>请先补齐缺失科目</button>'
     )
@@ -1486,7 +1532,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
         default_name = "我的账套" if quick else ""
         default_owner = "老板" if quick else ""
         quick_link = (
-            '<p><a class="btn" href="/init?quick=1">⚡ 一键开通（默认小微企业模板）</a></p>'
+            '<p><a class="btn" href="/init?quick=1">一键开通（默认小微企业模板）</a></p>'
             if not quick
             else ""
         )
@@ -2151,13 +2197,14 @@ def build_app(db_url: str | None = None) -> FastAPI:
             cf_rows.append(("筹资活动净额", cf["financing"]))
             cf_rows.append(("现金净增加额", cf["net_increase"]))
 
-            badge = "✅ 平衡" if bs["balanced"] else f"❌ 差 {bs['check']['diff']}"
+            badge = ("<span class='status-dot ok'></span>平衡" if bs["balanced"]
+                     else f"<span class='status-dot err'></span>差 {bs['check']['diff']}")
             from kernel.reconcile import reconcile_ledger
 
             rec = reconcile_ledger(s, ls_id, yr, mo, ls.accounting_standard)
             rec_badge = (
-                "✅ 账账核对一致" if rec["ok"]
-                else f"❌ 对账异常 {len(rec['issues'])} 项："
+                "<span class='status-dot ok'></span>账账核对一致" if rec["ok"]
+                else f"<span class='status-dot err'></span>对账异常 {len(rec['issues'])} 项："
                 + "、".join(i["kind"] for i in rec["issues"])
             )
             err = f'<p class="err">{html.escape(error)}</p>' if error else ""
@@ -2168,7 +2215,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 )
             ).first() is not None
             close_ui = (
-                '<span class=badge>✅ 已执行期末结转</span>' if closed else
+                '<span class=badge><span class="status-dot ok"></span>已执行期末结转</span>' if closed else
                 f'<form method=post action="/ledger/{ls_id}/close">'
                 f'<input type=hidden name=year value={yr}>'
                 f'<input type=hidden name=month value={mo}>'
@@ -2345,10 +2392,10 @@ def build_app(db_url: str | None = None) -> FastAPI:
             health_html = "<div style='display:flex;flex-wrap:wrap;gap:10px'>"
             for name, ok, hint in health:
                 color = "#34c759" if ok else "#ff3b30"
-                dot = "🟢" if ok else "🔴"
+                dot_cls = "ok" if ok else "err"
                 health_html += (
                     f"<div style='border:1px solid {color};border-radius:8px;padding:8px 12px;min-width:150px'>"
-                    f"<div style='font-size:20px'>{dot}</div>"
+                    f"<span class='status-dot {dot_cls}' style='width:14px;height:14px'></span>"
                     f"<div style='font-weight:bold'>{html.escape(name)}</div>"
                     f"<div style='font-size:12px;color:#86868b'>{html.escape(hint)}</div></div>"
                 )
@@ -2483,7 +2530,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"总账控制 {_fmt(_n(r.get('control_total')))}</div>"
                     f"<div style='margin:8px 0'>"
                     f"<span style='color:{color};font-weight:bold'>"
-                    f"{'✅ 已对账' if ok else '⚠️ 有差异'}</span> "
+                    f"{'<span class=\'status-dot ok\'></span>已对账' if ok else '<span class=\'status-dot warn\'></span>有差异'}</span> "
                     f"<span style='font-size:13px'>"
                     f"{'一致' if ok else '差额 ' + _fmt(diff)}</span></div>"
                     f"<div style='font-size:12px;color:#86868b'>往来单位 "
@@ -2744,8 +2791,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 "</table>"
             )
             chk = res["balance_sheet"]["check"]
-            badge = ("🟢 表内平衡" if res["balance_sheet"]["balanced"]
-                     else f"🔴 差 {chk['diff']}")
+            badge = ("<span class='status-dot ok'></span>表内平衡" if res["balance_sheet"]["balanced"]
+                     else f"<span class='status-dot err'></span>差 {chk['diff']}")
             body = (
                 f"<h2>集团合并报表 · {year}-{month:02d}（{res['currency']}）</h2>"
                 f"<p class=muted>参与主体 {len(res['entities'])} 个 · {badge} · "
@@ -2888,8 +2935,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
             )
 
             chk = res["check"]
-            badge = ("🟢 表内平衡" if res["balanced"]
-                     else f"🔴 差 {chk['diff']}")
+            badge = ("<span class='status-dot ok'></span>表内平衡" if res["balanced"]
+                     else f"<span class='status-dot err'></span>差 {chk['diff']}")
             body = (
                 f"<h2>合并工作底稿 · {year}-{month:02d}（{res['currency']}）</h2>"
                 f"<p class=muted>参与主体 {len(names)} 个（"
@@ -3044,7 +3091,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
         banner = (
             "<div style='border:1px solid #ff3b30;border-radius:8px;padding:12px 16px;"
             "background:#fff5f5;color:#b00020;margin:12px 0'>"
-            "<b>⚠️ 数据出境提示</b>：开启「云端模式」后，JEV 决策所需的<b>聚合指标</b>"
+            "<b>数据出境提示</b>：开启「云端模式」后，JEV 决策所需的<b>聚合指标</b>"
             "（如预算差异率、规则命中统计、未清项账龄、费用合规标记等，"
             "<b>不含原始凭证明细或对手方 PII</b>）将被发送至 TypeSafe 云（api.typesafe.ai）。"
             "请确认你已获授权将数据出境。XErp 默认纯本地确定性内核，不发送任何数据。"
@@ -3058,7 +3105,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
             f"<p class=muted>账套：<b>{html.escape(target)}</b> · 当前后端：<b>{backend}</b> · "
             f"API Key 已配置：<b>{'是' if key_ok else '否'}</b> · 数据出境授权："
             f"<b>{'已授权' if consent else '未授权'}</b></p>"
-            + ("<p class=err>⚠️ 已选云端模式但 TYPESAFE_API_KEY 未配置（在 .env 配置后重启），"
+            + ("<p class=err>已选云端模式但 TYPESAFE_API_KEY 未配置（在 .env 配置后重启），"
                "当前仍走本地内核。</p>" if backend == "typesafe" and not key_ok else "")
             + "<form method=post action='/jev/settings'>"
             f"<p>账套：<select name=ls>{ls_opts}</select></p>"
@@ -3111,6 +3158,356 @@ def build_app(db_url: str | None = None) -> FastAPI:
                 setting.consent_at = utcnow()
             s.commit()
         return RedirectResponse(f"/jev/settings?ls={ls}", status_code=303)
+    # ---------- 审计轨迹 / 税务健康 / 风险扫描 / 集团合并深化（P-11 / P-09 / B1 / P-12） ----------
+    @app.get("/ledger/{ls_id}/audit", response_class=HTMLResponse)
+    def audit_view(request: Request, ls_id: str, year: int = 0, month: int = 0):
+        """审计轨迹可视化（P-11）：完整性证明横幅 + 事件时间线 + 只读合规声明。"""
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class='err'>账套不存在</p>", request.state.subject_name)
+            from kernel.reporting.audit_trail import build_audit_report
+
+            rep = build_audit_report(s, ls_id, year, month)
+        sev = rep["integrity_severity"]
+        if sev == "ok":
+            b_cls, b_txt = "ok", "审计链完整可信"
+        elif sev == "alert":
+            b_cls, b_txt = "err", "完整性校验失败"
+        else:
+            b_cls, b_txt = "info", "暂无审计事件"
+        banner = (
+            f"<div class='banner {b_cls}'>"
+            f"<span class='status-dot {b_cls}'></span>"
+            f"<b>{html.escape(b_txt)}</b> · 共 {rep['total_events']} 条不可篡改事件</div>"
+        )
+        by_type = "".join(
+            f"<tr><td>{html.escape(n)}</td><td class='num'>{i['count']}</td>"
+            f"<td class='muted'>{html.escape(i['code'])}</td></tr>"
+            for n, i in rep["by_type"].items()
+        ) or "<tr><td colspan=3 class='muted'>—</td></tr>"
+        tl = ""
+        for ev in rep["timeline"]:
+            tl += (
+                f"<tr><td class='muted'>{html.escape(ev['occurred_at'] or '')}</td>"
+                f"<td>{html.escape(ev['label'])}</td>"
+                f"<td>{html.escape(ev['actor'])}</td>"
+                f"<td class='muted'>{html.escape(ev['summary'])}</td></tr>"
+            )
+        tl_html = (
+            "<table class='rep'><thead><tr><th>时间</th><th>事件</th><th>执行人</th>"
+            "<th>摘要</th></tr></thead><tbody>" + tl + "</tbody></table>"
+            if tl
+            else "<p class='flash info'>该账套暂无审计事件，账本尚未产生任何不可篡改记录。</p>"
+        )
+        body = (
+            "<h2>审计轨迹</h2>" + banner
+            + "<p class='muted'>审计链（integrity chain）由内核 SHA 密码学校验，"
+            "XErp 的护城河卖点：金额 deterministic 可审计、账本不可篡改。</p>"
+            "<h3>事件类型分布</h3>"
+            "<table class='rep'><thead><tr><th>事件类型</th><th class='num'>次数</th>"
+            "<th>内部码</th></tr></thead><tbody>" + by_type + "</tbody></table>"
+            "<h3>事件时间线</h3>" + tl_html
+            + "<h3>只读审计追踪</h3>"
+            "<div class='flash info'>本页 100% 只读，由内核单一真源（verify_chain + 事件账本）"
+            "直接生成，绝不制单、过账、结账或篡改事件链——审计追踪本身也必须可审计。</div>"
+            "<p class='muted'>可审计 · 抗篡改 · 本地优先：你的账本可随时自证清白。</p>"
+        )
+        return _page("审计轨迹", body, request.state.subject_name, show_operator=True)
+
+    @app.get("/ledger/{ls_id}/tax", response_class=HTMLResponse)
+    def tax_view(request: Request, ls_id: str, year: int = 0, month: int = 0):
+        """税务健康（P-09）：健康分 + 申报日历（只读；绝不代申报）。"""
+        from datetime import date as _date
+        from decimal import Decimal as _D
+        from kernel.reporting.tax_health import filing_calendar, tax_health_score
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class='err'>账套不存在</p>", request.state.subject_name)
+            std = ls.accounting_standard or "small_business"
+            today = _date.today()
+            score = tax_health_score(s, ls_id, year, month, std, today=today)
+            cal = filing_calendar(s, ls_id, year or today.year, std, today=today)
+        grade = score["grade"]
+        g_cls = {"优": "ok", "良": "ok", "中": "warn", "差": "err"}.get(grade, "info")
+        kpis = (
+            f"<div class='kpi'><span class='kpi-val'>{score['score']}</span>"
+            f"<span class='kpi-label'>税务健康分（{grade}）</span></div>"
+            f"<div class='kpi'><span class='kpi-val'>{cal['due_count']}</span>"
+            f"<span class='kpi-label'>临近/逾期申报</span></div>"
+            f"<div class='kpi'><span class='kpi-val'>"
+            f"{'可申报' if score['filing_ready'] else '暂不可'}</span>"
+            f"<span class='kpi-label'>申报前置检查</span></div>"
+        )
+        factors = "".join(
+            f"<li class='{('fail' if f['delta'] < 0 else 'pass')}'>"
+            f"{html.escape(f['reason'])}（{f['delta']:+d}）</li>"
+            for f in score["factors"]
+        ) or "<li class='pass'>账套干净，无扣分项</li>"
+        state_map = {
+            "no_data": ("muted", "无数据"), "upcoming": ("info", "待办"),
+            "due_soon": ("warn", "临近"), "overdue": ("err", "逾期"),
+            "closed": ("ok", "已结转"),
+        }
+        q_rows = ""
+        for q in cal["quarters"]:
+            cls, label = state_map.get(q["state"], ("muted", q["state"]))
+            q_rows += (
+                f"<tr><td>Q{q['quarter']}</td><td>{q['deadline']}</td>"
+                f"<td><span class='status-dot {cls}'></span>{label}</td>"
+                f"<td class='num'>{_fmt(q['total_sales'])}</td>"
+                f"<td>{'免税' if q['exempt'] else '应税'}</td>"
+                f"<td class='num'>{_fmt(q['vat_due'])}</td></tr>"
+            )
+        body = (
+            "<h2>税务健康</h2>"
+            f"<div class='kpi-row'>{kpis}</div>"
+            f"<div class='banner {g_cls}'>{html.escape(score['summary'])}</div>"
+            "<h3>扣分明细（可解释）</h3>"
+            f"<ul class='check'>{factors}</ul>"
+            "<h3>当年申报日历（小规模纳税人 · 季报）</h3>"
+            "<table class='rep'><thead><tr><th>季度</th><th>截止日</th><th>状态</th>"
+            "<th class='num'>销售额</th><th>类型</th><th class='num'>应缴增值税</th></tr></thead>"
+            f"<tbody>{q_rows}</tbody></table>"
+            "<div class='flash info'>XErp 只做「只读准备 + 人申报」，绝不代申报、"
+            "绝不调用电子税务局 API。申报动作由你（Boss）在税务局完成。</div>"
+        )
+        return _page("税务健康", body, request.state.subject_name, show_operator=True)
+
+    @app.get("/ledger/{ls_id}/risk", response_class=HTMLResponse)
+    def risk_view(request: Request, ls_id: str, year: int = 0, month: int = 0):
+        """风险扫描（B1 / O7）：确定性规则只读扫描，绝不自动修复。"""
+        from kernel.reporting.risk_scan import scan_risks
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class='err'>账套不存在</p>", request.state.subject_name)
+            std = ls.accounting_standard or "small_business"
+            res = scan_risks(s, ls_id, year, month, std)
+        counts = res.get("severity_counts", {})
+        total = counts.get("alert", 0) + counts.get("warn", 0) + counts.get("info", 0)
+        findings = res.get("findings", [])
+        rows = ""
+        for f in findings:
+            cls = {"alert": "fail", "warn": "warn", "info": "pass"}.get(f.get("severity"), "pass")
+            rows += (
+                f"<li class='{cls}'><span class='item'>{html.escape(f.get('title', ''))}</span>"
+                f"<div class='hint'>{html.escape(f.get('detail', ''))}</div>"
+                + (f"<div class='hint'>→ 建议：{html.escape(f.get('suggestion', ''))}</div>"
+                   if f.get("suggestion") else "")
+                + "</li>"
+            )
+        body = (
+            "<h2>风险扫描</h2>"
+            f"<div class='banner info'>共扫描 {total} 项 · alert {counts.get('alert',0)} · "
+            f"warn {counts.get('warn',0)} · info {counts.get('info',0)}</div>"
+            "<p class='muted'>只读风险扫描（B1 / O7）：基于确定性规则，绝不自动修复、"
+            "绝不替 Boss 做终态动作。发现的问题以整改清单形式交你确认。</p>"
+            f"<ul class='check'>{rows}</ul>"
+            + ("<p class='flash ok'>未发现风险项，账套健康。</p>" if not findings else "")
+        )
+        return _page("风险扫描", body, request.state.subject_name, show_operator=True)
+
+    @app.get("/group/cashflow", response_class=HTMLResponse)
+    def group_cashflow(request: Request, ids: list[str] = Query(default=[]),
+                       year: int = 0, month: int = 0, ownership: str = ""):
+        """合并现金流量表（P-12）：只读聚合各主体现金流 + 勾稽校验。"""
+        from decimal import Decimal as _D
+        import json as _json
+        from kernel.reporting import consolidation as CONS
+
+        with session() as s:
+            own: dict[str, _D] = {}
+            if ownership:
+                try:
+                    for k, v in _json.loads(ownership).items():
+                        own[k] = _D(str(v)) / _D("100")
+                except Exception:  # noqa: BLE001
+                    own = {}
+            selected = [x for part in ids for x in part.split(",") if x]
+            if not selected or not year or not month:
+                return _page("合并现金流量表",
+                    "<p class='err'>请指定参与合并的账套（ids）与期间（year/month）。"
+                    "用法：/group/cashflow?ids=母,子&amp;year=2026&amp;month=9</p>",
+                    request.state.subject_name)
+            try:
+                res = CONS.consolidated_cash_flow(s, selected, year, month,
+                                                 ownership=own or None)
+            except CONS.ConsolidationError as e:
+                return _page("合并现金流量表", f"<p class='err'>{html.escape(str(e))}</p>",
+                             request.state.subject_name)
+        rec = res["reconcile"]
+        cat = res["categories"]
+        b_cls = "ok" if res["balanced"] else "err"
+        if res["balanced"]:
+            bal_badge = "<span class='status-dot ok'></span>勾稽平衡"
+        else:
+            bal_badge = "<span class='status-dot err'></span>勾稽不平衡"
+        def _cat_rows(cat_key: str, label: str) -> str:
+            items = cat[cat_key]["items"]
+            if not items:
+                return f"<h3>{label}</h3><p class='muted'>{label}：无现金流项目。</p>"
+            return (
+                "<h3>" + label + "</h3>"
+                "<table class='rep'><thead><tr><th>项目</th><th class='num'>金额</th></tr>"
+                "</thead><tbody>"
+                + "".join(
+                    f"<tr><td>{html.escape(it['item'])}</td>"
+                    f"<td class='num'>{_fmt(it['amount'])}</td></tr>"
+                    for it in items
+                )
+                + f"<tr class='tot'><td>{label}净额</td>"
+                f"<td class='num'><b>{_fmt(res[cat_key])}</b></td></tr></tbody></table>"
+            )
+        body = (
+            f"<h2>合并现金流量表 · {year}-{month:02d}（{res['currency']}）</h2>"
+            f"<div class='banner {b_cls}'>{bal_badge}</div>"
+            + _cat_rows("operating", "经营活动现金流")
+            + _cat_rows("investing", "投资活动现金流")
+            + _cat_rows("financing", "筹资活动现金流")
+            + "<h3>现金勾稽</h3>"
+            "<table class='rep'><thead><tr><th>项目</th><th class='num'>金额</th></tr></thead><tbody>"
+            f"<tr><td>期初现金</td><td class='num'>{_fmt(rec['opening_cash'])}</td></tr>"
+            f"<tr><td>净增加额</td><td class='num'>{_fmt(res['net_increase'])}</td></tr>"
+            f"<tr class='tot'><td>期末现金</td><td class='num'><b>{_fmt(rec['closing_cash'])}</b></td></tr>"
+            "</tbody></table>"
+            "<p class='muted'>合并现金流量表为只读聚合（直接法），合并数以 consolidate 为准，"
+            "内部现金往来抵消仍需你（Boss）确认。</p>"
+        )
+        return _page("合并现金流量表", body, request.state.subject_name, show_operator=True)
+
+    @app.get("/group/proposals", response_class=HTMLResponse)
+    def group_proposals(request: Request, ids: list[str] = Query(default=[]),
+                        year: int = 0, month: int = 0, ownership: str = ""):
+        """内部抵消建议（P-12）：ICP / COI / 现金流镜像配对（只读草稿）。"""
+        from decimal import Decimal as _D
+        import json as _json
+        from kernel.reporting import consolidation as CONS
+
+        with session() as s:
+            own: dict[str, _D] = {}
+            if ownership:
+                try:
+                    for k, v in _json.loads(ownership).items():
+                        own[k] = _D(str(v)) / _D("100")
+                except Exception:  # noqa: BLE001
+                    own = {}
+            selected = [x for part in ids for x in part.split(",") if x]
+            if not selected or not year or not month:
+                return _page("内部抵消建议",
+                    "<p class='err'>请指定参与合并的账套（ids）与期间（year/month）。"
+                    "用法：/group/proposals?ids=母,子&amp;year=2026&amp;month=9</p>",
+                    request.state.subject_name)
+            try:
+                icp = CONS.propose_icp_eliminations(s, selected, year, month)
+                coi = CONS.propose_coi_eliminations(s, selected, year, month,
+                                                   ownership=own or None)
+                cfm = CONS.propose_cash_flow_eliminations(s, selected, year, month)
+            except CONS.ConsolidationError as e:
+                return _page("内部抵消建议", f"<p class='err'>{html.escape(str(e))}</p>",
+                             request.state.subject_name)
+        icp_draft = icp.get("draft_eliminations") or []
+        draft_rows = "".join(
+            f"<tr><td><code>{html.escape(str(d['dr_code']))}</code></td>"
+            f"<td><code>{html.escape(str(d['cr_code']))}</code></td>"
+            f"<td class='num'>{_fmt(_D(str(d['amount'])))}</td></tr>"
+            for d in icp_draft
+        ) or "<tr><td colspan=3 class='muted'>无抵消建议</td></tr>"
+        subs = coi.get("subsidiaries") or []
+        coi_rows = "".join(
+            f"<tr><td>{html.escape(str(sub.get('name', '')))}</td>"
+            f"<td class='num'>{_D(str(sub.get('goodwill', '0')))}</td>"
+            f"<td class='num'>{_D(str(sub.get('attributable', '0')))}</td></tr>"
+            for sub in subs
+        ) or "<tr><td colspan=3 class='muted'>—</td></tr>"
+        draft_json = _json.dumps(icp_draft, ensure_ascii=False)
+        body = (
+            "<h2>内部抵消建议</h2>"
+            "<div class='banner warn'><b>AI 只产草稿</b> · 内部抵消建议为只读草稿，"
+            "XErp <b>绝不自行应用</b>，确认与结账动作由你（Boss）完成。</div>"
+            "<h3>内部往来配对（ICP）</h3>"
+            "<p class='muted'>集团级净额配对：应收合计 "
+            f"{_fmt(_D(str(icp['total_receivables'])))} / 应付合计 "
+            f"{_fmt(_D(str(icp['total_payables'])))} → 可配对 "
+            f"<b>{_fmt(_D(str(icp['matched'])))}</b>（差额 "
+            f"{_fmt(_D(str(icp['unmatched_receivables'])))} / "
+            f"{_fmt(_D(str(icp['unmatched_payables'])))} 待 Boss 复核）。</p>"
+            "<table class='rep'><thead><tr><th>借 code</th><th>贷 code</th>"
+            "<th class='num'>金额</th></tr></thead><tbody>" + draft_rows + "</tbody></table>"
+            "<h3>长期股权投资 / 权益抵销（COI）</h3>"
+            f"<p class='muted'>母公司：<b>{html.escape(str(coi.get('parent', {}).get('name', '')))}</b></p>"
+            "<table class='rep'><thead><tr><th>子公司</th><th class='num'>商誉</th>"
+            "<th class='num'>应享权益</th></tr></thead><tbody>" + coi_rows + "</tbody></table>"
+            "<h3>内部投资现金流镜像配对</h3>"
+            "<p class='muted'>母公司「投资支付的现金」与子公司「吸收投资收到的现金」在合并层面"
+            "应等额对冲（集团级近似，需 Boss 复核具体对象）。</p>"
+            "<table class='rep'><thead><tr><th>类型</th><th class='num'>金额</th></tr></thead>"
+            "<tbody>"
+            f"<tr><td>投资支付镜像（可抵消）</td><td class='num'>{_fmt(_D(str(cfm.get('matched', '0'))))}</td></tr>"
+            f"<tr><td>吸收投资镜像（可抵消）</td><td class='num'>{_fmt(_D(str(cfm.get('matched', '0'))))}</td></tr>"
+            "</tbody></table>"
+            "<h3>可喂回草稿（JSON）</h3>"
+            f"<pre class='code'>{html.escape(draft_json)}</pre>"
+            "<p class='muted'>所有抵消建议在确认前请核对具体往来对象；XErp 不臆测配对。</p>"
+        )
+        return _page("内部抵消建议", body, request.state.subject_name, show_operator=True)
+
+    @app.get("/group/lineage", response_class=HTMLResponse)
+    def group_lineage(request: Request, ids: list[str] = Query(default=[]),
+                      year: int = 0, month: int = 0, group: str = "",
+                      ownership: str = ""):
+        """合并血缘下钻（P-12）：合并数 → 各主体分项 → 源凭证。"""
+        from decimal import Decimal as _D
+        import json as _json
+        from kernel.reporting import consolidation as CONS
+
+        with session() as s:
+            own: dict[str, _D] = {}
+            if ownership:
+                try:
+                    for k, v in _json.loads(ownership).items():
+                        own[k] = _D(str(v)) / _D("100")
+                except Exception:  # noqa: BLE001
+                    own = {}
+            selected = [x for part in ids for x in part.split(",") if x]
+            if not selected or not year or not month:
+                return _page("合并血缘下钻",
+                    "<p class='err'>请指定参与合并的账套（ids）与期间（year/month）及下钻范围（group）。"
+                    "用法：/group/lineage?ids=母,子&amp;year=2026&amp;month=9&amp;group=流动资产</p>",
+                    request.state.subject_name)
+            try:
+                res = CONS.consolidation_lineage(s, selected, year, month,
+                                                standard="small_business",
+                                                group=group or None)
+            except CONS.ConsolidationError as e:
+                return _page("合并血缘下钻", f"<p class='err'>{html.escape(str(e))}</p>",
+                             request.state.subject_name)
+        ent_rows = ""
+        for e in res["entities"]:
+            vos = e.get("vouchers") or []
+            vo_html = (
+                "、".join(html.escape(str(v.get("voucher_no", ""))) for v in vos)
+                if vos else "<span class='muted'>—</span>"
+            )
+            ent_rows += (
+                f"<tr><td><b>{html.escape(str(e['name']))}</b></td>"
+                f"<td class='num'>{_fmt(e['ending'])}</td>"
+                f"<td>{vo_html}</td></tr>"
+            )
+        body = (
+            f"<h2>合并血缘下钻 · {html.escape(group or '全范围')}</h2>"
+            f"<div class='banner info'>合并口径期末余额（PL00 主体上报）："
+            f"<b>{_fmt(res['consolidated_ending'])}</b>（{res['standard']}）</div>"
+            "<h3>源凭证</h3>"
+            "<p class='muted'>合并数由各主体分项汇总而成，可一路追到构成该余额的 POSTED 凭证流"
+            "（ADR-002：投影可由凭证流重建）。</p>"
+            "<table class='rep'><thead><tr><th>主体</th><th class='num'>期末余额</th>"
+            "<th>源凭证</th></tr></thead><tbody>" + ent_rows + "</tbody></table>"
+        )
+        return _page("合并血缘下钻", body, request.state.subject_name, show_operator=True)
 
     # ---------- v1.3 月度财报卡片（可分享 · O16 趣味） ----------
     @app.get("/ledger/{ls_id}/card", response_class=HTMLResponse)
@@ -3133,7 +3530,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
             d = _boss_data(s, ls_id, yr, mo, ls.accounting_standard)
             bs, inc = d["bs_now"], d["inc_now"]
             rec_ok = d["rec"]["ok"] and bool(bs["balanced"])
-            health_badge = "🟢 账目健康" if rec_ok else "🔴 待处理"
+            health_badge = "<span class='status-dot ok'></span>账目健康" if rec_ok else "<span class='status-dot err'></span>待处理"
             comment = (
                 f"本月营收 {inc['revenue']:,.0f}，净利润 {inc['net_profit']:,.0f}，"
                 f"资产规模 {bs['assets']['total']:,.0f}。"
@@ -3584,7 +3981,7 @@ body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backg
                     for sc in ("best", "base", "worst")
                     for p in result["scenarios"][sc]["periods"]
                 )
-                badge = "✅ 三情景全期平衡" if all_ok else "❌ 存在不平衡期间"
+                badge = "<span class='status-dot ok'></span>三情景全期平衡" if all_ok else "<span class='status-dot err'></span>存在不平衡期间"
                 body = (
                     f"{_nav()}<h2>{html.escape(ls.name)} · 三表预测"
                     f"（三情景对比，自 {base.year}-{base.month:02d} 起 "
@@ -3630,7 +4027,7 @@ body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backg
                     ("期末现金", [p["cash_flow"]["closing_cash"] for p in per]),
                 ]
                 all_ok = all(p["balance_sheet"]["balanced"] for p in per)
-                badge = "✅ 全期平衡" if all_ok else "❌ 存在不平衡期间"
+                badge = "<span class='status-dot ok'></span>全期平衡" if all_ok else "<span class='status-dot err'></span>存在不平衡期间"
                 asm_line = (
                     f"假设：收入增速 {a['rev_growth']} · 毛利率 {a['gross_margin']} · "
                     f"费用率 {a['opex_ratio']} · 税率 {a['tax_rate']} · "
