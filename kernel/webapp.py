@@ -2521,6 +2521,8 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     except Exception:  # noqa: BLE001
                         return _D("0")
 
+                dot = ("<span class='status-dot ok'></span>已对账" if ok
+                       else "<span class='status-dot warn'></span>有差异")
                 return (
                     f"<div style='flex:1;min-width:260px;border:1px solid #e5e5ea;"
                     f"border-radius:12px;padding:14px;margin-bottom:0'>"
@@ -2530,7 +2532,7 @@ def build_app(db_url: str | None = None) -> FastAPI:
                     f"总账控制 {_fmt(_n(r.get('control_total')))}</div>"
                     f"<div style='margin:8px 0'>"
                     f"<span style='color:{color};font-weight:bold'>"
-                    f"{'<span class=\'status-dot ok\'></span>已对账' if ok else '<span class=\'status-dot warn\'></span>有差异'}</span> "
+                    f"{dot}</span> "
                     f"<span style='font-size:13px'>"
                     f"{'一致' if ok else '差额 ' + _fmt(diff)}</span></div>"
                     f"<div style='font-size:12px;color:#86868b'>往来单位 "
