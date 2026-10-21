@@ -246,6 +246,7 @@ table.trend td{padding:4px 8px;border:none}
 .status-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle;
             background:var(--text-3);box-shadow:0 0 0 3px rgba(0,0,0,.04)}
 .status-dot.ok{background:var(--green);box-shadow:0 0 0 3px rgba(52,199,89,.16)}
+.status-dot.muted{background:var(--text-3);opacity:.45;box-shadow:none}
 .status-dot.warn{background:var(--orange);box-shadow:0 0 0 3px rgba(255,149,0,.16)}
 .status-dot.err{background:var(--red);box-shadow:0 0 0 3px rgba(255,59,48,.16)}
 .status-dot.info{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
@@ -262,13 +263,19 @@ table.trend td{padding:4px 8px;border:none}
        background:rgba(0,0,0,.025);border:0.5px solid var(--border);color:var(--text-2)}
 .flash.info{background:var(--accent-soft);border-color:#cfe4fb;color:var(--accent)}
 .flash.ok{background:#e6f8ec;border-color:#b8e6c4;color:var(--green-d)}
-/* ── KPI 指标卡（税务健康 / 风险计数） ── */
+/* ── KPI 指标卡（税务健康 / 风险计数 / 预算执行） ── */
 .kpi-row{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0}
-.kpi{flex:1 1 200px;background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius);
-     padding:16px 18px;min-width:180px}
-.kpi-label{font-size:12.5px;color:var(--text-3);margin-bottom:6px}
-.kpi-val{font-size:26px;font-weight:600;letter-spacing:.2px;font-variant-numeric:tabular-nums}
+.kpi{display:flex;flex-direction:column;gap:2px;flex:1 1 190px;background:var(--surface);
+     border:0.5px solid var(--border);border-radius:var(--radius);
+     padding:16px 18px;min-width:150px}
+.kpi-label{font-size:12.5px;color:var(--text-3);margin-bottom:0;order:2}
+.kpi-val{font-size:26px;font-weight:600;letter-spacing:.2px;font-variant-numeric:tabular-nums;order:1}
 .kpi-val.ok{color:var(--green-d)}.kpi-val.warn{color:#b06a00}.kpi-val.err{color:var(--red-d)}.kpi-val.info{color:var(--accent)}
+/* ── 宽表横向滚动（窄屏不挤压列，不撑破页面） ── */
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0;max-width:100%}
+.table-scroll table{min-width:640px;margin:0}
+/* ── 查询表单内的下拉/短输入不撑满整行 ── */
+.ops select{width:auto;min-width:180px;max-width:100%}
 /* ── 代码 / JSON 草稿块 ── */
 .code{background:#0b1020;color:#e6edf3;padding:12px 14px;border-radius:var(--radius-sm);overflow:auto;
       font-family:"SF Mono",ui-monospace,"Courier New",monospace;font-size:12.5px;line-height:1.6;
@@ -284,8 +291,13 @@ table.trend td{padding:4px 8px;border:none}
   .menu-toggle{display:inline-flex;align-items:center;justify-content:center;
                width:34px;height:34px;padding:0;margin-right:10px;border-radius:8px;
                background:transparent;color:var(--text);border:0.5px solid var(--border)}
-  .topbar{position:sticky;top:0;z-index:30;padding:12px 14px}
-  .topbar-title{font-size:15px}
+  .topbar{position:sticky;top:0;z-index:30;padding:12px 14px;gap:8px}
+  .topbar-title{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 窄屏状态栏收紧：不换行、不逐字竖排；「当前身份」标签让位给姓名 */
+  .topbar-status{gap:10px;font-size:12px;white-space:nowrap;flex-wrap:nowrap;flex-shrink:0}
+  .id-label{display:none}
+  .topbar-status .op-container{display:none}
+  .kpi{flex:1 1 45%;min-width:0}
   .content{padding:16px 14px}
   .bottombar{padding:10px 14px}
   .scrim{display:none;position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:40}
@@ -317,6 +329,8 @@ _IC = {
     "receipt": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z"/><path d="M9 8h6M9 12h6"/></svg>',
     # 风险扫描：三角警示
     "alert": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>',
+    # 预算执行：靶心（目标 v.s. 实际）
+    "target": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>',
 }
 
 _SIDEBAR = (
@@ -329,6 +343,7 @@ _SIDEBAR = (
     f'<a class="nav-item" data-ls-suffix="" href="#"><span class="nav-ic">{_IC["doc"]}</span>凭证中心</a>'
     f'<a class="nav-item" data-ls-suffix="/reports" href="#"><span class="nav-ic">{_IC["chart"]}</span>报表中心</a>'
     f'<a class="nav-item" data-ls-suffix="/boss" href="#"><span class="nav-ic">{_IC["gauge"]}</span>经营总览</a>'
+    f'<a class="nav-item" data-ls-suffix="/budget" href="#"><span class="nav-ic">{_IC["target"]}</span>预算执行</a>'
     f'<a class="nav-item" data-ls-suffix="/close" href="#"><span class="nav-ic">{_IC["cal"]}</span>月末结账</a>'
     f'<a class="nav-item" data-ls-suffix="/cockpit" href="#"><span class="nav-ic">{_IC["spark"]}</span>AI 驾驶舱</a>'
     f'<a class="nav-item" data-ls-suffix="/audit" href="#"><span class="nav-ic">{_IC["shield"]}</span>审计轨迹</a>'
@@ -3312,6 +3327,149 @@ def build_app(db_url: str | None = None) -> FastAPI:
             + ("<p class='flash ok'>未发现风险项，账套健康。</p>" if not findings else "")
         )
         return _page("风险扫描", body, request.state.subject_name, show_operator=True)
+
+    @app.get("/ledger/{ls_id}/budget", response_class=HTMLResponse)
+    def budget_view(request: Request, ls_id: str, year: int = 0, month: int = 0,
+                    budget_id: str = ""):
+        """预算执行（预算 v.s. 实际）：只读对比，不编制、不激活、不写账。
+
+        数据来源全部复用内核 `kernel.budget.budget_vs_actual`（实际数来自
+        `amounts_by_code`，与三表同口径，ADR-002），本页零写动作。
+        """
+        from decimal import Decimal as _D
+
+        from kernel.budget import BudgetError, budget_vs_actual, list_budgets
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class='err'>账套不存在</p>",
+                             request.state.subject_name)
+            periods = s.scalars(
+                select(Period).where(Period.ledger_set_id == ls_id).order_by(
+                    Period.year.desc(), Period.month.desc())
+            ).all()
+            if year and month:
+                yr, mo = year, month
+            else:
+                open_p = next((p for p in periods if p.status == "OPEN"), None)
+                p0 = open_p or (periods[0] if periods else None)
+                if p0 is None:
+                    return _page("预算执行", "<p class='err'>账套尚无期间</p>",
+                                 request.state.subject_name)
+                yr, mo = p0.year, p0.month
+            budgets = list_budgets(s, ls_id)
+            try:
+                res = budget_vs_actual(
+                    s, ledger_set_id=ls_id, fiscal_year=yr, period_month=mo,
+                    budget_id=budget_id or None,
+                )
+            except BudgetError as e:
+                return _page("预算执行", f"<p class='err'>{html.escape(str(e))}</p>",
+                             request.state.subject_name)
+            acc_rows = s.scalars(
+                select(Account).where(Account.ledger_set_id == ls_id)
+            ).all()
+            acc_name = {a.code: a.name for a in acc_rows}
+            ls_name = ls.name
+
+        # ---- 期间 / 预算版本切换（GET 表单，只读） ----
+        opts = ['<option value="">当前生效版本（ACTIVE）</option>']
+        for b in budgets:
+            if b["fiscal_year"] != yr:
+                continue
+            mark = "生效" if b["status"] == "ACTIVE" else b["status"]
+            sel = " selected" if budget_id and b["budget_id"] == budget_id else ""
+            label = f"{b['name']} · v{b['version']}（{mark}）"
+            opts.append(f'<option value="{b["budget_id"]}"{sel}>'
+                        f'{html.escape(label)}</option>')
+        switcher = (
+            f"<form method=get action='/ledger/{ls_id}/budget' class=ops>"
+            f"<p><label>会计年度 <input name=year type=number value={yr} "
+            f"min=2000 max=2100 style='width:6em'></label> "
+            f"<label>月份 <input name=month type=number value={mo} "
+            f"min=1 max=12 style='width:4em'></label></p>"
+            f"<p><label>预算版本 <select name=budget_id>{''.join(opts)}</select></label> "
+            f"<button type=submit>查看</button></p></form>"
+        )
+
+        # ---- 无预算：安全降级（列出已有版本，指引激活路径） ----
+        if not res["has_budget"]:
+            listing = ""
+            for b in budgets:
+                listing += (
+                    f"<tr><td>{html.escape(b['name'])}</td>"
+                    f"<td class='num'>{b['fiscal_year']}</td>"
+                    f"<td class='num'>v{b['version']}</td>"
+                    f"<td>{html.escape(b['status'])}</td></tr>"
+                )
+            body = (
+                f"<h2>{html.escape(ls_name)} · 预算执行</h2>"
+                f"{switcher}"
+                f"<div class='banner info'>{html.escape(res['note'])}</div>"
+                + (f"<h3>本账套已有预算版本</h3><table class='rep'><thead><tr>"
+                   f"<th>名称</th><th class='num'>年度</th><th class='num'>版本</th>"
+                   f"<th>状态</th></tr></thead><tbody>{listing}</tbody></table>"
+                   if listing else
+                   "<p class='muted'>本账套尚无任何预算。可在对话中让 AI 起草预算"
+                   "（MCP `budget_create`）→ 你确认后 `budget_activate` 生效。</p>")
+                + "<div class='flash info'>预算页只读：编制与激活由你在对话中确认后执行，"
+                  "本页不写账、不改预算状态。</div>"
+            )
+            return _page("预算执行", body, request.state.subject_name, show_operator=True)
+
+        # ---- 有预算：KPI + 逐科目对比 ----
+        tot = res["totals"]
+        tb, ta, tv = _D(tot["budget"]), _D(tot["actual"]), _D(tot["variance"])
+        rate = (ta / tb * 100).quantize(_D("0.1")) if tb != 0 else _D("0.0")
+        rate_cls = "warn" if rate > 100 else "ok"
+        v_cls_kpi = "warn" if tv > 0 else ("ok" if tv < 0 else "info")
+        kpis = (
+            f"<div class='kpi'><span class='kpi-val'>{_fmt(tb)}</span>"
+            f"<span class='kpi-label'>预算合计</span></div>"
+            f"<div class='kpi'><span class='kpi-val'>{_fmt(ta)}</span>"
+            f"<span class='kpi-label'>实际合计</span></div>"
+            f"<div class='kpi'><span class='kpi-val'>{_fmt(tv)}</span>"
+            f"<span class='kpi-label'>差异（实际−预算）</span></div>"
+            f"<div class='kpi'><span class='kpi-val'>{rate}%</span>"
+            f"<span class='kpi-label'>执行率</span></div>"
+        )
+        rows_html = ""
+        over = 0
+        for r in res["rows"]:
+            v = _D(r["variance"])
+            if v > 0:
+                over += 1
+            dot = "warn" if v > 0 else ("ok" if v < 0 else "muted")
+            rows_html += (
+                f"<tr><td>{html.escape(r['account_code'])}</td>"
+                f"<td>{html.escape(acc_name.get(r['account_code'], ''))}</td>"
+                f"<td class='num'>{_fmt(_D(r['budget']))}</td>"
+                f"<td class='num'>{_fmt(_D(r['actual']))}</td>"
+                f"<td class='num'><span class='status-dot {dot}'></span>"
+                f"{_fmt(v)}</td>"
+                f"<td class='num'>{r['variance_pct']}%</td>"
+                f"<td class='muted'>{html.escape(r['source'])}</td></tr>"
+            )
+        body = (
+            f"<h2>{html.escape(ls_name)} · 预算执行</h2>"
+            f"{switcher}"
+            f"<p class='muted'>对比基准：{html.escape(res.get('budget_name', ''))}"
+            f" · v{res.get('budget_version', '')} · {yr} 年 {mo} 月</p>"
+            f"<div class='kpi-row'>{kpis}</div>"
+            f"<div class='banner {rate_cls}'>执行率 {rate}%"
+            f"（{over} 个科目实际高于预算；正差异 = 费用类超支 / 收入类超额完成）</div>"
+            "<h3>逐科目对比</h3>"
+            "<div class='table-scroll'><table class='rep'><thead><tr>"
+            "<th>科目</th><th>名称</th><th class='num'>预算</th>"
+            "<th class='num'>实际</th><th class='num'>差异</th>"
+            "<th class='num'>差异率</th><th>预算来源</th></tr></thead>"
+            f"<tbody>{rows_html}</tbody></table></div>"
+            f"<p class='muted'>{html.escape(res.get('note', ''))}</p>"
+            "<div class='flash info'>预算页只读：实际数取自账簿期间净额（与三表同口径），"
+            "编制/修订/激活预算请走对话确认流程，本页不写账。</div>"
+        )
+        return _page("预算执行", body, request.state.subject_name, show_operator=True)
 
     @app.get("/group/cashflow", response_class=HTMLResponse)
     def group_cashflow(request: Request, ids: list[str] = Query(default=[]),
