@@ -276,6 +276,16 @@ table.trend td{padding:4px 8px;border:none}
 .table-scroll table{min-width:640px;margin:0}
 /* ── 查询表单内的下拉/短输入不撑满整行 ── */
 .ops select{width:auto;min-width:180px;max-width:100%}
+/* ── 多条件筛选条：label 与控件成对、窄屏自动换行（不影响其他 .ops 表单） ── */
+.arap-filter p{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:0}
+.arap-filter label{display:inline-flex;align-items:center;gap:6px;font-size:13px;
+                   color:var(--text-2);white-space:nowrap}
+.arap-filter input{width:auto;margin:0}
+.arap-filter input[type=date]{width:11em}
+.arap-filter input[name=partner]{width:11em}
+.arap-filter select{width:auto;min-width:150px;max-width:100%;margin:0}
+.arap-filter button{margin:0;flex-shrink:0}
+.nowrap{white-space:nowrap}
 /* ── 代码 / JSON 草稿块 ── */
 .code{background:#0b1020;color:#e6edf3;padding:12px 14px;border-radius:var(--radius-sm);overflow:auto;
       font-family:"SF Mono",ui-monospace,"Courier New",monospace;font-size:12.5px;line-height:1.6;
@@ -331,6 +341,8 @@ _IC = {
     "alert": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>',
     # 预算执行：靶心（目标 v.s. 实际）
     "target": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>',
+    # 往来管理：双向箭头（应收 ↔ 应付）
+    "swap": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h14l-3-3M20 16H6l3 3"/></svg>',
 }
 
 _SIDEBAR = (
@@ -344,6 +356,7 @@ _SIDEBAR = (
     f'<a class="nav-item" data-ls-suffix="/reports" href="#"><span class="nav-ic">{_IC["chart"]}</span>报表中心</a>'
     f'<a class="nav-item" data-ls-suffix="/boss" href="#"><span class="nav-ic">{_IC["gauge"]}</span>经营总览</a>'
     f'<a class="nav-item" data-ls-suffix="/budget" href="#"><span class="nav-ic">{_IC["target"]}</span>预算执行</a>'
+    f'<a class="nav-item" data-ls-suffix="/arap" href="#"><span class="nav-ic">{_IC["swap"]}</span>往来管理与账龄</a>'
     f'<a class="nav-item" data-ls-suffix="/close" href="#"><span class="nav-ic">{_IC["cal"]}</span>月末结账</a>'
     f'<a class="nav-item" data-ls-suffix="/cockpit" href="#"><span class="nav-ic">{_IC["spark"]}</span>AI 驾驶舱</a>'
     f'<a class="nav-item" data-ls-suffix="/audit" href="#"><span class="nav-ic">{_IC["shield"]}</span>审计轨迹</a>'
@@ -441,6 +454,7 @@ def _page(title: str, body: str, user: str | None = None,
     return HTMLResponse(
         f"<!doctype html><html lang=zh><head><meta charset=utf-8>"
         f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<link rel="icon" href="data:,">'
         f"<title>{html.escape(title)} - XErp</title>{_CSS}</head>"
         f"<body><div class=app>{_SIDEBAR}"
         f'<div class=scrim onclick="XERP.closeNav()"></div>'
@@ -3470,6 +3484,235 @@ def build_app(db_url: str | None = None) -> FastAPI:
             "编制/修订/激活预算请走对话确认流程，本页不写账。</div>"
         )
         return _page("预算执行", body, request.state.subject_name, show_operator=True)
+
+    @app.get("/ledger/{ls_id}/arap", response_class=HTMLResponse)
+    def arap_view(request: Request, ls_id: str, dim: str = "customer",
+                  as_of: str = "", partner: str = ""):
+        """往来管理与账龄（P-12d）：只读账龄 + 未清项 + 授信敞口。
+
+        全部复用内核单一真源（ADR-002）：
+        ``arap.aging_analysis`` / ``arap.open_items`` / ``credit.credit_exposure``。
+        本页零写动作；核销、催收、额度调整一律走对话确认（HITL），绝不落库。
+        """
+        from datetime import date as _date
+        from decimal import Decimal as _D
+
+        from kernel.reporting.arap import ArapError, aging_analysis, open_items
+        from kernel.reporting.credit import credit_exposure
+
+        dim_key = "supplier" if dim == "supplier" else "customer"
+        dim_label = "应付 · 供应商" if dim_key == "supplier" else "应收 · 客户"
+        try:
+            as_of_date = _date.fromisoformat(as_of) if as_of else _date.today()
+        except ValueError:
+            as_of_date = _date.today()
+
+        with session() as s:
+            ls = s.get(LedgerSet, ls_id)
+            if ls is None:
+                return _page("错误", "<p class='err'>账套不存在</p>",
+                             request.state.subject_name)
+            ls_name = ls.name
+            try:
+                aging = aging_analysis(s, ledger_set_id=ls_id, dim_key=dim_key,
+                                       as_of_date=as_of_date)
+                # 明细始终取全量，便于 totals 与账龄口径勾稽；展示层再按 partner 过滤
+                oi = open_items(s, ledger_set_id=ls_id, dim_key=dim_key,
+                                as_of_date=as_of_date)
+                credit = (credit_exposure(s, ledger_set_id=ls_id,
+                                          dim_key="customer",
+                                          as_of_date=as_of_date)
+                          if dim_key == "customer" else None)
+            except ArapError as e:
+                return _page("往来管理", f"<p class='err'>{html.escape(str(e))}</p>",
+                             request.state.subject_name)
+
+        # ---- 切换条（GET，只读） ----
+        opt_c = " selected" if dim_key == "customer" else ""
+        opt_s = " selected" if dim_key == "supplier" else ""
+        switcher = (
+            f"<form method=get action='/ledger/{ls_id}/arap' class='ops arap-filter'>"
+            f"<p><label>维度 <select name=dim>"
+            f"<option value=customer{opt_c}>应收 · 客户</option>"
+            f"<option value=supplier{opt_s}>应付 · 供应商</option></select></label> "
+            f"<label>截止日期 <input name=as_of type=date value='{as_of_date.isoformat()}'></label> "
+            f"<label>往来单位 <input name=partner value='{html.escape(partner)}' "
+            f"placeholder='留空=全部'></label> "
+            f"<button type=submit>查看</button></p></form>"
+        )
+
+        tot = aging["totals"]
+        tb = tot["buckets"]
+        outstanding = _D(tot["outstanding"])
+        over90 = _D(tb["b90_plus"])
+        breaches = len(credit["breaches"]) if credit else 0
+        partners_n = len(aging["items"])
+
+        # 勾稽：FIFO 账龄未结清 vs 单据级未清项，二者应同源相等（ADR-002）
+        oi_out = _D(oi["totals"]["outstanding"])
+        diff = outstanding - oi_out
+        tie_ok = diff == 0
+        tie_dot = "ok" if tie_ok else "warn"
+        if tie_ok:
+            tie_txt = "两口径一致"
+            tie_hint = "均由凭证 + 核销记录重建，不另设余额投影。"
+        else:
+            tie_txt = f"差额 {_fmt(diff)}"
+            tie_hint = (
+                "差额通常来自「已收/付款但尚未做单据级核销」——账龄按 FIFO 冲减回款，"
+                "未清项只认核销记录，故差额多为负（未清项更大）。可在对话中确认"
+                "核销方案后再复核；本页不代执行。"
+            )
+        tie_banner = (
+            f"<div class='banner {tie_dot}'><span class='status-dot {tie_dot}'></span>"
+            f"口径勾稽：账龄未结清 {_fmt(outstanding)} vs 单据级未清项 "
+            f"{_fmt(oi_out)} · {tie_txt}。{tie_hint}</div>"
+        )
+
+        kpis = (
+            f"<div class='kpi'><span class='kpi-val'>{_fmt(outstanding)}</span>"
+            f"<span class='kpi-label'>未结清{dim_label.split(' · ')[0]}</span></div>"
+            f"<div class='kpi'><span class='kpi-val {'err' if over90 > 0 else 'ok'}'>"
+            f"{_fmt(over90)}</span><span class='kpi-label'>90 天以上</span></div>"
+            f"<div class='kpi'><span class='kpi-val'>{partners_n}</span>"
+            f"<span class='kpi-label'>往来单位</span></div>"
+            f"<div class='kpi'><span class='kpi-val {'err' if breaches else 'ok'}'>"
+            f"{breaches if credit else '—'}</span>"
+            f"<span class='kpi-label'>超额授信</span></div>"
+        )
+
+        body = (
+            f"<h2>{html.escape(ls_name)} · 往来管理与账龄</h2>"
+            f"{switcher}"
+            f"<p class='muted'>{dim_label} · 截止 {as_of_date.isoformat()} · "
+            f"口径：{html.escape(aging.get('basis', ''))}</p>"
+            f"{tie_banner}"
+            f"<div class='kpi-row'>{kpis}</div>"
+        )
+
+        if not aging["items"]:
+            body += (
+                "<div class='banner info'>本维度暂无往来数据。账龄与未清项完全由"
+                "「凭证明细行的客户/供应商辅助维度」重建，不会凭空生成余额。</div>"
+                "<div class='flash info'>可在对话中录入带往来单位的销售/采购发票与回款，"
+                "本页随即呈现账龄；本页只读，不代记凭证。</div>"
+            )
+            return _page("往来管理", body, request.state.subject_name,
+                         show_operator=True)
+
+        # ---- 账龄分析主表 ----
+        rows = ""
+        for it in aging["items"]:
+            if partner and partner not in str(it["partner"]):
+                continue
+            bk = it["buckets"]
+            late = _D(bk["b90_plus"])
+            dot = "err" if late > 0 else ("warn" if _D(bk["b60_90"]) > 0 else "ok")
+            rows += (
+                f"<tr><td><span class='status-dot {dot}'></span>"
+                f"{html.escape(str(it['partner']))}</td>"
+                f"<td class='num'>{_fmt(_D(it['balance']))}</td>"
+                f"<td class='num'>{_fmt(_D(it['outstanding']))}</td>"
+                f"<td class='num'>{_fmt(_D(bk['b0_30']))}</td>"
+                f"<td class='num'>{_fmt(_D(bk['b30_60']))}</td>"
+                f"<td class='num'>{_fmt(_D(bk['b60_90']))}</td>"
+                f"<td class='num'>{_fmt(late)}</td></tr>"
+            )
+        if not rows:
+            rows = "<tr><td colspan=7 class='muted'>没有匹配的往来单位</td></tr>"
+        body += (
+            "<h3>账龄分析（按往来单位）</h3>"
+            "<div class='table-scroll'><table class='rep'><thead><tr>"
+            "<th>往来单位</th><th class='num'>账面余额</th><th class='num'>未结清</th>"
+            "<th class='num'>0–30 天</th><th class='num'>31–60 天</th>"
+            "<th class='num'>61–90 天</th><th class='num'>90 天以上</th>"
+            "</tr></thead>"
+            f"<tbody>{rows}</tbody>"
+            f"<tfoot><tr class='tot'><td>合计</td>"
+            f"<td class='num'>{_fmt(_D(tot['balance']))}</td>"
+            f"<td class='num'>{_fmt(outstanding)}</td>"
+            f"<td class='num'>{_fmt(_D(tb['b0_30']))}</td>"
+            f"<td class='num'>{_fmt(_D(tb['b30_60']))}</td>"
+            f"<td class='num'>{_fmt(_D(tb['b60_90']))}</td>"
+            f"<td class='num'>{_fmt(over90)}</td></tr></tfoot>"
+            "</table></div>"
+        )
+
+        # ---- 授信敞口（仅客户维度） ----
+        if credit:
+            cr = ""
+            for r in credit["rows"]:
+                if partner and partner not in str(r["partner"]):
+                    continue
+                state = "err" if r["breach"] else ("warn" if r["near_limit"] else "ok")
+                label = "超额" if r["breach"] else ("临近额度" if r["near_limit"] else "正常")
+                util = r["utilization"] or "未设额度"
+                cr += (
+                    f"<tr><td><span class='status-dot {state}'></span>"
+                    f"{html.escape(str(r['partner']))}</td>"
+                    f"<td class='num'>{_fmt(_D(r['exposure']))}</td>"
+                    f"<td class='num'>{_fmt(_D(r['credit_limit']))}</td>"
+                    f"<td class='num'>{html.escape(str(util))}</td>"
+                    f"<td>{label}</td></tr>"
+                )
+            if not cr:
+                cr = "<tr><td colspan=5 class='muted'>没有匹配的往来单位</td></tr>"
+            if credit["breaches"]:
+                names = "、".join(html.escape(str(b["partner"]))
+                                 for b in credit["breaches"])
+                body += (
+                    f"<div class='banner err'><span class='status-dot err'></span>"
+                    f"{len(credit['breaches'])} 个客户授信超额：{names}。"
+                    "额度是你在对话中配置的风控线，本页只提示、不冻结、不催收。</div>"
+                )
+            body += (
+                "<h3>授信敞口</h3>"
+                "<div class='table-scroll'><table class='rep'><thead><tr>"
+                "<th>客户</th><th class='num'>敞口</th><th class='num'>授信额度</th>"
+                "<th class='num'>利用率</th><th>状态</th></tr></thead>"
+                f"<tbody>{cr}</tbody></table></div>"
+                f"<p class='muted'>合计敞口 {_fmt(_D(credit['totals']['exposure']))}"
+                f" · 合计额度 {_fmt(_D(credit['totals']['credit_limit']))}"
+                f" · {html.escape(credit.get('basis', ''))}</p>"
+            )
+
+        # ---- 未清项明细 ----
+        bucket_zh = {"b0_30": "0–30 天", "b30_60": "31–60 天",
+                     "b60_90": "61–90 天", "b90_plus": "90 天以上"}
+        det = ""
+        shown = 0
+        for it in oi["items"]:
+            if partner and partner not in str(it["partner"]):
+                continue
+            shown += 1
+            if shown > 60:
+                break
+            det += (
+                f"<tr><td class='nowrap'>{html.escape(str(it['partner']))}</td>"
+                f"<td class='nowrap'>{html.escape(str(it['voucher_no']))}</td>"
+                f"<td class='nowrap'>{html.escape(str(it['date']))}</td>"
+                f"<td class='num'>{it['days']}</td>"
+                f"<td class='num'>{_fmt(_D(it['original_amount']))}</td>"
+                f"<td class='num'>{_fmt(_D(it['cleared_amount']))}</td>"
+                f"<td class='num'>{_fmt(_D(it['open_amount']))}</td>"
+                f"<td>{bucket_zh.get(it['bucket'], html.escape(str(it['bucket'])))}</td></tr>"
+            )
+        if not det:
+            det = "<tr><td colspan=8 class='muted'>暂无未清发票（均已结清或本维度无开票）</td></tr>"
+        body += (
+            "<h3>未清项明细（单据级）</h3>"
+            "<div class='table-scroll'><table class='rep'><thead><tr>"
+            "<th>往来单位</th><th>凭证号</th><th>业务日期</th><th class='num'>账龄(天)</th>"
+            "<th class='num'>发票金额</th><th class='num'>已核销</th>"
+            "<th class='num'>未清金额</th><th>账龄分桶</th></tr></thead>"
+            f"<tbody>{det}</tbody></table></div>"
+            f"<p class='muted'>共 {len(oi['items'])} 条未清项"
+            f"（{html.escape(oi.get('basis', ''))}）；最多展示 60 条。</p>"
+            "<div class='flash info'>本页只读：账龄、未清项与敞口均由内核按凭证确定性"
+            "重建，不是 AI 推测值。核销、催收与额度调整属于需你确认的<b>动作</b>，"
+            "AI 只产草稿，本页不写账、不改额度、不触发任何对外动作。</div>"
+        )
+        return _page("往来管理", body, request.state.subject_name, show_operator=True)
 
     @app.get("/group/cashflow", response_class=HTMLResponse)
     def group_cashflow(request: Request, ids: list[str] = Query(default=[]),
